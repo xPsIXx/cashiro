@@ -105,7 +105,10 @@ class FireflyClient @Inject constructor() {
         transaction: TransactionEntity,
         baseUrl: String,
         accessToken: String,
-        defaultAssetAccount: String?
+        defaultAssetAccount: String?,
+        accountMappings: Map<String, String> = emptyMap(),
+        categoryMappings: Map<String, String> = emptyMap(),
+        includeRawSmsInNotes: Boolean = true
     ): SyncResult {
         if (baseUrl.isBlank() || accessToken.isBlank()) {
             return SyncResult.Error("Firefly not configured")
@@ -114,7 +117,7 @@ class FireflyClient @Inject constructor() {
         return withContext(Dispatchers.IO) {
             try {
                 val normalizedUrl = normalizeBaseUrl(baseUrl)
-                val payload = buildTransactionPayload(transaction, defaultAssetAccount)
+                val payload = buildTransactionPayload(transaction, defaultAssetAccount, accountMappings, categoryMappings, includeRawSmsInNotes)
 
                 val response: HttpResponse = client.post("$normalizedUrl$API_PATH/transactions") {
                     header("Authorization", "Bearer $accessToken")
@@ -160,17 +163,24 @@ class FireflyClient @Inject constructor() {
 
     private fun buildTransactionPayload(
         tx: TransactionEntity,
-        defaultAsset: String?
+        defaultAsset: String?,
+        accountMappings: Map<String, String>,
+        categoryMappings: Map<String, String>,
+        includeRawSmsInNotes: Boolean
     ): FireflyTransactionRequest {
         val type = mapTransactionType(tx.transactionType)
         val dateStr = tx.dateTime.format(DATE_FORMATTER)
         val amountStr = tx.amount.abs().toPlainString()
 
-        // Choose accounts. Prefer user-configured default asset account.
-        // For withdrawals: source = user's account, destination = merchant
-        // For deposits: source = merchant (or "Income"), destination = user's account
-        // Transfers are simplified.
-        val assetAccount = defaultAsset?.takeIf { it.isNotBlank() } ?: "Checking Account"
+        // Choose accounts. Prefer per-account mapping, then global default.
+        val accountKey = if (!tx.bankName.isNullOrBlank() && !tx.accountNumber.isNullOrBlank()) {
+            "${tx.bankName}**${tx.accountNumber}"
+        } else null
+
+        val mappedAccount = accountKey?.let { accountMappings[it] }
+        val assetAccount = mappedAccount?.takeIf { it.isNotBlank() }
+            ?: defaultAsset?.takeIf { it.isNotBlank() }
+            ?: "Checking Account"
 
         val (sourceName, destName) = when (type) {
             "withdrawal" -> assetAccount to (tx.merchantName.take(255))
@@ -189,8 +199,10 @@ class FireflyClient @Inject constructor() {
 
         val notes = buildString {
             tx.description?.let { appendLine(it) }
-            tx.smsBody?.let {
-                appendLine("SMS: ${it.take(500)}")
+            if (includeRawSmsInNotes) {
+                tx.smsBody?.let {
+                    appendLine("SMS: ${it.take(500)}")
+                }
             }
             appendLine("Synced from PennyWise • bank=${tx.bankName ?: "manual"}")
         }.trim().take(1000)
@@ -204,7 +216,7 @@ class FireflyClient @Inject constructor() {
             description = description,
             source_name = sourceName,
             destination_name = destName,
-            category_name = tx.category.takeIf { it != "Uncategorized" && it.isNotBlank() },
+            category_name = categoryMappings[tx.category] ?: tx.category.takeIf { it != "Uncategorized" && it.isNotBlank() },
             notes = notes,
             external_id = externalId,
             tags = listOfNotNull("pennywise", tx.bankName?.lowercase()?.replace(" ", "_"))

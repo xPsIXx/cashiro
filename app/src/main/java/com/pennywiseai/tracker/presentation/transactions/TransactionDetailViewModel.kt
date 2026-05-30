@@ -22,6 +22,7 @@ import com.pennywiseai.tracker.data.repository.LoanRepository
 import com.pennywiseai.tracker.data.repository.MerchantMappingRepository
 import com.pennywiseai.tracker.data.repository.TransactionGroupRepository
 import com.pennywiseai.tracker.data.repository.TransactionRepository
+import com.pennywiseai.tracker.data.firefly.FireflyClient
 import com.pennywiseai.tracker.data.database.entity.TransactionGroupEntity
 import com.pennywiseai.tracker.core.Constants
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -45,6 +46,7 @@ class TransactionDetailViewModel @Inject constructor(
     private val currencyConversionService: CurrencyConversionService,
     private val userPreferencesRepository: UserPreferencesRepository,
     private val receiptManager: ReceiptManager,
+    private val fireflyClient: FireflyClient,
     @dagger.hilt.android.qualifiers.ApplicationContext private val context: android.content.Context
 ) : ViewModel() {
     
@@ -927,6 +929,52 @@ class TransactionDetailViewModel @Inject constructor(
                 _loan.value = null
             } catch (e: Exception) {
                 _errorMessage.value = "Failed to unlink loan: ${e.message}"
+            }
+        }
+    }
+
+    /** Retry Firefly sync for the current transaction (used from detail screen) */
+    fun retryFireflySync() {
+        val txn = _transaction.value ?: return
+        viewModelScope.launch {
+            try {
+                val prefs = userPreferencesRepository.userPreferences.first()
+                val url = prefs.fireflyBaseUrl?.takeIf { it.isNotBlank() }
+                val token = prefs.fireflyAccessToken?.takeIf { it.isNotBlank() }
+
+                if (url == null || token == null) {
+                    _errorMessage.value = "Firefly is not configured"
+                    return@launch
+                }
+
+                val accountMappings = userPreferencesRepository.fireflyAccountMappingsFlow.first()
+                val categoryMappings = userPreferencesRepository.fireflyCategoryMappingsFlow.first()
+                val includeRawSms = userPreferencesRepository.fireflyIncludeRawSmsFlow.first()
+
+                val result = fireflyClient.syncTransaction(
+                    transaction = txn,
+                    baseUrl = url,
+                    accessToken = token,
+                    defaultAssetAccount = prefs.fireflyDefaultAssetAccount,
+                    accountMappings = accountMappings,
+                    categoryMappings = categoryMappings,
+                    includeRawSmsInNotes = includeRawSms
+                )
+
+                when (result) {
+                    is com.pennywiseai.tracker.data.firefly.FireflyClient.SyncResult.Success -> {
+                        transactionRepository.markFireflySynced(txn.id, result.fireflyId)
+                        // Refresh the transaction
+                        _transaction.value = transactionRepository.getTransactionById(txn.id)
+                    }
+                    is com.pennywiseai.tracker.data.firefly.FireflyClient.SyncResult.Error -> {
+                        transactionRepository.markFireflyError(txn.id, result.message)
+                        _transaction.value = transactionRepository.getTransactionById(txn.id)
+                    }
+                    else -> {}
+                }
+            } catch (e: Exception) {
+                _errorMessage.value = "Firefly retry failed: ${e.message}"
             }
         }
     }

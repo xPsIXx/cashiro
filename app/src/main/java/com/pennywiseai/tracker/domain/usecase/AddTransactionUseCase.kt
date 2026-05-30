@@ -6,9 +6,12 @@ import com.pennywiseai.tracker.data.database.entity.SubscriptionState
 import com.pennywiseai.tracker.data.database.entity.BudgetImpactType
 import com.pennywiseai.tracker.data.database.entity.TransactionEntity
 import com.pennywiseai.tracker.data.database.entity.TransactionType
+import com.pennywiseai.tracker.data.firefly.FireflyClient
+import com.pennywiseai.tracker.data.preferences.UserPreferencesRepository
 import com.pennywiseai.tracker.data.repository.AccountBalanceRepository
 import com.pennywiseai.tracker.data.repository.SubscriptionRepository
 import com.pennywiseai.tracker.data.repository.TransactionRepository
+import kotlinx.coroutines.flow.first
 import java.math.BigDecimal
 import java.security.MessageDigest
 import java.time.LocalDateTime
@@ -17,7 +20,9 @@ import javax.inject.Inject
 class AddTransactionUseCase @Inject constructor(
     private val transactionRepository: TransactionRepository,
     private val subscriptionRepository: SubscriptionRepository,
-    private val accountBalanceRepository: AccountBalanceRepository
+    private val accountBalanceRepository: AccountBalanceRepository,
+    private val userPreferencesRepository: UserPreferencesRepository,
+    private val fireflyClient: FireflyClient
 ) {
     suspend fun execute(
         amount: BigDecimal,
@@ -96,6 +101,38 @@ class AddTransactionUseCase @Inject constructor(
             )
             
             subscriptionRepository.insertSubscription(subscription)
+        }
+
+        // Opt-in: push manual transaction to Firefly III
+        if (transactionId != -1L) {
+            triggerFireflySyncIfEnabled(transactionId, transaction)
+        }
+    }
+
+    private suspend fun triggerFireflySyncIfEnabled(transactionId: Long, tx: TransactionEntity) {
+        try {
+            val prefs = userPreferencesRepository.userPreferences.first()
+            if (!prefs.fireflySyncEnabled) return
+
+            val url = prefs.fireflyBaseUrl?.takeIf { it.isNotBlank() } ?: return
+            val token = prefs.fireflyAccessToken?.takeIf { it.isNotBlank() } ?: return
+
+            val accountMappings = userPreferencesRepository.fireflyAccountMappingsFlow.first()
+            val categoryMappings = userPreferencesRepository.fireflyCategoryMappingsFlow.first()
+
+            val includeRawSms = userPreferencesRepository.fireflyIncludeRawSmsFlow.first()
+
+            fireflyClient.syncTransaction(
+                transaction = tx.copy(id = transactionId),
+                baseUrl = url,
+                accessToken = token,
+                defaultAssetAccount = prefs.fireflyDefaultAssetAccount,
+                accountMappings = accountMappings,
+                categoryMappings = categoryMappings,
+                includeRawSmsInNotes = includeRawSms
+            )
+        } catch (e: Exception) {
+            // Fire and forget - don't block manual entry
         }
     }
     

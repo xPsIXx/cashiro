@@ -254,4 +254,16 @@ interface TransactionDao {
         error: String,
         updatedAt: LocalDateTime = java.time.LocalDateTime.now()
     )
+
+    // Failed Firefly syncs (for the retry queue screen)
+    @Query("""
+        SELECT * FROM transactions 
+        WHERE is_deleted = 0 
+        AND firefly_last_error IS NOT NULL 
+        ORDER BY date_time DESC
+    """)
+    fun getFailedFireflySyncs(): Flow<List<TransactionEntity>>
+
+    @Query("SELECT COUNT(*) FROM transactions WHERE is_deleted = 0 AND firefly_last_error IS NOT NULL")
+    fun getFailedFireflySyncCount(): Flow<Int>
 }

@@ -408,4 +408,11 @@ class TransactionRepository @Inject constructor(
      */
     suspend fun deleteSplit(split: TransactionSplitEntity) =
         transactionSplitDao.deleteSplit(split)
+
+    // Firefly failed syncs
+    fun getFailedFireflySyncs(): Flow<List<TransactionEntity>> =
+        transactionDao.getFailedFireflySyncs()
+
+    fun getFailedFireflySyncCount(): Flow<Int> =
+        transactionDao.getFailedFireflySyncCount()
 }

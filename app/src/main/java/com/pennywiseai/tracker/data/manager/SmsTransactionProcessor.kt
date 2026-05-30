@@ -331,11 +331,19 @@ class SmsTransactionProcessor @Inject constructor(
                 val url = prefs.fireflyBaseUrl?.takeIf { it.isNotBlank() } ?: return@launch
                 val token = prefs.fireflyAccessToken?.takeIf { it.isNotBlank() } ?: return@launch
 
+                // Collect latest mappings (best effort)
+                val accountMappings = userPreferencesRepository.fireflyAccountMappingsFlow.first()
+                val categoryMappings = userPreferencesRepository.fireflyCategoryMappingsFlow.first()
+                val includeRawSms = userPreferencesRepository.fireflyIncludeRawSmsFlow.first()
+
                 val result = fireflyClient.syncTransaction(
                     transaction = entity,
                     baseUrl = url,
                     accessToken = token,
-                    defaultAssetAccount = prefs.fireflyDefaultAssetAccount
+                    defaultAssetAccount = prefs.fireflyDefaultAssetAccount,
+                    accountMappings = accountMappings,
+                    categoryMappings = categoryMappings,
+                    includeRawSmsInNotes = includeRawSms
                 )
 
                 when (result) {

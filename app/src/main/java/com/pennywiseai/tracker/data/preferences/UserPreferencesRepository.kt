@@ -127,6 +127,15 @@ class UserPreferencesRepository @Inject constructor(
         val FIREFLY_DEFAULT_ASSET_ACCOUNT = stringPreferencesKey("firefly_default_asset_account")
         val FIREFLY_LAST_SYNC_TIMESTAMP = longPreferencesKey("firefly_last_sync_timestamp")
         val FIREFLY_LAST_SYNC_ERROR = stringPreferencesKey("firefly_last_sync_error")
+
+        // Firefly account mappings: JSON string of "BANK**LAST4" -> "Firefly Asset Account Name"
+        val FIREFLY_ACCOUNT_MAPPINGS = stringPreferencesKey("firefly_account_mappings")
+
+        // Firefly category mappings: JSON string of "PennyWise Category" -> "Firefly Category Name"
+        val FIREFLY_CATEGORY_MAPPINGS = stringPreferencesKey("firefly_category_mappings")
+
+        // Whether to include raw SMS body in Firefly notes
+        val FIREFLY_INCLUDE_RAW_SMS = booleanPreferencesKey("firefly_include_raw_sms")
     }
 
     val userPreferences: Flow<UserPreferences> = context.dataStore.data
@@ -737,6 +746,105 @@ class UserPreferencesRepository @Inject constructor(
     suspend fun clearFireflyLastError() {
         context.dataStore.edit { preferences ->
             preferences.remove(PreferencesKeys.FIREFLY_LAST_SYNC_ERROR)
+        }
+    }
+
+    // Firefly account mappings (BANK**LAST4 -> Firefly asset account name)
+    val fireflyAccountMappingsFlow: Flow<Map<String, String>> = context.dataStore.data
+        .map { preferences ->
+            val json = preferences[PreferencesKeys.FIREFLY_ACCOUNT_MAPPINGS] ?: "{}"
+            try {
+                // Simple manual parsing for "key":"value" pairs
+                if (json == "{}") emptyMap()
+                else json.trim('{', '}')
+                    .split(",")
+                    .mapNotNull { pair ->
+                        val parts = pair.split(":", limit = 2)
+                        if (parts.size == 2) {
+                            val k = parts[0].trim().trim('"')
+                            val v = parts[1].trim().trim('"')
+                            if (k.isNotBlank() && v.isNotBlank()) k to v else null
+                        } else null
+                    }.toMap()
+            } catch (e: Exception) {
+                emptyMap()
+            }
+        }
+
+    suspend fun setFireflyAccountMapping(accountKey: String, fireflyAccountName: String) {
+        context.dataStore.edit { preferences ->
+            val current = preferences[PreferencesKeys.FIREFLY_ACCOUNT_MAPPINGS]?.let {
+                try { it.trim('{','}').split(",").associate { p ->
+                    val parts = p.split(":", limit=2)
+                    parts[0].trim('"') to parts[1].trim('"')
+                } } catch (_: Exception) { emptyMap() }
+            } ?: emptyMap()
+
+            val updated = current.toMutableMap().apply {
+                if (fireflyAccountName.isBlank()) remove(accountKey) else put(accountKey, fireflyAccountName.trim())
+            }
+
+            val newJson = if (updated.isEmpty()) "{}" else updated.entries.joinToString(",", "{", "}") { "\"${it.key}\":\"${it.value}\"" }
+            preferences[PreferencesKeys.FIREFLY_ACCOUNT_MAPPINGS] = newJson
+        }
+    }
+
+    suspend fun clearFireflyAccountMapping(accountKey: String) {
+        setFireflyAccountMapping(accountKey, "")
+    }
+
+    // Firefly category mappings (PennyWise Category -> Firefly Category Name)
+    val fireflyCategoryMappingsFlow: Flow<Map<String, String>> = context.dataStore.data
+        .map { preferences ->
+            val json = preferences[PreferencesKeys.FIREFLY_CATEGORY_MAPPINGS] ?: "{}"
+            try {
+                if (json == "{}") emptyMap()
+                else json.trim('{', '}')
+                    .split(",")
+                    .mapNotNull { pair ->
+                        val parts = pair.split(":", limit = 2)
+                        if (parts.size == 2) {
+                            val k = parts[0].trim().trim('"')
+                            val v = parts[1].trim().trim('"')
+                            if (k.isNotBlank() && v.isNotBlank()) k to v else null
+                        } else null
+                    }.toMap()
+            } catch (e: Exception) {
+                emptyMap()
+            }
+        }
+
+    suspend fun setFireflyCategoryMapping(pennywiseCategory: String, fireflyCategory: String) {
+        context.dataStore.edit { preferences ->
+            val current = preferences[PreferencesKeys.FIREFLY_CATEGORY_MAPPINGS]?.let {
+                try {
+                    it.trim('{','}').split(",").associate { p ->
+                        val parts = p.split(":", limit=2)
+                        parts[0].trim('"') to parts[1].trim('"')
+                    }
+                } catch (_: Exception) { emptyMap() }
+            } ?: emptyMap()
+
+            val updated = current.toMutableMap().apply {
+                if (fireflyCategory.isBlank()) remove(pennywiseCategory) else put(pennywiseCategory.trim(), fireflyCategory.trim())
+            }
+
+            val newJson = if (updated.isEmpty()) "{}" else updated.entries.joinToString(",", "{", "}") { "\"${it.key}\":\"${it.value}\"" }
+            preferences[PreferencesKeys.FIREFLY_CATEGORY_MAPPINGS] = newJson
+        }
+    }
+
+    suspend fun clearFireflyCategoryMapping(pennywiseCategory: String) {
+        setFireflyCategoryMapping(pennywiseCategory, "")
+    }
+
+    // Whether to include raw SMS in Firefly notes (default = true to keep existing behavior)
+    val fireflyIncludeRawSmsFlow: Flow<Boolean> = context.dataStore.data
+        .map { it[PreferencesKeys.FIREFLY_INCLUDE_RAW_SMS] ?: true }
+
+    suspend fun setFireflyIncludeRawSms(include: Boolean) {
+        context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.FIREFLY_INCLUDE_RAW_SMS] = include
         }
     }
 }

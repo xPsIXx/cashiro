@@ -43,6 +43,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -98,6 +99,8 @@ fun SettingsScreen(
     onNavigateToExchangeRates: () -> Unit = {},
     onNavigateToAppearance: () -> Unit = {},
     onNavigateToImportStatement: () -> Unit = {},
+    onNavigateToFireflyFailedSyncs: () -> Unit = {},
+    onNavigateToFireflySettings: () -> Unit = {},
     settingsViewModel: SettingsViewModel = hiltViewModel(),
     appLockViewModel: com.pennywiseai.tracker.ui.viewmodel.AppLockViewModel = hiltViewModel(),
     permissionViewModel: com.pennywiseai.tracker.ui.viewmodel.PermissionViewModel = hiltViewModel()
@@ -121,6 +124,9 @@ fun SettingsScreen(
     val fireflyBaseUrl by settingsViewModel.fireflyBaseUrl.collectAsStateWithLifecycle(initialValue = null)
     val fireflyDefaultAsset by settingsViewModel.fireflyDefaultAssetAccount.collectAsStateWithLifecycle(initialValue = null)
     val fireflyLastError by settingsViewModel.fireflyLastSyncError.collectAsStateWithLifecycle(initialValue = null)
+    val fireflyFailedCount by settingsViewModel.fireflyFailedSyncCount.collectAsStateWithLifecycle(initialValue = 0)
+    val fireflyMappings by settingsViewModel.fireflyAccountMappings.collectAsStateWithLifecycle(initialValue = emptyMap())
+    val fireflyMappingAccounts by settingsViewModel.fireflyMappingAccounts.collectAsStateWithLifecycle(initialValue = emptyList())
     val displayCurrency by settingsViewModel.displayCurrency.collectAsStateWithLifecycle(initialValue = "")
     val availableCurrencies by settingsViewModel.availableCurrencies.collectAsStateWithLifecycle()
     val useContactsForVpa by settingsViewModel.useContactsForVpa.collectAsStateWithLifecycle(initialValue = false)
@@ -136,7 +142,7 @@ fun SettingsScreen(
     var showExportOptionsDialog by remember { mutableStateOf(false) }
     var showTimeoutDialog by remember { mutableStateOf(false) }
     var showDisplayCurrencyDialog by remember { mutableStateOf(false) }
-    var showFireflyDialog by remember { mutableStateOf(false) }
+    // Firefly settings moved to dedicated full screen
     var showCurrencyDropdown by remember { mutableStateOf(false) }
     val permissionUiState by permissionViewModel.uiState.collectAsStateWithLifecycle()
     val hasNotificationAccess = permissionUiState.hasNotificationAccess
@@ -435,7 +441,7 @@ fun SettingsScreen(
                     iconTint = MaterialTheme.colorScheme.onTertiaryContainer,
                     title = "Firefly III Sync",
                     subtitle = if (fireflySyncEnabled) "Auto-push transactions enabled" else "Connect your self-hosted Firefly",
-                    onClick = { showFireflyDialog = true },
+                    onClick = { onNavigateToFireflySettings() },
                     position = ItemPosition.MIDDLE
                 )
                 SettingsNavItem(
@@ -660,29 +666,33 @@ fun SettingsScreen(
         )
     }
 
-    // Firefly III Sync configuration dialog
-    if (showFireflyDialog) {
-        var localUrl by remember { mutableStateOf(fireflyBaseUrl ?: "") }
-        var localToken by remember { mutableStateOf("") } // never prefill token
-        var localAccount by remember { mutableStateOf(fireflyDefaultAsset ?: "") }
-        var testResult by remember { mutableStateOf<String?>(null) }
-        var isTesting by remember { mutableStateOf(false) }
+    // Firefly settings moved to dedicated full screen (FireflySettingsScreen)
+    // The old dialog code has been removed. Navigation is handled via onNavigateToFireflySettings()
 
-        AlertDialog(
-            onDismissRequest = { showFireflyDialog = false },
-            title = { Text("Firefly III Sync") },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Text(
-                        "Opt-in: automatically push new SMS-parsed transactions to your self-hosted Firefly III instance using its Personal Access Token.",
-                        style = MaterialTheme.typography.bodySmall
-                    )
+                    if (fireflyFailedCount > 0) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                "$fireflyFailedCount failed sync(s)",
+                                color = MaterialTheme.colorScheme.error,
+                                style = MaterialTheme.typography.bodyMedium
+                            )
+                            TextButton(onClick = {
+                                onNavigateToFireflyFailedSyncs()
+                            }) {
+                                Text("View & Retry")
+                            }
+                        }
+                    }
 
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("Enable sync", modifier = Modifier.weight(1f))
-                        Switch(
-                            checked = fireflySyncEnabled,
-                            onCheckedChange = { settingsViewModel.setFireflySyncEnabled(it) }
+                    if (fireflyMappings.isNotEmpty()) {
+                        Text(
+                            "${fireflyMappings.size} account mapping(s) configured",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.primary
                         )
                     }
 
@@ -712,6 +722,62 @@ fun SettingsScreen(
                         modifier = Modifier.fillMaxWidth()
                     )
 
+                    // === Account Mappings Section ===
+                    if (fireflyMappingAccounts.isNotEmpty()) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            "Account Mappings",
+                            style = MaterialTheme.typography.labelMedium
+                        )
+                        Text(
+                            "Map specific PennyWise accounts to Firefly asset accounts",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.outline
+                        )
+
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(max = 170.dp)
+                        ) {
+                            fireflyMappingAccounts.take(6).forEach { account ->
+                                val currentValue = fireflyMappings[account.key] ?: ""
+
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.padding(vertical = 3.dp)
+                                ) {
+                                    Text(
+                                        account.displayName,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        modifier = Modifier.weight(1f),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+
+                                    OutlinedTextField(
+                                        value = currentValue,
+                                        onValueChange = { newValue ->
+                                            settingsViewModel.setFireflyAccountMapping(account.key, newValue)
+                                        },
+                                        singleLine = true,
+                                        placeholder = { Text("Firefly account") },
+                                        textStyle = MaterialTheme.typography.bodySmall,
+                                        modifier = Modifier.weight(1.15f)
+                                    )
+                                }
+                            }
+                        }
+
+                        if (fireflyMappingAccounts.size > 6) {
+                            Text(
+                                "+ ${fireflyMappingAccounts.size - 6} more accounts",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.outline
+                            )
+                        }
+                    }
+
                     if (fireflyLastError != null) {
                         Text("Last error: $fireflyLastError", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
                     }
@@ -737,32 +803,7 @@ fun SettingsScreen(
                                     }
                                 }
                             },
-                            enabled = !isTesting && localUrl.isNotBlank() && localToken.isNotBlank()
-                        ) { Text(if (isTesting) "Testing..." else "Test connection") }
-
-                        Button(
-                            onClick = {
-                                settingsViewModel.setFireflyBaseUrl(localUrl)
-                                if (localToken.isNotBlank()) settingsViewModel.setFireflyAccessToken(localToken)
-                                if (localAccount.isNotBlank()) settingsViewModel.setFireflyDefaultAssetAccount(localAccount)
-                                settingsViewModel.clearFireflyLastError()
-                                showFireflyDialog = false
-                            }
-                        ) { Text("Save") }
-                    }
-
-                    Text(
-                        "Token is stored only on this device. Use app lock. Data is sent only to the URL you enter.",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.outline
-                    )
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = { showFireflyDialog = false }) { Text("Close") }
-            }
-        )
-    }
+    // Firefly dialog fully removed - settings now in dedicated screen
 
     // Show import/export message
     importExportMessage?.let { message ->

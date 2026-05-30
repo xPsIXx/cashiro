@@ -133,6 +133,12 @@ fun PennyWiseNavHost(
                 },
                 onNavigateToTransactionGroups = {
                     navController.navigate(TransactionGroups) { launchSingleTop = true }
+                },
+                onNavigateToFireflyFailedSyncs = {
+                    navController.navigate(FireflyFailedSyncs) { launchSingleTop = true }
+                },
+                onNavigateToFireflySettings = {
+                    navController.navigate(FireflySettings) { launchSingleTop = true }
                 }
             )
         }
@@ -195,6 +201,35 @@ fun PennyWiseNavHost(
             com.pennywiseai.tracker.ui.screens.unrecognized.UnrecognizedSmsScreen(
                 onNavigateBack = {
                     navController.safePopBackStack()
+                }
+            )
+        }
+
+        composable<FireflyFailedSyncs>(
+            enterTransition = { fadeIn(tween(300)) + slideInVertically { it / 4 } },
+            exitTransition = { fadeOut(tween(200)) },
+            popEnterTransition = { fadeIn(tween(300)) },
+            popExitTransition = { fadeOut(tween(200)) + slideOutVertically { it / 4 } }
+        ) {
+            com.pennywiseai.tracker.ui.screens.settings.FireflyFailedSyncsScreen(
+                onNavigateBack = {
+                    navController.safePopBackStack()
+                }
+            )
+        }
+
+        composable<FireflySettings>(
+            enterTransition = { fadeIn(tween(300)) + slideInVertically { it / 4 } },
+            exitTransition = { fadeOut(tween(200)) },
+            popEnterTransition = { fadeIn(tween(300)) },
+            popExitTransition = { fadeOut(tween(200)) + slideOutVertically { it / 4 } }
+        ) {
+            com.pennywiseai.tracker.ui.screens.settings.FireflySettingsScreen(
+                onNavigateBack = {
+                    navController.safePopBackStack()
+                },
+                onNavigateToFailedSyncs = {
+                    navController.navigate(FireflyFailedSyncs) { launchSingleTop = true }
                 }
             )
         }

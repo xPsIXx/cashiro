@@ -870,6 +870,9 @@ private fun TransactionReceipt(
             ExpandableSmsSection(smsBody = transaction.smsBody)
         }
 
+        // ── Firefly Sync Status ──
+        FireflySyncStatusSection(transaction = transaction, viewModel = viewModel)
+
         // ── Split Breakdown ──
         if (hasSplits && splits.isNotEmpty()) {
             SplitBreakdownCard(
@@ -2181,6 +2184,77 @@ private fun GroupBottomSheet(
                     )
                     Spacer(modifier = Modifier.width(Spacing.xs))
                     Text("Create new group")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun FireflySyncStatusSection(
+    transaction: TransactionEntity,
+    viewModel: TransactionDetailViewModel
+) {
+    val hasFireflyData = transaction.fireflySyncedAt != null || !transaction.fireflyLastError.isNullOrBlank()
+
+    if (!hasFireflyData) return
+
+    SectionHeaderV2(title = "Firefly III Sync")
+
+    PennyWiseCard {
+        Column(modifier = Modifier.padding(Spacing.md)) {
+            when {
+                !transaction.fireflyLastError.isNullOrBlank() -> {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            Icons.Default.Error,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            "Sync failed",
+                            color = MaterialTheme.colorScheme.error,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        transaction.fireflyLastError,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedButton(
+                        onClick = {
+                            viewModel.retryFireflySync()
+                        },
+                        modifier = Modifier.align(Alignment.End)
+                    ) {
+                        Text("Retry Sync")
+                    }
+                }
+                transaction.fireflySyncedAt != null -> {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            Icons.Default.CheckCircle,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            "Synced to Firefly",
+                            color = MaterialTheme.colorScheme.primary,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                    Text(
+                        "Synced on ${transaction.fireflySyncedAt.format(DateTimeFormatter.ofPattern("dd MMM yyyy, HH:mm"))}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
             }
         }

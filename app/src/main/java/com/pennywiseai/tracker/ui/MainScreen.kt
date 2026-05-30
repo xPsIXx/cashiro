@@ -425,6 +425,16 @@ fun MainScreen(
                         rootNavController?.navigate(
                             com.pennywiseai.tracker.navigation.TransactionGroups
                         ) { launchSingleTop = true }
+                    },
+                    onNavigateToFireflyFailedSyncs = {
+                        rootNavController?.navigate(
+                            com.pennywiseai.tracker.navigation.FireflyFailedSyncs
+                        ) { launchSingleTop = true }
+                    },
+                    onNavigateToFireflySettings = {
+                        rootNavController?.navigate(
+                            com.pennywiseai.tracker.navigation.FireflySettings
+                        ) { launchSingleTop = true }
                     }
                 )
             }

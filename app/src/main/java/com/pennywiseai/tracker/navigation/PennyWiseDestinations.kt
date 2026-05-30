@@ -58,6 +58,12 @@ object ExchangeRates
 object BudgetGroups
 
 @Serializable
+object FireflyFailedSyncs
+
+@Serializable
+object FireflySettings
+
+@Serializable
 data class BudgetGroupEdit(val groupId: Long = -1L)
 
 @Serializable
