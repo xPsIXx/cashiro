@@ -67,15 +67,11 @@ class UnrecognizedSmsViewModel @Inject constructor(
                 }
                 Log.d("UnrecognizedSmsViewModel", "Encoded device data: ${encodedDeviceData.take(50)}... (length: ${encodedDeviceData.length})")
                 
-                // Create the report URL using hash fragment for privacy
-                val url = "${Constants.Links.WEB_PARSER_URL}/#message=$encodedMessage&sender=$encodedSender&device=$encodedDeviceData&autoparse=true"
-                Log.d("UnrecognizedSmsViewModel", "Full URL length: ${url.length}")
-                
-                // Open in browser
-                val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
-                    flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                }
-                context.startActivity(intent)
+                // Reporting disabled in this fork
+                Log.d("UnrecognizedSmsViewModel", "Reporting disabled for this fork")
+                // Optionally open fork issues:
+                // val intent = Intent(Intent.ACTION_VIEW, Uri.parse("${Constants.Links.GITHUB_URL}/issues/new"))
+                // context.startActivity(intent)
                 
                 // Mark as reported
                 unrecognizedSmsRepository.markAsReported(listOf(message.id))

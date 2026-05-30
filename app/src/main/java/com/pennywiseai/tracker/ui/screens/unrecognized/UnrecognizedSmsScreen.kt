@@ -226,7 +226,7 @@ fun UnrecognizedSmsScreen(
                         UnrecognizedSmsItem(
                             message = message,
                             onReport = {
-                                viewModel.reportMessage(message)
+                                // Reporting disabled in this fork to prevent issues being sent to the original project
                             },
                             onDelete = {
                                 selectedMessage = message
@@ -353,19 +353,7 @@ private fun UnrecognizedSmsItem(
                         Text("Delete")
                     }
 
-                    Spacer(modifier = Modifier.width(Spacing.sm))
-
-                    FilledTonalButton(
-                        onClick = onReport
-                    ) {
-                        Icon(
-                            Icons.Default.BugReport,
-                            contentDescription = "Report",
-                            modifier = Modifier.size(Dimensions.Icon.small)
-                        )
-                        Spacer(modifier = Modifier.width(Spacing.xs))
-                        Text("Report")
-                    }
+                    // Report button removed in this fork to prevent users from sending issues to the original project
                 } else {
                     TextButton(
                         onClick = onDelete,

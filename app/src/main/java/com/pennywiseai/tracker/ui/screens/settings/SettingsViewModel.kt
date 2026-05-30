@@ -38,7 +38,10 @@ import kotlinx.coroutines.flow.first
 import java.net.URLEncoder
 import java.io.File
 import com.pennywiseai.tracker.data.firefly.FireflyClient
+import com.pennywiseai.tracker.data.firefly.FireflyTokenManager
+import com.pennywiseai.tracker.data.repository.AccountBalanceRepository
 import kotlinx.coroutines.launch
+import java.time.LocalDateTime
 import javax.inject.Inject
 
 @HiltViewModel
@@ -51,7 +54,9 @@ class SettingsViewModel @Inject constructor(
     private val backupExporter: BackupExporter,
     private val backupImporter: BackupImporter,
     private val contactsResolver: com.pennywiseai.tracker.data.contacts.ContactsResolver,
-    private val fireflyClient: FireflyClient
+    private val fireflyClient: FireflyClient,
+    private val accountBalanceRepository: AccountBalanceRepository,
+    private val fireflyTokenManager: FireflyTokenManager
 ) : ViewModel() {
     
     private val downloadManager = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
@@ -97,6 +102,38 @@ class SettingsViewModel @Inject constructor(
     val fireflyBaseUrl = userPreferencesRepository.fireflyBaseUrlFlow
     val fireflyDefaultAssetAccount = userPreferencesRepository.fireflyDefaultAssetAccountFlow
     val fireflyLastSyncError = userPreferencesRepository.fireflyLastSyncErrorFlow
+
+    // Failed Firefly syncs count (for badge in settings)
+    val fireflyFailedSyncCount = transactionRepository.getFailedFireflySyncCount()
+
+    // Firefly account mappings
+    val fireflyAccountMappings = userPreferencesRepository.fireflyAccountMappingsFlow
+
+    // Firefly category mappings
+    val fireflyCategoryMappings = userPreferencesRepository.fireflyCategoryMappingsFlow
+
+    // Whether to include raw SMS in Firefly notes
+    val fireflyIncludeRawSms = userPreferencesRepository.fireflyIncludeRawSmsFlow
+
+    // Known accounts for mapping (latest balances represent known accounts)
+    val knownAccountsForMapping = accountBalanceRepository.getAllLatestBalances()
+
+    /** Clean list of accounts for the Firefly mapping UI inside the dialog */
+    val fireflyMappingAccounts: Flow<List<AccountMappingItem>> =
+        knownAccountsForMapping
+            .map { balances ->
+                balances
+                    .distinctBy { "${it.bankName}**${it.accountLast4}" }
+                    .sortedBy { it.bankName }
+                    .map { balance ->
+                        val key = "${balance.bankName}**${balance.accountLast4}"
+                        AccountMappingItem(
+                            key = key,
+                            displayName = "${balance.bankName} ••••${balance.accountLast4}",
+                            isCreditCard = balance.isCreditCard
+                        )
+                    }
+            }
 
     val availableCurrencies: StateFlow<List<String>> = transactionRepository.getAllCurrencies()
         .map { transactionCurrencies ->
@@ -483,6 +520,156 @@ class SettingsViewModel @Inject constructor(
             userPreferencesRepository.clearFireflyLastError()
         }
     }
+
+    // Firefly account mapping helpers
+    fun setFireflyAccountMapping(accountKey: String, fireflyAccountName: String) {
+        viewModelScope.launch {
+            userPreferencesRepository.setFireflyAccountMapping(accountKey, fireflyAccountName)
+        }
+    }
+
+    fun clearFireflyAccountMapping(accountKey: String) {
+        viewModelScope.launch {
+            userPreferencesRepository.clearFireflyAccountMapping(accountKey)
+        }
+    }
+
+    // Firefly category mapping helpers
+    fun setFireflyCategoryMapping(pennywiseCategory: String, fireflyCategory: String) {
+        viewModelScope.launch {
+            userPreferencesRepository.setFireflyCategoryMapping(pennywiseCategory, fireflyCategory)
+        }
+    }
+
+    fun clearFireflyCategoryMapping(pennywiseCategory: String) {
+        viewModelScope.launch {
+            userPreferencesRepository.clearFireflyCategoryMapping(pennywiseCategory)
+        }
+    }
+
+    fun setFireflyIncludeRawSms(include: Boolean) {
+        viewModelScope.launch {
+            userPreferencesRepository.setFireflyIncludeRawSms(include)
+        }
+    }
+
+    /** Saves Firefly credentials securely (token in EncryptedSharedPreferences) */
+    fun saveFireflyCredentials(url: String, token: String, defaultAsset: String?) {
+        viewModelScope.launch {
+            userPreferencesRepository.setFireflyBaseUrl(url)
+            if (defaultAsset != null) {
+                userPreferencesRepository.setFireflyDefaultAssetAccount(defaultAsset)
+            }
+            // Save token securely
+            fireflyTokenManager.saveCredentials(url, token)
+        }
+    }
+
+    /** Returns current secure credentials for initial loading */
+    fun getFireflySecureCredentials(): Pair<String?, String?> {
+        return fireflyTokenManager.getBaseUrl() to fireflyTokenManager.getAccessToken()
+    }
+
+    // Sync transactions from the last 30 days that haven't been sent to Firefly yet
+    fun syncLast30Days(onResult: (String) -> Unit) {
+        viewModelScope.launch {
+            try {
+                val prefs = userPreferencesRepository.userPreferences.first()
+                val url = prefs.fireflyBaseUrl?.takeIf { it.isNotBlank() }
+                val token = prefs.fireflyAccessToken?.takeIf { it.isNotBlank() }
+
+                if (url == null || token == null) {
+                    onResult("Firefly not configured")
+                    return@launch
+                }
+
+                val thirtyDaysAgo = LocalDateTime.now().minusDays(30)
+                val unsynced = transactionRepository.getTransactionsBetweenDatesList(thirtyDaysAgo, LocalDateTime.now())
+                    .filter { it.fireflySyncedAt == null && it.fireflyLastError == null }
+
+                if (unsynced.isEmpty()) {
+                    onResult("No unsynced transactions in the last 30 days")
+                    return@launch
+                }
+
+                val accountMappings = userPreferencesRepository.fireflyAccountMappingsFlow.first()
+                val categoryMappings = userPreferencesRepository.fireflyCategoryMappingsFlow.first()
+                val includeRaw = userPreferencesRepository.fireflyIncludeRawSmsFlow.first()
+
+                var successCount = 0
+                unsynced.forEach { tx ->
+                    val result = fireflyClient.syncTransaction(
+                        transaction = tx,
+                        baseUrl = url,
+                        accessToken = token,
+                        defaultAssetAccount = prefs.fireflyDefaultAssetAccount,
+                        accountMappings = accountMappings,
+                        categoryMappings = categoryMappings,
+                        includeRawSmsInNotes = includeRaw
+                    )
+                    if (result is com.pennywiseai.tracker.data.firefly.FireflyClient.SyncResult.Success) {
+                        transactionRepository.markFireflySynced(tx.id, result.fireflyId)
+                        successCount++
+                    }
+                }
+
+                onResult("Synced $successCount of ${unsynced.size} transactions from last 30 days")
+            } catch (e: Exception) {
+                onResult("Error syncing last 30 days: ${e.message}")
+            }
+        }
+    }
+
+    // Send a test transaction to Firefly
+    fun sendTestTransaction(onResult: (String) -> Unit) {
+        viewModelScope.launch {
+            try {
+                val prefs = userPreferencesRepository.userPreferences.first()
+                val url = prefs.fireflyBaseUrl?.takeIf { it.isNotBlank() }
+                val token = prefs.fireflyAccessToken?.takeIf { it.isNotBlank() }
+
+                if (url == null || token == null) {
+                    onResult("Firefly not configured")
+                    return@launch
+                }
+
+                val testTx = com.pennywiseai.tracker.data.database.entity.TransactionEntity(
+                    id = -1,
+                    amount = java.math.BigDecimal("123.45"),
+                    merchantName = "Test Merchant (PennyWise)",
+                    category = "Testing",
+                    transactionType = com.pennywiseai.tracker.data.database.entity.TransactionType.EXPENSE,
+                    dateTime = java.time.LocalDateTime.now(),
+                    bankName = "Test Bank",
+                    accountNumber = "0000",
+                    currency = prefs.baseCurrency,
+                    transactionHash = "TEST_${System.currentTimeMillis()}"
+                )
+
+                val accountMappings = userPreferencesRepository.fireflyAccountMappingsFlow.first()
+                val categoryMappings = userPreferencesRepository.fireflyCategoryMappingsFlow.first()
+                val includeRaw = userPreferencesRepository.fireflyIncludeRawSmsFlow.first()
+
+                val result = fireflyClient.syncTransaction(
+                    transaction = testTx,
+                    baseUrl = url,
+                    accessToken = token,
+                    defaultAssetAccount = prefs.fireflyDefaultAssetAccount,
+                    accountMappings = accountMappings,
+                    categoryMappings = categoryMappings,
+                    includeRawSmsInNotes = includeRaw
+                )
+
+                when (result) {
+                    is com.pennywiseai.tracker.data.firefly.FireflyClient.SyncResult.Success -> onResult("Test transaction sent successfully!")
+                    is com.pennywiseai.tracker.data.firefly.FireflyClient.SyncResult.Error -> onResult("Failed: ${result.message}")
+                    else -> onResult("Skipped")
+                }
+            } catch (e: Exception) {
+                onResult("Error: ${e.message}")
+            }
+        }
+    }
     
     fun updateSmsScanMonths(months: Int) {
         viewModelScope.launch {
@@ -531,9 +718,10 @@ class SettingsViewModel @Inject constructor(
                     }
                     Log.d("SettingsViewModel", "Encoded device data: ${encodedDeviceData.take(50)}... (length: ${encodedDeviceData.length})")
                     
-                    // Create the report URL using hash fragment for privacy
-                    val url = "${Constants.Links.WEB_PARSER_URL}/#message=$encodedMessage&sender=$encodedSender&device=$encodedDeviceData&autoparse=true"
-                    Log.d("SettingsViewModel", "Full URL length: ${url.length}")
+                    // Reporting to original service disabled in this fork.
+                    // Direct users to the fork's GitHub issues instead.
+                    val url = "${Constants.Links.GITHUB_URL}/issues/new"
+                    Log.d("SettingsViewModel", "Opening fork issues instead of original parser")
                     
                     // Open in browser
                     val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
@@ -655,6 +843,13 @@ class SettingsViewModel @Inject constructor(
         }
     }
 }
+
+/** UI model for showing accounts in the Firefly mapping section */
+data class AccountMappingItem(
+    val key: String,           // e.g. "HDFC Bank**1234"
+    val displayName: String,   // e.g. "HDFC Bank ••••1234"
+    val isCreditCard: Boolean = false
+)
 
 enum class DownloadState {
     NOT_DOWNLOADED,

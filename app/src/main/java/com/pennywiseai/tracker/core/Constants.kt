@@ -81,8 +81,9 @@ object Constants {
      * External Links
      */
     object Links {
-        const val DISCORD_URL = "https://discord.gg/H3xWeMWjKQ"
-        const val GITHUB_URL = "https://github.com/sarim2000/pennywiseai-tracker"
-        const val WEB_PARSER_URL = "https://pennywise.querymind.pro"
+        // Updated for this fork - do not point users to original repo for issues
+        const val GITHUB_URL = "https://github.com/TheNoticingBegins/pennywiseai-Firefly"
+        const val DISCORD_URL = "" // Disabled to prevent confusion with original project
+        const val WEB_PARSER_URL = "" // Reporting disabled for this fork
     }
 }

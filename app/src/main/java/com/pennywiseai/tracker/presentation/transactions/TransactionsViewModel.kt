@@ -998,7 +998,8 @@ class TransactionsViewModel @Inject constructor(
         }
         
         // Create the report URL using hash fragment for privacy
-        return "${Constants.Links.WEB_PARSER_URL}/#message=$encodedMessage&sender=$encodedSender&device=$encodedDeviceData&autoparse=true"
+        // Reporting disabled for this fork - point to our GitHub issues
+        return "${Constants.Links.GITHUB_URL}/issues/new"
     }
     
 }
