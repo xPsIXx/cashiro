@@ -28,6 +28,12 @@ class TransactionRepository @Inject constructor(
     
     suspend fun getTransactionById(id: Long): TransactionEntity? = 
         transactionDao.getTransactionById(id)
+
+    suspend fun markFireflySynced(transactionId: Long, externalId: String?) =
+        transactionDao.markFireflySynced(transactionId, externalId)
+
+    suspend fun markFireflyError(transactionId: Long, error: String) =
+        transactionDao.markFireflyError(transactionId, error)
     
     fun getTransactionsBetweenDates(
         startDate: LocalDateTime,

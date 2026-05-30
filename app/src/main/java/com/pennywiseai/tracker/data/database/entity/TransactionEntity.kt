@@ -99,7 +99,17 @@ data class TransactionEntity(
     val groupId: Long? = null,
 
     @ColumnInfo(name = "profile_id", defaultValue = "NULL")
-    val profileId: Long? = null
+    val profileId: Long? = null,
+
+    // Firefly III sync fields (opt-in integration)
+    @ColumnInfo(name = "firefly_synced_at", defaultValue = "NULL")
+    val fireflySyncedAt: LocalDateTime? = null,
+
+    @ColumnInfo(name = "firefly_external_id", defaultValue = "NULL")
+    val fireflyExternalId: String? = null,
+
+    @ColumnInfo(name = "firefly_last_error", defaultValue = "NULL")
+    val fireflyLastError: String? = null
 )
 
 enum class BudgetImpactType {

@@ -37,6 +37,8 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.first
 import java.net.URLEncoder
 import java.io.File
+import com.pennywiseai.tracker.data.firefly.FireflyClient
+import kotlinx.coroutines.launch
 import javax.inject.Inject
 
 @HiltViewModel
@@ -48,7 +50,8 @@ class SettingsViewModel @Inject constructor(
     private val transactionRepository: TransactionRepository,
     private val backupExporter: BackupExporter,
     private val backupImporter: BackupImporter,
-    private val contactsResolver: com.pennywiseai.tracker.data.contacts.ContactsResolver
+    private val contactsResolver: com.pennywiseai.tracker.data.contacts.ContactsResolver,
+    private val fireflyClient: FireflyClient
 ) : ViewModel() {
     
     private val downloadManager = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
@@ -88,6 +91,12 @@ class SettingsViewModel @Inject constructor(
 
     // Replace UPI VPAs with contact names (gated by READ_CONTACTS).
     val useContactsForVpa = userPreferencesRepository.useContactsForVpa
+
+    // Firefly III opt-in sync
+    val fireflySyncEnabled = userPreferencesRepository.fireflySyncEnabledFlow
+    val fireflyBaseUrl = userPreferencesRepository.fireflyBaseUrlFlow
+    val fireflyDefaultAssetAccount = userPreferencesRepository.fireflyDefaultAssetAccountFlow
+    val fireflyLastSyncError = userPreferencesRepository.fireflyLastSyncErrorFlow
 
     val availableCurrencies: StateFlow<List<String>> = transactionRepository.getAllCurrencies()
         .map { transactionCurrencies ->
@@ -437,6 +446,41 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch {
             userPreferencesRepository.setUseContactsForVpa(enabled)
             contactsResolver.clearCache()
+        }
+    }
+
+    // Firefly III integration actions
+    fun setFireflySyncEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            userPreferencesRepository.setFireflySyncEnabled(enabled)
+        }
+    }
+
+    fun setFireflyBaseUrl(url: String) {
+        viewModelScope.launch {
+            userPreferencesRepository.setFireflyBaseUrl(url)
+        }
+    }
+
+    fun setFireflyAccessToken(token: String) {
+        viewModelScope.launch {
+            userPreferencesRepository.setFireflyAccessToken(token)
+        }
+    }
+
+    fun setFireflyDefaultAssetAccount(account: String) {
+        viewModelScope.launch {
+            userPreferencesRepository.setFireflyDefaultAssetAccount(account)
+        }
+    }
+
+    suspend fun testFireflyConnection(url: String, token: String): FireflyClient.SyncResult {
+        return fireflyClient.testConnection(url, token)
+    }
+
+    fun clearFireflyLastError() {
+        viewModelScope.launch {
+            userPreferencesRepository.clearFireflyLastError()
         }
     }
     

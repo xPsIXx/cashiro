@@ -19,6 +19,17 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Help
 import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.filled.*
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Switch
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Button
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.unit.dp
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch as scopeLaunch
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -104,6 +115,12 @@ fun SettingsScreen(
     val importExportMessage by settingsViewModel.importExportMessage.collectAsStateWithLifecycle()
     val exportedBackupFile by settingsViewModel.exportedBackupFile.collectAsStateWithLifecycle()
     val unifiedCurrencyMode by settingsViewModel.unifiedCurrencyMode.collectAsStateWithLifecycle(initialValue = false)
+
+    // Firefly III states (opt-in)
+    val fireflySyncEnabled by settingsViewModel.fireflySyncEnabled.collectAsStateWithLifecycle(initialValue = false)
+    val fireflyBaseUrl by settingsViewModel.fireflyBaseUrl.collectAsStateWithLifecycle(initialValue = null)
+    val fireflyDefaultAsset by settingsViewModel.fireflyDefaultAssetAccount.collectAsStateWithLifecycle(initialValue = null)
+    val fireflyLastError by settingsViewModel.fireflyLastSyncError.collectAsStateWithLifecycle(initialValue = null)
     val displayCurrency by settingsViewModel.displayCurrency.collectAsStateWithLifecycle(initialValue = "")
     val availableCurrencies by settingsViewModel.availableCurrencies.collectAsStateWithLifecycle()
     val useContactsForVpa by settingsViewModel.useContactsForVpa.collectAsStateWithLifecycle(initialValue = false)
@@ -119,6 +136,7 @@ fun SettingsScreen(
     var showExportOptionsDialog by remember { mutableStateOf(false) }
     var showTimeoutDialog by remember { mutableStateOf(false) }
     var showDisplayCurrencyDialog by remember { mutableStateOf(false) }
+    var showFireflyDialog by remember { mutableStateOf(false) }
     var showCurrencyDropdown by remember { mutableStateOf(false) }
     val permissionUiState by permissionViewModel.uiState.collectAsStateWithLifecycle()
     val hasNotificationAccess = permissionUiState.hasNotificationAccess
@@ -412,6 +430,15 @@ fun SettingsScreen(
                     position = ItemPosition.MIDDLE
                 )
                 SettingsNavItem(
+                    icon = Icons.Default.CloudSync,
+                    iconBgColor = MaterialTheme.colorScheme.tertiaryContainer,
+                    iconTint = MaterialTheme.colorScheme.onTertiaryContainer,
+                    title = "Firefly III Sync",
+                    subtitle = if (fireflySyncEnabled) "Auto-push transactions enabled" else "Connect your self-hosted Firefly",
+                    onClick = { showFireflyDialog = true },
+                    position = ItemPosition.MIDDLE
+                )
+                SettingsNavItem(
                     icon = Icons.Default.Sms,
                     iconBgColor = orange_light,
                     iconTint = orange_dark,
@@ -629,6 +656,110 @@ fun SettingsScreen(
                 TextButton(onClick = { showSmsScanDialog = false }) {
                     Text("Cancel")
                 }
+            }
+        )
+    }
+
+    // Firefly III Sync configuration dialog
+    if (showFireflyDialog) {
+        var localUrl by remember { mutableStateOf(fireflyBaseUrl ?: "") }
+        var localToken by remember { mutableStateOf("") } // never prefill token
+        var localAccount by remember { mutableStateOf(fireflyDefaultAsset ?: "") }
+        var testResult by remember { mutableStateOf<String?>(null) }
+        var isTesting by remember { mutableStateOf(false) }
+
+        AlertDialog(
+            onDismissRequest = { showFireflyDialog = false },
+            title = { Text("Firefly III Sync") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text(
+                        "Opt-in: automatically push new SMS-parsed transactions to your self-hosted Firefly III instance using its Personal Access Token.",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("Enable sync", modifier = Modifier.weight(1f))
+                        Switch(
+                            checked = fireflySyncEnabled,
+                            onCheckedChange = { settingsViewModel.setFireflySyncEnabled(it) }
+                        )
+                    }
+
+                    OutlinedTextField(
+                        value = localUrl,
+                        onValueChange = { localUrl = it },
+                        label = { Text("Firefly URL (https://... )") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
+                    OutlinedTextField(
+                        value = localToken,
+                        onValueChange = { localToken = it },
+                        label = { Text("Personal Access Token") },
+                        singleLine = true,
+                        visualTransformation = PasswordVisualTransformation(),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
+                    OutlinedTextField(
+                        value = localAccount,
+                        onValueChange = { localAccount = it },
+                        label = { Text("Default asset account (optional)") },
+                        placeholder = { Text("e.g. HDFC Checking") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
+                    if (fireflyLastError != null) {
+                        Text("Last error: $fireflyLastError", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                    }
+
+                    testResult?.let { res ->
+                        Text(res, style = MaterialTheme.typography.bodySmall, color = if (res.startsWith("Success")) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error)
+                    }
+
+                    val dialogScope = rememberCoroutineScope()
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(
+                            onClick = {
+                                if (localUrl.isNotBlank() && localToken.isNotBlank()) {
+                                    isTesting = true
+                                    dialogScope.scopeLaunch {
+                                        val res = settingsViewModel.testFireflyConnection(localUrl, localToken)
+                                        testResult = when (res) {
+                                            is com.pennywiseai.tracker.data.firefly.FireflyClient.SyncResult.Success -> "Success! Connected."
+                                            is com.pennywiseai.tracker.data.firefly.FireflyClient.SyncResult.Error -> "Failed: ${res.message}"
+                                            else -> "Skipped"
+                                        }
+                                        isTesting = false
+                                    }
+                                }
+                            },
+                            enabled = !isTesting && localUrl.isNotBlank() && localToken.isNotBlank()
+                        ) { Text(if (isTesting) "Testing..." else "Test connection") }
+
+                        Button(
+                            onClick = {
+                                settingsViewModel.setFireflyBaseUrl(localUrl)
+                                if (localToken.isNotBlank()) settingsViewModel.setFireflyAccessToken(localToken)
+                                if (localAccount.isNotBlank()) settingsViewModel.setFireflyDefaultAssetAccount(localAccount)
+                                settingsViewModel.clearFireflyLastError()
+                                showFireflyDialog = false
+                            }
+                        ) { Text("Save") }
+                    }
+
+                    Text(
+                        "Token is stored only on this device. Use app lock. Data is sent only to the URL you enter.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.outline
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showFireflyDialog = false }) { Text("Close") }
             }
         )
     }

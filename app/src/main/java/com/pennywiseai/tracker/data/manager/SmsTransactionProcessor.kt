@@ -10,6 +10,8 @@ import com.pennywiseai.tracker.data.database.entity.TransactionEntity
 import com.pennywiseai.tracker.data.database.entity.TransactionType
 import com.pennywiseai.tracker.data.mapper.toEntity
 import com.pennywiseai.tracker.data.mapper.toEntityType
+import com.pennywiseai.tracker.data.firefly.FireflyClient
+import com.pennywiseai.tracker.data.preferences.UserPreferencesRepository
 import com.pennywiseai.tracker.data.repository.AccountBalanceRepository
 import com.pennywiseai.tracker.data.repository.CardRepository
 import com.pennywiseai.tracker.data.repository.MerchantMappingRepository
@@ -17,6 +19,10 @@ import com.pennywiseai.tracker.data.repository.SubscriptionRepository
 import com.pennywiseai.tracker.data.repository.TransactionRepository
 import com.pennywiseai.tracker.domain.repository.RuleRepository
 import com.pennywiseai.tracker.domain.service.RuleEngine
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import java.math.BigDecimal
 import java.time.Instant
 import java.time.LocalDateTime
@@ -38,8 +44,11 @@ class SmsTransactionProcessor @Inject constructor(
     private val merchantMappingRepository: MerchantMappingRepository,
     private val subscriptionRepository: SubscriptionRepository,
     private val ruleRepository: RuleRepository,
-    private val ruleEngine: RuleEngine
+    private val ruleEngine: RuleEngine,
+    private val userPreferencesRepository: UserPreferencesRepository,
+    private val fireflyClient: FireflyClient
 ) {
+    private val syncScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     companion object {
         private const val TAG = "SmsTransactionProcessor"
     }
@@ -183,6 +192,9 @@ class SmsTransactionProcessor @Inject constructor(
                 // Trigger widget refresh for recent transactions
                 com.pennywiseai.tracker.widget.RecentTransactionsWidgetUpdateWorker.enqueueOneShot(appContext)
 
+                // Opt-in: push newly parsed SMS transaction to user's Firefly III instance
+                triggerFireflySyncIfEnabled(rowId, finalEntity)
+
                 return ProcessingResult(true, transactionId = rowId)
             } else {
                 Log.d(TAG, "Transaction already exists (duplicate): ${entity.transactionHash}")
@@ -304,6 +316,46 @@ class SmsTransactionProcessor @Inject constructor(
 
             accountBalanceRepository.insertBalance(balanceEntity)
             Log.d(TAG, "Saved balance update for ${parsedTransaction.bankName} **$targetAccountLast4")
+        }
+    }
+
+    /**
+     * Fire-and-forget sync of a newly parsed SMS transaction to Firefly III (if the user has enabled the integration).
+     * Runs off the main processing thread to avoid blocking SMS receipt.
+     */
+    private fun triggerFireflySyncIfEnabled(transactionId: Long, entity: TransactionEntity) {
+        syncScope.launch {
+            try {
+                val prefs = userPreferencesRepository.userPreferences.first()
+                if (!prefs.fireflySyncEnabled) return@launch
+                val url = prefs.fireflyBaseUrl?.takeIf { it.isNotBlank() } ?: return@launch
+                val token = prefs.fireflyAccessToken?.takeIf { it.isNotBlank() } ?: return@launch
+
+                val result = fireflyClient.syncTransaction(
+                    transaction = entity,
+                    baseUrl = url,
+                    accessToken = token,
+                    defaultAssetAccount = prefs.fireflyDefaultAssetAccount
+                )
+
+                when (result) {
+                    is FireflyClient.SyncResult.Success -> {
+                        // Mark as synced in DB (best effort)
+                        transactionRepository.markFireflySynced(transactionId, result.fireflyId)
+                        userPreferencesRepository.updateFireflyLastSync(System.currentTimeMillis(), error = null)
+                        Log.d(TAG, "Firefly sync succeeded for tx $transactionId")
+                    }
+                    is FireflyClient.SyncResult.Error -> {
+                        // Record the error on the transaction and in prefs for UI visibility
+                        transactionRepository.markFireflyError(transactionId, result.message)
+                        userPreferencesRepository.updateFireflyLastSync(System.currentTimeMillis(), error = result.message)
+                        Log.w(TAG, "Firefly sync error for tx $transactionId: ${result.message}")
+                    }
+                    FireflyClient.SyncResult.Skipped -> Unit
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Unexpected error during Firefly sync trigger", e)
+            }
         }
     }
 }

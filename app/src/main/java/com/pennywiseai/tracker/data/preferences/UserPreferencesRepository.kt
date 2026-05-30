@@ -119,6 +119,14 @@ class UserPreferencesRepository @Inject constructor(
 
         // UPI VPA → contact name lookup (opt-in; gated by READ_CONTACTS).
         val USE_CONTACTS_FOR_VPA = booleanPreferencesKey("use_contacts_for_vpa")
+
+        // Firefly III integration (opt-in external sync for parsed transactions)
+        val FIREFLY_SYNC_ENABLED = booleanPreferencesKey("firefly_sync_enabled")
+        val FIREFLY_BASE_URL = stringPreferencesKey("firefly_base_url")
+        val FIREFLY_ACCESS_TOKEN = stringPreferencesKey("firefly_access_token")
+        val FIREFLY_DEFAULT_ASSET_ACCOUNT = stringPreferencesKey("firefly_default_asset_account")
+        val FIREFLY_LAST_SYNC_TIMESTAMP = longPreferencesKey("firefly_last_sync_timestamp")
+        val FIREFLY_LAST_SYNC_ERROR = stringPreferencesKey("firefly_last_sync_error")
     }
 
     val userPreferences: Flow<UserPreferences> = context.dataStore.data
@@ -157,7 +165,13 @@ class UserPreferencesRepository @Inject constructor(
                     ?: if (preferences[PreferencesKeys.HAS_COMPLETED_ONBOARDING] == true) "avatar://0" else null,
                 profileBackgroundColor = preferences[PreferencesKeys.PROFILE_BACKGROUND_COLOR] ?: 0,
                 hasCompletedOnboarding = preferences[PreferencesKeys.HAS_COMPLETED_ONBOARDING] ?: false,
-                mainAccountKey = preferences[PreferencesKeys.MAIN_ACCOUNT_KEY]
+                mainAccountKey = preferences[PreferencesKeys.MAIN_ACCOUNT_KEY],
+                fireflySyncEnabled = preferences[PreferencesKeys.FIREFLY_SYNC_ENABLED] ?: false,
+                fireflyBaseUrl = preferences[PreferencesKeys.FIREFLY_BASE_URL],
+                fireflyAccessToken = preferences[PreferencesKeys.FIREFLY_ACCESS_TOKEN],
+                fireflyDefaultAssetAccount = preferences[PreferencesKeys.FIREFLY_DEFAULT_ASSET_ACCOUNT],
+                fireflyLastSyncTimestamp = preferences[PreferencesKeys.FIREFLY_LAST_SYNC_TIMESTAMP],
+                fireflyLastSyncError = preferences[PreferencesKeys.FIREFLY_LAST_SYNC_ERROR]
             )
         }
 
@@ -652,6 +666,79 @@ class UserPreferencesRepository @Inject constructor(
             }
         }
     }
+
+    // Firefly III integration (opt-in SMS -> Firefly sync)
+    val fireflySyncEnabledFlow: Flow<Boolean> = context.dataStore.data
+        .map { preferences -> preferences[PreferencesKeys.FIREFLY_SYNC_ENABLED] ?: false }
+
+    val fireflyBaseUrlFlow: Flow<String?> = context.dataStore.data
+        .map { preferences -> preferences[PreferencesKeys.FIREFLY_BASE_URL] }
+
+    val fireflyAccessTokenFlow: Flow<String?> = context.dataStore.data
+        .map { preferences -> preferences[PreferencesKeys.FIREFLY_ACCESS_TOKEN] }
+
+    val fireflyDefaultAssetAccountFlow: Flow<String?> = context.dataStore.data
+        .map { preferences -> preferences[PreferencesKeys.FIREFLY_DEFAULT_ASSET_ACCOUNT] }
+
+    val fireflyLastSyncErrorFlow: Flow<String?> = context.dataStore.data
+        .map { preferences -> preferences[PreferencesKeys.FIREFLY_LAST_SYNC_ERROR] }
+
+    suspend fun setFireflySyncEnabled(enabled: Boolean) {
+        context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.FIREFLY_SYNC_ENABLED] = enabled
+            if (!enabled) {
+                // Clear sensitive data when disabling
+                preferences.remove(PreferencesKeys.FIREFLY_ACCESS_TOKEN)
+            }
+        }
+    }
+
+    suspend fun setFireflyBaseUrl(url: String?) {
+        context.dataStore.edit { preferences ->
+            if (url.isNullOrBlank()) {
+                preferences.remove(PreferencesKeys.FIREFLY_BASE_URL)
+            } else {
+                preferences[PreferencesKeys.FIREFLY_BASE_URL] = url.trim().trimEnd('/')
+            }
+        }
+    }
+
+    suspend fun setFireflyAccessToken(token: String?) {
+        context.dataStore.edit { preferences ->
+            if (token.isNullOrBlank()) {
+                preferences.remove(PreferencesKeys.FIREFLY_ACCESS_TOKEN)
+            } else {
+                preferences[PreferencesKeys.FIREFLY_ACCESS_TOKEN] = token.trim()
+            }
+        }
+    }
+
+    suspend fun setFireflyDefaultAssetAccount(account: String?) {
+        context.dataStore.edit { preferences ->
+            if (account.isNullOrBlank()) {
+                preferences.remove(PreferencesKeys.FIREFLY_DEFAULT_ASSET_ACCOUNT)
+            } else {
+                preferences[PreferencesKeys.FIREFLY_DEFAULT_ASSET_ACCOUNT] = account.trim()
+            }
+        }
+    }
+
+    suspend fun updateFireflyLastSync(timestamp: Long, error: String? = null) {
+        context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.FIREFLY_LAST_SYNC_TIMESTAMP] = timestamp
+            if (error != null) {
+                preferences[PreferencesKeys.FIREFLY_LAST_SYNC_ERROR] = error
+            } else {
+                preferences.remove(PreferencesKeys.FIREFLY_LAST_SYNC_ERROR)
+            }
+        }
+    }
+
+    suspend fun clearFireflyLastError() {
+        context.dataStore.edit { preferences ->
+            preferences.remove(PreferencesKeys.FIREFLY_LAST_SYNC_ERROR)
+        }
+    }
 }
 
 data class UserPreferences(
@@ -677,5 +764,12 @@ data class UserPreferences(
     val profileBackgroundColor: Int = 0,
     val hasCompletedOnboarding: Boolean = false,
     val mainAccountKey: String? = null,
-    val selectedProfileId: Long? = null
+    val selectedProfileId: Long? = null,
+    // Firefly III sync (opt-in)
+    val fireflySyncEnabled: Boolean = false,
+    val fireflyBaseUrl: String? = null,
+    val fireflyAccessToken: String? = null,
+    val fireflyDefaultAssetAccount: String? = null,
+    val fireflyLastSyncTimestamp: Long? = null,
+    val fireflyLastSyncError: String? = null
 )

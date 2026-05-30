@@ -238,4 +238,20 @@ interface TransactionDao {
         dateStart: LocalDateTime,
         dateEnd: LocalDateTime
     ): List<TransactionEntity>
+
+    // Firefly III sync status updates (called from processor after opt-in push)
+    @Query("UPDATE transactions SET firefly_synced_at = :syncedAt, firefly_external_id = :externalId, firefly_last_error = NULL, updated_at = :updatedAt WHERE id = :transactionId")
+    suspend fun markFireflySynced(
+        transactionId: Long,
+        externalId: String?,
+        syncedAt: LocalDateTime = java.time.LocalDateTime.now(),
+        updatedAt: LocalDateTime = java.time.LocalDateTime.now()
+    )
+
+    @Query("UPDATE transactions SET firefly_last_error = :error, updated_at = :updatedAt WHERE id = :transactionId")
+    suspend fun markFireflyError(
+        transactionId: Long,
+        error: String,
+        updatedAt: LocalDateTime = java.time.LocalDateTime.now()
+    )
 }
