@@ -10,7 +10,7 @@ plugins {
 }
 
 android {
-    namespace = "com.pennywiseai.tracker"
+    namespace = "com.thenoticingbegins.pennywiseai.firefly"
     compileSdk = 36
     
     buildFeatures {
@@ -18,7 +18,7 @@ android {
     }
 
     defaultConfig {
-        applicationId = "com.pennywiseai.tracker"
+        applicationId = "com.thenoticingbegins.pennywiseai.firefly"
         minSdk = 26
         targetSdk = 36
         versionCode = 89
@@ -236,6 +236,9 @@ dependencies {
     
     // DataStore
     implementation(libs.androidx.datastore.preferences)
+
+    // Encrypted storage for sensitive data (Firefly token)
+    implementation(libs.androidx.security.crypto)
 
     // Biometric Authentication
     implementation(libs.androidx.biometric)
