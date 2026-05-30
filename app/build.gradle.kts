@@ -10,7 +10,7 @@ plugins {
 }
 
 android {
-    namespace = "com.thenoticingbegins.pennywiseai.firefly"
+    namespace = "com.pennywiseai.tracker"
     compileSdk = 36
     
     buildFeatures {

@@ -67,7 +67,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 // TextFieldDefaults already imported above
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.pennywiseai.tracker.R
+
 import androidx.compose.foundation.isSystemInDarkTheme
 import com.pennywiseai.tracker.ui.theme.Dimensions
 import com.pennywiseai.tracker.ui.theme.Spacing

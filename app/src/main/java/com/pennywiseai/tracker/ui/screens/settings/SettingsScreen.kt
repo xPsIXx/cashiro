@@ -950,7 +950,7 @@ fun SettingsScreen(
 
 private enum class ItemPosition { TOP, MIDDLE, BOTTOM, SINGLE }
 
-private fun ItemPosition.toShape(): RoundedCornerShape = when (this) {
+fun ItemPosition.toShape(): RoundedCornerShape = when (this) {
     ItemPosition.TOP -> RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp, bottomStart = 4.dp, bottomEnd = 4.dp)
     ItemPosition.MIDDLE -> RoundedCornerShape(4.dp)
     ItemPosition.BOTTOM -> RoundedCornerShape(topStart = 4.dp, topEnd = 4.dp, bottomStart = 16.dp, bottomEnd = 16.dp)
@@ -958,7 +958,7 @@ private fun ItemPosition.toShape(): RoundedCornerShape = when (this) {
 }
 
 @Composable
-private fun SettingsGroup(
+fun SettingsGroup(
     content: @Composable ColumnScope.() -> Unit
 ) {
     Column(
@@ -968,7 +968,7 @@ private fun SettingsGroup(
 }
 
 @Composable
-private fun SettingsNavItem(
+fun SettingsNavItem(
     icon: ImageVector,
     iconBgColor: Color,
     iconTint: Color,
@@ -1032,7 +1032,7 @@ private fun SettingsNavItem(
 }
 
 @Composable
-private fun SettingsSwitchRow(
+fun SettingsSwitchRow(
     icon: ImageVector,
     iconBgColor: Color,
     iconTint: Color,
@@ -1089,7 +1089,7 @@ private fun SettingsSwitchRow(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun SettingsDropdownItem(
+fun SettingsDropdownItem(
     icon: ImageVector,
     iconBgColor: Color,
     iconTint: Color,
@@ -1173,7 +1173,7 @@ private fun SettingsDropdownItem(
 }
 
 @Composable
-private fun AiChatSettingsItem(
+fun AiChatSettingsItem(
     downloadState: DownloadState,
     downloadProgress: Int,
     downloadedMB: Long,
@@ -1337,7 +1337,7 @@ private fun AiChatSettingsItem(
 }
 
 @Composable
-private fun SettingsNavigationContent(onNavigateBack: () -> Unit) {
+fun SettingsNavigationContent(onNavigateBack: () -> Unit) {
     Box(
         modifier = Modifier
             .animateContentSize()

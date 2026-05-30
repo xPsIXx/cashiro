@@ -9,7 +9,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.fragment.app.FragmentActivity
-import com.pennywiseai.tracker.receiver.SmsBroadcastReceiver
+
 import dagger.hilt.android.AndroidEntryPoint
 
 @AndroidEntryPoint

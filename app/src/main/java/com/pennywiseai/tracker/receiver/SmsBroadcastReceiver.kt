@@ -11,7 +11,7 @@ import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.pennywiseai.tracker.MainActivity
 import com.pennywiseai.tracker.PennyWiseApplication
-import com.pennywiseai.tracker.R
+
 import com.pennywiseai.tracker.data.manager.SmsTransactionProcessor
 import dagger.hilt.EntryPoint
 import dagger.hilt.InstallIn

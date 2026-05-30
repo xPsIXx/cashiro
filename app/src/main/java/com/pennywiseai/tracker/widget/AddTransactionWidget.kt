@@ -31,7 +31,7 @@ import androidx.glance.layout.width
 import androidx.glance.text.FontWeight
 import androidx.glance.text.Text
 import androidx.glance.text.TextStyle
-import com.pennywiseai.tracker.R
+
 
 class AddTransactionWidget : GlanceAppWidget() {
 

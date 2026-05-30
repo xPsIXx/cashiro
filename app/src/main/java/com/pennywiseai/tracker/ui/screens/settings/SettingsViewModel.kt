@@ -40,6 +40,7 @@ import java.io.File
 import com.pennywiseai.tracker.data.firefly.FireflyClient
 import com.pennywiseai.tracker.data.firefly.FireflyTokenManager
 import com.pennywiseai.tracker.data.repository.AccountBalanceRepository
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import java.time.LocalDateTime
 import javax.inject.Inject
