@@ -11,6 +11,7 @@ import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.fragment.app.FragmentActivity
 
 import dagger.hilt.android.AndroidEntryPoint
+import com.pennywiseai.tracker.receiver.SmsBroadcastReceiver
 
 @AndroidEntryPoint
 class MainActivity : FragmentActivity() {

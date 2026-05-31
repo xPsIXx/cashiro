@@ -40,8 +40,8 @@ jobs:
     - name: Run parser-core tests
       run: ./gradlew :parser-core:test --continue
 
-    - name: Compile standard debug app Kotlin
-      run: ./gradlew :app:compileStandardDebugKotlin
+    - name: Clean and compile standard debug app Kotlin
+      run: ./gradlew clean :app:compileStandardDebugKotlin --stacktrace
 
     - name: Run standard debug unit tests
       run: ./gradlew :app:testStandardDebugUnitTest
