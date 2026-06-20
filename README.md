@@ -13,11 +13,23 @@ This fork adds automatic syncing of transactions to your self-hosted [Firefly II
 
 - Automatic sync of SMS transactions to Firefly III
 - Support for manually added transactions
-- Account and category mapping
+- Account and category mapping (with real accounts fetched from Firefly for selection)
 - Option to hide raw SMS text in Firefly notes
 - Secure token storage
-- Tools: Send Test Transaction, Sync Last 30 Days, Failed Sync retry screen
-- Firefly sync status visible on transaction details
+- Tools: Send Test Transaction, Sync Last 30 Days, Sync All Unsynced, Full Sync Everything, Failed Sync retry screen
+- Configurable auto-sync (daily/weekly/never) via WorkManager
+- Firefly sync status visible on transaction details (with manual Sync/Resync)
+- Reconcile with Firefly button (for post-reinstall recovery)
+
+### Resiliency & Reinstall Features
+- Stable hash-based `external_id` (`pennywise-{transactionHash}`) instead of volatile DB IDs
+- One-time legacy ID migration + automatic reconcile when first enabling Firefly after a fresh install/reinstall
+- Pre-sync existence check in Firefly to avoid duplicate entries
+- Sync status survives reinstalls (re-parsed SMSs match via content hash)
+- Older Firefly-only transactions (e.g. pre-SMS era or manual entries without PennyWise counterpart) are completely unaffected
+- SMS received timestamps used for transaction `dateTime` (ensures proper chronological order when pushed to Firefly)
+
+**Full release notes and changelog**: See [CHANGELOG.md](CHANGELOG.md) and [releases](https://github.com/TheNoticingBegins/pennywiseai-Firefly/releases)
 
 **Full release notes**: [v1.0.0](https://github.com/TheNoticingBegins/pennywiseai-Firefly/releases/tag/v1.0.0)
 
