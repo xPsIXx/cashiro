@@ -60,6 +60,7 @@ fun FireflySettingsScreen(
     var isSyncingAll by remember { mutableStateOf(false) }
     var isFullSyncing by remember { mutableStateOf(false) }
     var isSendingTest by remember { mutableStateOf(false) }
+    var isSavingSettings by remember { mutableStateOf(false) }
     var showSaved by remember { mutableStateOf(false) }
     var syncResult by remember { mutableStateOf<String?>(null) }
 
@@ -180,16 +181,24 @@ fun FireflySettingsScreen(
                 }
             }
 
-            // Sync controls
+            // Sync Actions
+            Text(
+                "Sync Actions",
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.padding(top = 8.dp)
+            )
+
+            // Quick one-time syncs
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
                 OutlinedButton(
                     onClick = onNavigateToFailedSyncs,
                     modifier = Modifier.weight(1f)
                 ) {
-                    Text("Sync Failed / Unsynced")
+                    Text("Failed / Unsynced")
                 }
 
-            OutlinedButton(
+                OutlinedButton(
                     onClick = {
                         isSyncing30d = true
                         syncResult = "Syncing last 30 days..."
@@ -201,20 +210,11 @@ fun FireflySettingsScreen(
                     enabled = !isSyncing30d,
                     modifier = Modifier.weight(1f)
                 ) {
-                    Text(if (isSyncing30d) "Syncing..." else "Sync Last 30 Days")
+                    Text(if (isSyncing30d) "Syncing..." else "Last 30 Days")
                 }
-
-            syncResult?.let {
-                val isError = it.contains("error", ignoreCase = true) || it.contains("fail", ignoreCase = true) || it.contains("✗")
-                Text(
-                    it,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = if (isError) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
-                )
-            }
             }
 
-            // Additional bulk sync options (Stage 2/3)
+            // Bulk / full syncs
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
                 OutlinedButton(
                     onClick = {
@@ -228,7 +228,7 @@ fun FireflySettingsScreen(
                     enabled = !isSyncingAll,
                     modifier = Modifier.weight(1f)
                 ) {
-                    Text(if (isSyncingAll) "Syncing..." else "Sync All Unsynced")
+                    Text(if (isSyncingAll) "Syncing..." else "All Unsynced")
                 }
 
                 OutlinedButton(
@@ -243,12 +243,12 @@ fun FireflySettingsScreen(
                     enabled = !isFullSyncing,
                     modifier = Modifier.weight(1f)
                 ) {
-                    Text(if (isFullSyncing) "Syncing..." else "Full Sync Everything")
+                    Text(if (isFullSyncing) "Syncing..." else "Full Sync")
                 }
             }
 
-            // Reconcile after reinstall (uses stable hash-based external IDs)
-            Button(
+            // Reconcile (post-reinstall recovery)
+            OutlinedButton(
                 onClick = {
                     syncResult = "Reconciling with Firefly..."
                     viewModel.reconcileWithFirefly { result ->
@@ -257,7 +257,18 @@ fun FireflySettingsScreen(
                 },
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Text("Reconcile with Firefly (after reinstall)")
+                Text("Reconcile (after reinstall)")
+            }
+
+            // Last sync result / status
+            syncResult?.let { result ->
+                val isError = result.contains("error", ignoreCase = true) || result.contains("fail", ignoreCase = true) || result.contains("✗")
+                Text(
+                    result,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (isError) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.padding(top = 4.dp)
+                )
             }
 
             // Failed syncs quick access
@@ -310,7 +321,9 @@ fun FireflySettingsScreen(
                 }
             }
 
-            // Connection settings
+            // Connection
+            Text("Connection", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface, modifier = Modifier.padding(top = 16.dp))
+
             OutlinedTextField(
                 value = localUrl,
                 onValueChange = { localUrl = it },
@@ -364,13 +377,6 @@ fun FireflySettingsScreen(
             }
 
             // Test + Save buttons
-            if (fireflyMappings.isNotEmpty() || fireflyDefaultAsset?.isNotBlank() == true) {
-                Text(
-                    "Mappings and default will be used for syncs and tests.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.outline
-                )
-            }
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 val coroutineScope = rememberCoroutineScope()
 
@@ -406,16 +412,18 @@ fun FireflySettingsScreen(
 
                 Button(
                     onClick = {
+                        isSavingSettings = true
                         viewModel.saveFireflyCredentials(localUrl, localToken, localDefaultAccount)
-                        // hideRawSms = true means do NOT include raw SMS
                         val includeRawSms = !hideRawSms
                         viewModel.setFireflyIncludeRawSms(includeRawSms)
                         showSaved = true
                         viewModel.refreshFireflyAccounts()
+                        isSavingSettings = false
                     },
+                    enabled = !isSavingSettings,
                     modifier = Modifier.weight(1f)
                 ) {
-                    Text("Save Settings")
+                    Text(if (isSavingSettings) "Saving..." else "Save Settings")
                 }
 
                 if (showSaved) {
@@ -512,7 +520,7 @@ fun FireflySettingsScreen(
                         Text(
                             "Loading Firefly accounts...",
                             style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.outline,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.padding(bottom = 8.dp)
                         )
                     } else if (fireflyAccounts.isEmpty()) {
@@ -607,7 +615,6 @@ fun FireflySettingsScreen(
                                     Text(
                                         " (not found in Firefly – please reselect)",
                                         style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.error,
                                         color = MaterialTheme.colorScheme.error
                                     )
                                 }
@@ -618,21 +625,29 @@ fun FireflySettingsScreen(
             }
 
             // Category Mappings
-            Text("Category Mappings", style = MaterialTheme.typography.titleMedium)
+            Text("Category Mappings", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface)
             Text(
                 "Map PennyWise categories to Firefly categories",
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.outline
+                color = MaterialTheme.colorScheme.onSurfaceVariant
             )
 
+            // Note about mappings usage
+            if (fireflyMappings.isNotEmpty() || fireflyDefaultAsset?.isNotBlank() == true) {
+                Text(
+                    "Mappings and default will be used for syncs and tests.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+
             if (allCategories.isNotEmpty() || fireflyCategoryMappings.isNotEmpty()) {
-                // Include DB categories + any custom mappings the user has already set
                 val categoriesToShow = (allCategories + fireflyCategoryMappings.keys).distinct().sorted()
                 Column {
                     categoriesToShow.forEach { cat ->
                         val current = fireflyCategoryMappings[cat] ?: ""
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(cat, modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
+                            Text(cat, modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface)
                             OutlinedTextField(
                                 value = current,
                                 onValueChange = { viewModel.setFireflyCategoryMapping(cat, it) },
@@ -646,17 +661,17 @@ fun FireflySettingsScreen(
                 }
             } else {
                 Text(
-                    "No categories found yet. Add some transactions to populate the list.",
+                    "No categories yet — add transactions or use custom below.",
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.outline
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
 
-            // Custom category mapping (allows mapping categories not yet in your DB)
+            // Custom category mapping
             Text(
-                "Add custom category mapping",
+                "Add custom mapping",
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.outline,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(top = 8.dp)
             )
             var customCategory by remember { mutableStateOf("") }
