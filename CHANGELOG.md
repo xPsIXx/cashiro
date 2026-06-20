@@ -14,6 +14,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - SliceParserTest: "Slice UPI transfer (sent to)" case corrected from `CREDIT` to `EXPENSE`. This matches the updated `SliceParser.extractTransactionType()` logic (post-RBI PPI changes: "sent" UPI transfers from the bank account are regular `EXPENSE`; `CREDIT` type is reserved for explicit credit-card context only).
 - Re-audit of all parser test expectations after the large bank parser expansion.
 
+### UI & Polish (v1.3.1)
+- Reorganized Firefly Settings page for much better UX/flow:
+  - Clear section headers: Sync Actions, Connection, Account Mappings, Category Mappings.
+  - Grouped sync buttons (quick vs bulk) with results now properly placed below.
+  - Added loading "Saving..." state on Save Settings.
+  - Consistent text colors: onSurface (white in dark) for labels, onSurfaceVariant for secondary.
+- Dark mode fixes across Firefly pages: explicit theme colors so text renders correctly (white/light).
+- Fixed strange characters for hidden balances: switched •••• masks to reliable **** (in account displays used by Firefly mappings).
+- Cleaned compiler warnings: removed unnecessary non-null assertions (!! ) and migrated deprecated rememberSwipeToDismissBoxState(confirmValueChange) to modern snapshotFlow + LaunchedEffect pattern in multiple screens.
+- Minor: better empty states, notes, and consistency in Firefly UI.
+
 ### Release Summary (full changelog highlights)
 This release consolidates major work to make PennywiseAI-Firefly stable and CI-clean:
 
