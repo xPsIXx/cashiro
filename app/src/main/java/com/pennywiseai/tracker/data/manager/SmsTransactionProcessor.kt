@@ -350,7 +350,8 @@ class SmsTransactionProcessor @Inject constructor(
                 when (result) {
                     is FireflyClient.SyncResult.Success -> {
                         // Mark as synced in DB (best effort)
-                        transactionRepository.markFireflySynced(transactionId, result.fireflyId)
+                        val extId = fireflyClient.computeExternalId(entity)
+                        transactionRepository.markFireflySynced(transactionId, extId)
                         userPreferencesRepository.updateFireflyLastSync(System.currentTimeMillis(), error = null)
                         Log.d(TAG, "Firefly sync succeeded for tx $transactionId")
                     }

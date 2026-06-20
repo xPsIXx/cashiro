@@ -415,4 +415,7 @@ class TransactionRepository @Inject constructor(
 
     fun getFailedFireflySyncCount(): Flow<Int> =
         transactionDao.getFailedFireflySyncCount()
+
+    suspend fun updateFireflyExternalId(transactionId: Long, newExternalId: String) =
+        transactionDao.updateFireflyExternalId(transactionId, newExternalId)
 }

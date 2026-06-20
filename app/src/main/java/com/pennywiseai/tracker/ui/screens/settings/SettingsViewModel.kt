@@ -41,6 +41,7 @@ import java.io.File
 import com.pennywiseai.tracker.data.firefly.FireflyClient
 import com.pennywiseai.tracker.data.firefly.FireflyTokenManager
 import com.pennywiseai.tracker.data.repository.AccountBalanceRepository
+import com.pennywiseai.tracker.data.repository.CategoryRepository
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import java.time.LocalDateTime
@@ -58,6 +59,7 @@ class SettingsViewModel @Inject constructor(
     private val contactsResolver: com.pennywiseai.tracker.data.contacts.ContactsResolver,
     private val fireflyClient: FireflyClient,
     private val accountBalanceRepository: AccountBalanceRepository,
+    private val categoryRepository: CategoryRepository,
     private val fireflyTokenManager: FireflyTokenManager
 ) : ViewModel() {
     
@@ -117,6 +119,26 @@ class SettingsViewModel @Inject constructor(
     // Whether to include raw SMS in Firefly notes
     val fireflyIncludeRawSms = userPreferencesRepository.fireflyIncludeRawSmsFlow
 
+    val fireflyAutoSyncInterval = userPreferencesRepository.fireflyAutoSyncIntervalFlow
+    val fireflyMigrationRan = userPreferencesRepository.fireflyMigrationRanFlow
+
+    // All user categories for dynamic mapping UI
+    val allCategoriesForMapping = categoryRepository.getAllCategories()
+        .map { categories ->
+            categories.map { it.name }.sorted()
+        }
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5000),
+            initialValue = emptyList()
+        )
+
+    private val _fireflyAccounts = MutableStateFlow<List<String>>(emptyList())
+    val fireflyAccounts: StateFlow<List<String>> = _fireflyAccounts.asStateFlow()
+
+    private val _isLoadingFireflyAccounts = MutableStateFlow(false)
+    val isLoadingFireflyAccounts: StateFlow<Boolean> = _isLoadingFireflyAccounts.asStateFlow()
+
     // Known accounts for mapping (latest balances represent known accounts)
     val knownAccountsForMapping = accountBalanceRepository.getAllLatestBalances()
 
@@ -164,6 +186,13 @@ class SettingsViewModel @Inject constructor(
         checkDownloadStatus()
         // Also sync with model repository
         modelRepository.checkModelState()
+        // Schedule Firefly auto sync based on current preference
+        viewModelScope.launch {
+            val interval = userPreferencesRepository.fireflyAutoSyncIntervalFlow.first()
+            com.pennywiseai.tracker.worker.FireflyAutoSyncWorker.schedule(context, interval)
+            // Run legacy migration if needed (one-time)
+            migrateLegacyFireflyExternalIds()
+        }
     }
     
     private fun checkDownloadStatus() {
@@ -492,6 +521,22 @@ class SettingsViewModel @Inject constructor(
     fun setFireflySyncEnabled(enabled: Boolean) {
         viewModelScope.launch {
             userPreferencesRepository.setFireflySyncEnabled(enabled)
+            if (enabled) {
+                val interval = userPreferencesRepository.fireflyAutoSyncIntervalFlow.first()
+                com.pennywiseai.tracker.worker.FireflyAutoSyncWorker.schedule(context, interval)
+                val migrationRan = userPreferencesRepository.fireflyMigrationRanFlow.first()
+                if (!migrationRan) {
+                    // One-time migrate legacy + reconcile on first enable after fresh install/reinstall
+                    migrateLegacyFireflyExternalIds()
+                    reconcileWithFirefly { result ->
+                        // The result will be shown via UI toast/log in settings
+                        Log.d("SettingsViewModel", "Migration reconcile result: $result")
+                    }
+                    userPreferencesRepository.setFireflyMigrationRan(true)
+                }
+            } else {
+                com.pennywiseai.tracker.worker.FireflyAutoSyncWorker.cancel(context)
+            }
         }
     }
 
@@ -536,6 +581,29 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
+    fun clearAllFireflyAccountMappings() {
+        viewModelScope.launch {
+            userPreferencesRepository.clearAllFireflyAccountMappings()
+        }
+    }
+
+    fun refreshFireflyAccounts() {
+        viewModelScope.launch {
+            _isLoadingFireflyAccounts.value = true
+            try {
+                val (url, token) = getFireflySecureCredentials()
+                if (!url.isNullOrBlank() && !token.isNullOrBlank()) {
+                    val accounts = fireflyClient.getAccounts(url, token)
+                    _fireflyAccounts.value = accounts
+                } else {
+                    _fireflyAccounts.value = emptyList()
+                }
+            } finally {
+                _isLoadingFireflyAccounts.value = false
+            }
+        }
+    }
+
     // Firefly category mapping helpers
     fun setFireflyCategoryMapping(pennywiseCategory: String, fireflyCategory: String) {
         viewModelScope.launch {
@@ -555,13 +623,20 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
+    fun setFireflyAutoSyncInterval(interval: String) {
+        viewModelScope.launch {
+            userPreferencesRepository.setFireflyAutoSyncInterval(interval)
+            // Schedule the worker
+            com.pennywiseai.tracker.worker.FireflyAutoSyncWorker.schedule(context, interval)
+        }
+    }
+
     /** Saves Firefly credentials securely (token in EncryptedSharedPreferences) */
     fun saveFireflyCredentials(url: String, token: String, defaultAsset: String?) {
         viewModelScope.launch {
             userPreferencesRepository.setFireflyBaseUrl(url)
-            if (defaultAsset != null) {
-                userPreferencesRepository.setFireflyDefaultAssetAccount(defaultAsset)
-            }
+            // Always set (blank/empty will clear the fallback)
+            userPreferencesRepository.setFireflyDefaultAssetAccount(defaultAsset)
             // Save token securely
             fireflyTokenManager.saveCredentials(url, token)
         }
@@ -576,11 +651,7 @@ class SettingsViewModel @Inject constructor(
     fun syncLast30Days(onResult: (String) -> Unit) {
         viewModelScope.launch {
             try {
-                val prefs = userPreferencesRepository.userPreferences.first()
-                val url = prefs.fireflyBaseUrl?.takeIf { it.isNotBlank() }
-                val token = prefs.fireflyAccessToken?.takeIf { it.isNotBlank() }
-
-                if (url == null || token == null) {
+                val config = fetchFireflyConfig() ?: run {
                     onResult("Firefly not configured")
                     return@launch
                 }
@@ -595,20 +666,16 @@ class SettingsViewModel @Inject constructor(
                     return@launch
                 }
 
-                val accountMappings = userPreferencesRepository.fireflyAccountMappingsFlow.first()
-                val categoryMappings = userPreferencesRepository.fireflyCategoryMappingsFlow.first()
-                val includeRaw = userPreferencesRepository.fireflyIncludeRawSmsFlow.first()
-
                 var successCount = 0
                 for (tx in unsynced) {
                     val result = fireflyClient.syncTransaction(
                         transaction = tx,
-                        baseUrl = url,
-                        accessToken = token,
-                        defaultAssetAccount = prefs.fireflyDefaultAssetAccount,
-                        accountMappings = accountMappings,
-                        categoryMappings = categoryMappings,
-                        includeRawSmsInNotes = includeRaw
+                        baseUrl = config.url,
+                        accessToken = config.token,
+                        defaultAssetAccount = config.defaultAssetAccount,
+                        accountMappings = config.accountMappings,
+                        categoryMappings = config.categoryMappings,
+                        includeRawSmsInNotes = config.includeRawSms
                     )
                     if (result is com.pennywiseai.tracker.data.firefly.FireflyClient.SyncResult.Success) {
                         transactionRepository.markFireflySynced(tx.id, result.fireflyId)
@@ -623,15 +690,178 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
+    // Sync all currently unsynced transactions (those never successfully pushed to Firefly)
+    fun syncAllUnsynced(onResult: (String) -> Unit) {
+        viewModelScope.launch {
+            try {
+                val config = fetchFireflyConfig() ?: run {
+                    onResult("Firefly not configured")
+                    return@launch
+                }
+
+                val unsynced = transactionRepository.getAllTransactionsList()
+                    .filter { it.fireflySyncedAt == null && it.fireflyLastError == null }
+
+                if (unsynced.isEmpty()) {
+                    onResult("No unsynced transactions to sync")
+                    return@launch
+                }
+
+                var successCount = 0
+                unsynced.forEach { tx ->
+                    val result = fireflyClient.syncTransaction(
+                        transaction = tx,
+                        baseUrl = config.url,
+                        accessToken = config.token,
+                        defaultAssetAccount = config.defaultAssetAccount,
+                        accountMappings = config.accountMappings,
+                        categoryMappings = config.categoryMappings,
+                        includeRawSmsInNotes = config.includeRawSms
+                    )
+                    if (result is com.pennywiseai.tracker.data.firefly.FireflyClient.SyncResult.Success) {
+                        val extId = fireflyClient.computeExternalId(tx)
+                        transactionRepository.markFireflySynced(tx.id, extId)
+                        successCount++
+                    } else if (result is com.pennywiseai.tracker.data.firefly.FireflyClient.SyncResult.Error) {
+                        transactionRepository.markFireflyError(tx.id, result.message)
+                    }
+                }
+
+                onResult("Synced $successCount of ${unsynced.size} unsynced transactions")
+            } catch (e: Exception) {
+                onResult("Error syncing unsynced: ${e.message}")
+            }
+        }
+    }
+
+    // Full sync: synchronize everything (unsynced + previously failed, re-push if needed)
+    fun fullSyncToFirefly(onResult: (String) -> Unit) {
+        viewModelScope.launch {
+            try {
+                val config = fetchFireflyConfig() ?: run {
+                    onResult("Firefly not configured")
+                    return@launch
+                }
+
+                // Include both never-synced and previously errored
+                val toSync = transactionRepository.getAllTransactionsList()
+                    .filter { it.fireflySyncedAt == null }  // includes both no success and errored (since errored have syncedAt null)
+
+                if (toSync.isEmpty()) {
+                    onResult("All transactions are already synced")
+                    return@launch
+                }
+
+                var successCount = 0
+                var errorCount = 0
+                toSync.forEach { tx ->
+                    val result = fireflyClient.syncTransaction(
+                        transaction = tx,
+                        baseUrl = config.url,
+                        accessToken = config.token,
+                        defaultAssetAccount = config.defaultAssetAccount,
+                        accountMappings = config.accountMappings,
+                        categoryMappings = config.categoryMappings,
+                        includeRawSmsInNotes = config.includeRawSms
+                    )
+                    if (result is com.pennywiseai.tracker.data.firefly.FireflyClient.SyncResult.Success) {
+                        val extId = fireflyClient.computeExternalId(tx)
+                        transactionRepository.markFireflySynced(tx.id, extId)
+                        successCount++
+                    } else if (result is com.pennywiseai.tracker.data.firefly.FireflyClient.SyncResult.Error) {
+                        transactionRepository.markFireflyError(tx.id, result.message)
+                        errorCount++
+                    }
+                }
+
+                onResult("Full sync complete. Success: $successCount, Errors: $errorCount (out of ${toSync.size})")
+            } catch (e: Exception) {
+                onResult("Error during full sync: ${e.message}")
+            }
+        }
+    }
+
+    /**
+     * Reconcile local transactions with Firefly after reinstall or data loss.
+     * Uses stable hash-based external_id to find existing entries in Firefly
+     * and mark matching local tx as synced. This makes sync status survive reinstalls.
+     */
+    fun reconcileWithFirefly(onResult: (String) -> Unit) {
+        viewModelScope.launch {
+            try {
+                val config = fetchFireflyConfig() ?: run {
+                    onResult("Firefly not configured")
+                    return@launch
+                }
+
+                val unsynced = transactionRepository.getAllTransactionsList()
+                    .filter { it.fireflySyncedAt == null }
+
+                var reconciled = 0
+                unsynced.forEach { tx ->
+                    val candidates = mutableListOf<String>()
+                    if (!tx.transactionHash.isNullOrBlank()) {
+                        candidates.add("pennywise-${tx.transactionHash}")
+                    }
+                    if (!tx.fireflyExternalId.isNullOrBlank()) {
+                        candidates.add(tx.fireflyExternalId)  // may be legacy numeric
+                    }
+                    for (candidate in candidates.distinct()) {
+                        val fireflyId = fireflyClient.getTransactionIdByExternalId(config.url, config.token, candidate)
+                        if (fireflyId != null) {
+                            // Update local to use hash version if we have it
+                            val hashExt = if (!tx.transactionHash.isNullOrBlank()) "pennywise-${tx.transactionHash}" else candidate
+                            transactionRepository.markFireflySynced(tx.id, hashExt)
+                            reconciled++
+                            break
+                        }
+                    }
+                }
+
+                onResult("Reconciled $reconciled transactions using Firefly as source of truth")
+            } catch (e: Exception) {
+                onResult("Reconcile error: ${e.message}")
+            }
+        }
+    }
+
+    /**
+     * One-time migration: update local fireflyExternalId from legacy numeric "pennywise-{oldId}"
+     * to the stable hash-based "pennywise-{hash}" .
+     * Runs on app start / first enable.
+     */
+    fun migrateLegacyFireflyExternalIds() {
+        viewModelScope.launch {
+            try {
+                val txs = transactionRepository.getAllTransactionsList()
+                var migrated = 0
+                txs.forEach { tx ->
+                    val current = tx.fireflyExternalId
+                    if (!current.isNullOrBlank() &&
+                        current.startsWith("pennywise-") &&
+                        current.removePrefix("pennywise-").all { it.isDigit() } &&
+                        !tx.transactionHash.isNullOrBlank()
+                    ) {
+                        val newExt = "pennywise-${tx.transactionHash}"
+                        transactionRepository.updateFireflyExternalId(tx.id, newExt)
+                        migrated++
+                    }
+                }
+                if (migrated > 0) {
+                    Log.d("SettingsViewModel", "Migrated $migrated legacy Firefly external IDs to hash-based")
+                }
+                userPreferencesRepository.setFireflyMigrationRan(true)
+            } catch (e: Exception) {
+                Log.e("SettingsViewModel", "Migration error", e)
+            }
+        }
+    }
+
     // Send a test transaction to Firefly
     fun sendTestTransaction(onResult: (String) -> Unit) {
         viewModelScope.launch {
             try {
-                val prefs = userPreferencesRepository.userPreferences.first()
-                val url = prefs.fireflyBaseUrl?.takeIf { it.isNotBlank() }
-                val token = prefs.fireflyAccessToken?.takeIf { it.isNotBlank() }
-
-                if (url == null || token == null) {
+                val config = fetchFireflyConfig() ?: run {
                     onResult("Firefly not configured")
                     return@launch
                 }
@@ -645,26 +875,28 @@ class SettingsViewModel @Inject constructor(
                     dateTime = java.time.LocalDateTime.now(),
                     bankName = "Test Bank",
                     accountNumber = "0000",
-                    currency = prefs.baseCurrency,
+                    currency = config.baseCurrency,
                     transactionHash = "TEST_${System.currentTimeMillis()}"
                 )
 
-                val accountMappings = userPreferencesRepository.fireflyAccountMappingsFlow.first()
-                val categoryMappings = userPreferencesRepository.fireflyCategoryMappingsFlow.first()
-                val includeRaw = userPreferencesRepository.fireflyIncludeRawSmsFlow.first()
+                val accountKey = "${testTx.bankName}**${testTx.accountNumber}"
+                val mappedAccount = config.accountMappings[accountKey]
+                val usedAccount = mappedAccount?.takeIf { it.isNotBlank() }
+                    ?: config.defaultAssetAccount?.takeIf { it.isNotBlank() }
+                    ?: "Checking Account"
 
                 val result = fireflyClient.syncTransaction(
                     transaction = testTx,
-                    baseUrl = url,
-                    accessToken = token,
-                    defaultAssetAccount = prefs.fireflyDefaultAssetAccount,
-                    accountMappings = accountMappings,
-                    categoryMappings = categoryMappings,
-                    includeRawSmsInNotes = includeRaw
+                    baseUrl = config.url,
+                    accessToken = config.token,
+                    defaultAssetAccount = config.defaultAssetAccount,
+                    accountMappings = config.accountMappings,
+                    categoryMappings = config.categoryMappings,
+                    includeRawSmsInNotes = config.includeRawSms
                 )
 
                 when (result) {
-                    is com.pennywiseai.tracker.data.firefly.FireflyClient.SyncResult.Success -> onResult("Test transaction sent successfully!")
+                    is com.pennywiseai.tracker.data.firefly.FireflyClient.SyncResult.Success -> onResult("Test transaction sent successfully using account: $usedAccount")
                     is com.pennywiseai.tracker.data.firefly.FireflyClient.SyncResult.Error -> onResult("Failed: ${result.message}")
                     else -> onResult("Skipped")
                 }
@@ -672,6 +904,37 @@ class SettingsViewModel @Inject constructor(
                 onResult("Error: ${e.message}")
             }
         }
+    }
+
+    private data class FireflyConfig(
+        val url: String,
+        val token: String,
+        val defaultAssetAccount: String?,
+        val accountMappings: Map<String, String>,
+        val categoryMappings: Map<String, String>,
+        val includeRawSms: Boolean,
+        val baseCurrency: String
+    )
+
+    private suspend fun fetchFireflyConfig(): FireflyConfig? {
+        val prefs = userPreferencesRepository.userPreferences.first()
+        val url = prefs.fireflyBaseUrl?.takeIf { it.isNotBlank() }
+        val token = prefs.fireflyAccessToken?.takeIf { it.isNotBlank() } ?: return null
+        if (url == null) return null
+
+        val accountMappings = userPreferencesRepository.fireflyAccountMappingsFlow.first()
+        val categoryMappings = userPreferencesRepository.fireflyCategoryMappingsFlow.first()
+        val includeRaw = userPreferencesRepository.fireflyIncludeRawSmsFlow.first()
+
+        return FireflyConfig(
+            url = url,
+            token = token,
+            defaultAssetAccount = prefs.fireflyDefaultAssetAccount,
+            accountMappings = accountMappings,
+            categoryMappings = categoryMappings,
+            includeRawSms = includeRaw,
+            baseCurrency = prefs.baseCurrency
+        )
     }
     
     fun updateSmsScanMonths(months: Int) {

@@ -136,6 +136,12 @@ class UserPreferencesRepository @Inject constructor(
 
         // Whether to include raw SMS body in Firefly notes
         val FIREFLY_INCLUDE_RAW_SMS = booleanPreferencesKey("firefly_include_raw_sms")
+
+        // Auto sync interval for Firefly: "never", "daily", "weekly"
+        val FIREFLY_AUTO_SYNC_INTERVAL = stringPreferencesKey("firefly_auto_sync_interval")
+
+        // Flag to track if legacy Firefly external ID migration/reconcile has run
+        val FIREFLY_MIGRATION_RAN = booleanPreferencesKey("firefly_migration_ran")
     }
 
     val userPreferences: Flow<UserPreferences> = context.dataStore.data
@@ -180,7 +186,9 @@ class UserPreferencesRepository @Inject constructor(
                 fireflyAccessToken = preferences[PreferencesKeys.FIREFLY_ACCESS_TOKEN],
                 fireflyDefaultAssetAccount = preferences[PreferencesKeys.FIREFLY_DEFAULT_ASSET_ACCOUNT],
                 fireflyLastSyncTimestamp = preferences[PreferencesKeys.FIREFLY_LAST_SYNC_TIMESTAMP],
-                fireflyLastSyncError = preferences[PreferencesKeys.FIREFLY_LAST_SYNC_ERROR]
+                fireflyLastSyncError = preferences[PreferencesKeys.FIREFLY_LAST_SYNC_ERROR],
+                fireflyAutoSyncInterval = preferences[PreferencesKeys.FIREFLY_AUTO_SYNC_INTERVAL] ?: "never",
+                fireflyMigrationRan = preferences[PreferencesKeys.FIREFLY_MIGRATION_RAN] ?: false
             )
         }
 
@@ -692,6 +700,12 @@ class UserPreferencesRepository @Inject constructor(
     val fireflyLastSyncErrorFlow: Flow<String?> = context.dataStore.data
         .map { preferences -> preferences[PreferencesKeys.FIREFLY_LAST_SYNC_ERROR] }
 
+    val fireflyAutoSyncIntervalFlow: Flow<String> = context.dataStore.data
+        .map { preferences -> preferences[PreferencesKeys.FIREFLY_AUTO_SYNC_INTERVAL] ?: "never" }
+
+    val fireflyMigrationRanFlow: Flow<Boolean> = context.dataStore.data
+        .map { preferences -> preferences[PreferencesKeys.FIREFLY_MIGRATION_RAN] ?: false }
+
     suspend fun setFireflySyncEnabled(enabled: Boolean) {
         context.dataStore.edit { preferences ->
             preferences[PreferencesKeys.FIREFLY_SYNC_ENABLED] = enabled
@@ -793,6 +807,12 @@ class UserPreferencesRepository @Inject constructor(
         setFireflyAccountMapping(accountKey, "")
     }
 
+    suspend fun clearAllFireflyAccountMappings() {
+        context.dataStore.edit { preferences ->
+            preferences.remove(PreferencesKeys.FIREFLY_ACCOUNT_MAPPINGS)
+        }
+    }
+
     // Firefly category mappings (PennyWise Category -> Firefly Category Name)
     val fireflyCategoryMappingsFlow: Flow<Map<String, String>> = context.dataStore.data
         .map { preferences ->
@@ -847,6 +867,20 @@ class UserPreferencesRepository @Inject constructor(
             preferences[PreferencesKeys.FIREFLY_INCLUDE_RAW_SMS] = include
         }
     }
+
+    suspend fun setFireflyAutoSyncInterval(interval: String) {
+        context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.FIREFLY_AUTO_SYNC_INTERVAL] = interval
+        }
+    }
+
+    suspend fun setFireflyMigrationRan(ran: Boolean) {
+        context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.FIREFLY_MIGRATION_RAN] = ran
+        }
+    }
+
+    fun getFireflyAutoSyncInterval(): Flow<String> = fireflyAutoSyncIntervalFlow
 }
 
 data class UserPreferences(
@@ -879,5 +913,7 @@ data class UserPreferences(
     val fireflyAccessToken: String? = null,
     val fireflyDefaultAssetAccount: String? = null,
     val fireflyLastSyncTimestamp: Long? = null,
-    val fireflyLastSyncError: String? = null
+    val fireflyLastSyncError: String? = null,
+    val fireflyAutoSyncInterval: String = "never",  // "never", "daily", "weekly"
+    val fireflyMigrationRan: Boolean = false
 )

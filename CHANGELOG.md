@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Added
+- Configurable automatic Firefly sync interval (daily/weekly/never) with WorkManager scheduling
+- "Sync All Unsynced" and "Full Sync Everything" bulk sync functions in Firefly settings
+- Legacy Firefly external ID migration to stable transaction hash-based IDs (`pennywise-{hash}`)
+- One-time migration + reconcile automatically run on first enabling Firefly after fresh install/reinstall
+- "Reconcile with Firefly" button for manual post-reinstall recovery
+- Pre-flight existence check before syncing (using external_id) to prevent duplicates
+- Migration/reconcile completion logged to syncResult (visible as toast-like message in settings)
+
+### Changed
+- Firefly `external_id` now consistently uses stable `transactionHash` (instead of DB `id`) for reinstall resilience and chronological ordering via SMS timestamp (`dateTime`)
+- Local `fireflyExternalId` storage strategy updated to hash-based value
+- Reconcile logic tries both hash-based and legacy external IDs for matching
+- Bulk sync and auto-sync now benefit from hash-based dedup and pre-checks
+- SMS received timestamp (via `dateTime`) confirmed as the transaction occurrence date for Firefly syncs (helps chronological order); `createdAt` remains app record time
+
+### Fixed/Improved
+- Transactions existing only in Firefly (e.g. pre-SMS era or manual older entries without Pennywise counterpart) are **unaffected** — logic only operates on local Pennywise transactions and matches via external_id; no deletions or modifications to Firefly-only data
+- Reinstall scenario: re-parsed SMS use same hash → same external_id → reconcile/full sync can match and mark without creating dups
+
+---
+
 ## [1.0.0] - 2026-05-30
 
 ### Added

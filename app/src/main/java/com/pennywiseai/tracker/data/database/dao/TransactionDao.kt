@@ -266,4 +266,11 @@ interface TransactionDao {
 
     @Query("SELECT COUNT(*) FROM transactions WHERE is_deleted = 0 AND firefly_last_error IS NOT NULL")
     fun getFailedFireflySyncCount(): Flow<Int>
+
+    @Query("UPDATE transactions SET firefly_external_id = :newExternalId, updated_at = :updatedAt WHERE id = :transactionId")
+    suspend fun updateFireflyExternalId(
+        transactionId: Long,
+        newExternalId: String,
+        updatedAt: LocalDateTime = java.time.LocalDateTime.now()
+    )
 }

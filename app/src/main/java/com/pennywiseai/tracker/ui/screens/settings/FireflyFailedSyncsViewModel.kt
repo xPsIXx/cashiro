@@ -70,7 +70,8 @@ class FireflyFailedSyncsViewModel @Inject constructor(
 
                 when (result) {
                     is FireflyClient.SyncResult.Success -> {
-                        transactionRepository.markFireflySynced(transaction.id, result.fireflyId)
+                        val extId = fireflyClient.computeExternalId(transaction)
+                        transactionRepository.markFireflySynced(transaction.id, extId)
                         _message.value = "Synced successfully"
                     }
                     is FireflyClient.SyncResult.Error -> {
@@ -122,7 +123,8 @@ class FireflyFailedSyncsViewModel @Inject constructor(
                     )
 
                     if (result is FireflyClient.SyncResult.Success) {
-                        transactionRepository.markFireflySynced(tx.id, result.fireflyId)
+                        val extId = fireflyClient.computeExternalId(tx)
+                        transactionRepository.markFireflySynced(tx.id, extId)
                     } else if (result is FireflyClient.SyncResult.Error) {
                         transactionRepository.markFireflyError(tx.id, result.message)
                     }

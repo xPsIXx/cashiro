@@ -71,6 +71,36 @@ class FireflyClient @Inject constructor() {
      * Tests whether the provided URL + token can reach the Firefly API.
      * Calls a lightweight endpoint (about or users/self).
      */
+    /**
+     * Fetches asset accounts from Firefly for mapping UI.
+     */
+    suspend fun getAccounts(baseUrl: String, accessToken: String): List<String> {
+        if (baseUrl.isBlank() || accessToken.isBlank()) return emptyList()
+
+        return withContext(Dispatchers.IO) {
+            try {
+                val normalizedUrl = normalizeBaseUrl(baseUrl)
+                val response: HttpResponse = client.get("$normalizedUrl$API_PATH/accounts?type=asset") {
+                    header("Authorization", "Bearer $accessToken")
+                    header("Accept", "application/vnd.api+json")
+                }
+
+                if (!response.status.isSuccess()) return@withContext emptyList()
+
+                val body = response.bodyAsText()
+                // Simple parsing for account names in JSON:API format
+                val names = mutableListOf<String>()
+                Regex(""""name"\s*:\s*"([^"]+)"""").findAll(body).forEach { match ->
+                    match.groupValues.getOrNull(1)?.let { names.add(it) }
+                }
+                names.distinct().sorted()
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to fetch Firefly accounts", e)
+                emptyList()
+            }
+        }
+    }
+
     suspend fun testConnection(baseUrl: String, accessToken: String): SyncResult {
         if (baseUrl.isBlank() || accessToken.isBlank()) {
             return SyncResult.Error("URL and access token are required")
@@ -113,6 +143,15 @@ class FireflyClient @Inject constructor() {
     ): SyncResult {
         if (baseUrl.isBlank() || accessToken.isBlank()) {
             return SyncResult.Error("Firefly not configured")
+        }
+
+        // Compute external ID using stable hash (future-proof for reinstalls)
+        val externalId = computeExternalId(transaction)
+
+        // Check if already exists in Firefly (resilient to reinstall/reparse)
+        val existingId = getTransactionIdByExternalId(baseUrl, accessToken, externalId)
+        if (existingId != null) {
+            return SyncResult.Success(fireflyId = existingId)
         }
 
         return withContext(Dispatchers.IO) {
@@ -208,7 +247,7 @@ class FireflyClient @Inject constructor() {
             appendLine("Synced from PennyWise • bank=${tx.bankName ?: "manual"}")
         }.trim().take(1000)
 
-        val externalId = "pennywise-${tx.id}"
+        val externalId = computeExternalId(tx)
 
         val fireflyTx = FireflyTransaction(
             type = type,
@@ -245,6 +284,40 @@ class FireflyClient @Inject constructor() {
                 Regex(""""id"\s*:\s*"([^"]+)"""").find(body)?.groupValues?.getOrNull(1)
             } else null
         } catch (_: Exception) { null }
+    }
+
+    /**
+     * Check if a transaction with this external_id already exists in Firefly.
+     * Used for reinstall resilience and dedup.
+     */
+    fun computeExternalId(tx: TransactionEntity): String {
+        return if (!tx.transactionHash.isNullOrBlank()) {
+            "pennywise-${tx.transactionHash}"
+        } else {
+            "pennywise-${tx.id}"
+        }
+    }
+
+    suspend fun getTransactionIdByExternalId(baseUrl: String, accessToken: String, externalId: String): String? {
+        if (baseUrl.isBlank() || accessToken.isBlank()) return null
+
+        return withContext(Dispatchers.IO) {
+            try {
+                val normalizedUrl = normalizeBaseUrl(baseUrl)
+                val response: HttpResponse = client.get("$normalizedUrl$API_PATH/transactions?external_id=$externalId") {
+                    header("Authorization", "Bearer $accessToken")
+                    header("Accept", "application/vnd.api+json")
+                }
+
+                if (!response.status.isSuccess()) return@withContext null
+
+                val body = response.bodyAsText()
+                extractCreatedId(body)
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to check external_id in Firefly", e)
+                null
+            }
+        }
     }
 
     // Minimal request models (JSON:API style wrapper expected by Firefly)

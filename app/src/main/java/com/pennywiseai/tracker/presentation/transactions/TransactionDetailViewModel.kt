@@ -95,6 +95,9 @@ class TransactionDetailViewModel @Inject constructor(
     val deleteSuccess: StateFlow<Boolean> = _deleteSuccess.asStateFlow()
     val existingTransactionCount: StateFlow<Int> = _existingTransactionCount.asStateFlow()
 
+    // Firefly sync
+    val isFireflySyncEnabled = userPreferencesRepository.fireflySyncEnabledFlow
+
     // Budget impact state (for INCOME transactions only)
     private val _budgetImpactType = MutableStateFlow<BudgetImpactType?>(null)
     val budgetImpactType: StateFlow<BudgetImpactType?> = _budgetImpactType.asStateFlow()
@@ -933,8 +936,8 @@ class TransactionDetailViewModel @Inject constructor(
         }
     }
 
-    /** Retry Firefly sync for the current transaction (used from detail screen) */
-    fun retryFireflySync() {
+    /** Manually sync (or retry) the current transaction to Firefly */
+    fun syncToFirefly() {
         val txn = _transaction.value ?: return
         viewModelScope.launch {
             try {
@@ -963,7 +966,8 @@ class TransactionDetailViewModel @Inject constructor(
 
                 when (result) {
                     is com.pennywiseai.tracker.data.firefly.FireflyClient.SyncResult.Success -> {
-                        transactionRepository.markFireflySynced(txn.id, result.fireflyId)
+                        val extId = fireflyClient.computeExternalId(txn)
+                        transactionRepository.markFireflySynced(txn.id, extId)
                         // Refresh the transaction
                         _transaction.value = transactionRepository.getTransactionById(txn.id)
                     }
@@ -974,7 +978,7 @@ class TransactionDetailViewModel @Inject constructor(
                     else -> {}
                 }
             } catch (e: Exception) {
-                _errorMessage.value = "Firefly retry failed: ${e.message}"
+                _errorMessage.value = "Firefly sync failed: ${e.message}"
             }
         }
     }

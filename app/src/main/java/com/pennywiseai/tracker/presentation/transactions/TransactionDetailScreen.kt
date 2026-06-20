@@ -871,7 +871,12 @@ private fun TransactionReceipt(
         }
 
         // ── Firefly Sync Status ──
-        FireflySyncStatusSection(transaction = transaction, viewModel = viewModel)
+        if (transaction != null) {
+            FireflySyncStatusSection(
+                transaction = transaction,
+                viewModel = viewModel
+            )
+        }
 
         // ── Split Breakdown ──
         if (hasSplits && splits.isNotEmpty()) {
@@ -2196,8 +2201,7 @@ private fun FireflySyncStatusSection(
     viewModel: TransactionDetailViewModel
 ) {
     val hasFireflyData = transaction.fireflySyncedAt != null || !transaction.fireflyLastError.isNullOrBlank()
-
-    if (!hasFireflyData) return
+    val hasExternalId = !transaction.fireflyExternalId.isNullOrBlank()
 
     SectionHeaderV2(title = "Firefly III Sync")
 
@@ -2225,10 +2229,17 @@ private fun FireflySyncStatusSection(
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
+                    if (hasExternalId) {
+                        Text(
+                            "External ID: ${transaction.fireflyExternalId}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                     Spacer(Modifier.height(8.dp))
                     OutlinedButton(
                         onClick = {
-                            viewModel.retryFireflySync()
+                            viewModel.syncToFirefly()
                         },
                         modifier = Modifier.align(Alignment.End)
                     ) {
@@ -2255,6 +2266,48 @@ private fun FireflySyncStatusSection(
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
+                    if (hasExternalId) {
+                        Text(
+                            "External ID: ${transaction.fireflyExternalId}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedButton(
+                        onClick = {
+                            viewModel.syncToFirefly()
+                        },
+                        modifier = Modifier.align(Alignment.End)
+                    ) {
+                        Text("Resync")
+                    }
+                }
+                else -> {
+                    // Never attempted
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            Icons.Default.CloudSync,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.outline,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            "Not synced to Firefly",
+                            color = MaterialTheme.colorScheme.outline,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    Button(
+                        onClick = {
+                            viewModel.syncToFirefly()
+                        },
+                        modifier = Modifier.align(Alignment.End)
+                    ) {
+                        Text("Sync to Firefly")
+                    }
                 }
             }
         }
