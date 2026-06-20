@@ -8,8 +8,8 @@ plugins {
     alias(libs.plugins.kotlin.serialization)
 }
 
-val appVersionCode = 90
-val appVersionName = "1.1.0"
+val appVersionCode = 93
+val appVersionName = "1.3.1"
 
 android {
     namespace = "com.pennywiseai.tracker"
