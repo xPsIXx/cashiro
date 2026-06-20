@@ -22,9 +22,9 @@ import java.time.format.DateTimeFormatter
  *  - backups written here remain readable by the older Gson-based importer.
  *
  * Formats (must not change without bumping the backup format version):
- *  - [BigDecimal]      ÔåÆ plain decimal string  (`toPlainString()`)
- *  - [LocalDateTime]   ÔåÆ `ISO_LOCAL_DATE_TIME` (e.g. `2024-01-02T10:15:30`)
- *  - [LocalDate]       ÔåÆ `ISO_LOCAL_DATE`      (e.g. `2024-01-02`)
+ *  - [BigDecimal]      → plain decimal string  (`toPlainString()`)
+ *  - [LocalDateTime]   → `ISO_LOCAL_DATE_TIME` (e.g. `2024-01-02T10:15:30`)
+ *  - [LocalDate]       → `ISO_LOCAL_DATE`      (e.g. `2024-01-02`)
  *
  * See `docs/backup-format.md` for the full compatibility contract.
  */
@@ -82,16 +82,16 @@ val backupSerializersModule: SerializersModule = SerializersModule {
 /**
  * The single [Json] instance used for both export and import.
  *
- * Compatibility-critical settings ÔÇö the whole point of this module:
- *  - `ignoreUnknownKeys = true` ÔåÆ a backup written by a *newer* app (extra
+ * Compatibility-critical settings — the whole point of this module:
+ *  - `ignoreUnknownKeys = true` → a backup written by a *newer* app (extra
  *    keys) still imports into an *older* app (forward compatibility).
- *  - `coerceInputValues = true` + Kotlin constructor defaults ÔåÆ a backup
+ *  - `coerceInputValues = true` + Kotlin constructor defaults → a backup
  *    written by an *older* app (missing keys) still imports into a *newer*
  *    app; the missing field falls back to its default instead of crashing
  *    (backward compatibility). This is the fix for the "can't restore old
- *    backup" bug ÔÇö Gson's `Unsafe` allocation ignored these defaults.
- *  - `encodeDefaults = true` ÔåÆ exported JSON is explicit/self-describing.
- *  - `isLenient = true` ÔåÆ tolerant of minor formatting quirks.
+ *    backup" bug — Gson's `Unsafe` allocation ignored these defaults.
+ *  - `encodeDefaults = true` → exported JSON is explicit/self-describing.
+ *  - `isLenient = true` → tolerant of minor formatting quirks.
  */
 val backupJson: Json = Json {
     ignoreUnknownKeys = true

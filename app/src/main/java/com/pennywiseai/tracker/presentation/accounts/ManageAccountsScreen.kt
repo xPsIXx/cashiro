@@ -60,7 +60,7 @@ fun ManageAccountsScreen(
     var showMergeSheet by remember { mutableStateOf(false) }
     // val isProEntitled by viewModel.isProEntitled.collectAsState() // pro stubbed
     var showUpgradeSheet by remember { mutableStateOf(false) }
-    // val pendingProfileReassign by viewModel.pendingProfileReassign.collectAsState() // profile stubbed
+    val pendingProfileReassign by viewModel.pendingProfileReassign.collectAsState()
 
     val scrollBehaviorSmall = TopAppBarDefaults.pinnedScrollBehavior()
     val scrollBehaviorLarge = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
@@ -533,7 +533,31 @@ fun ManageAccountsScreen(
     if (showUpgradeSheet) {
         showUpgradeSheet = false
     }
-    // pendingProfileReassign omitted for build (pro/account profile upstream)
+
+    // Offer to move existing transactions that carry an explicit, mismatched
+    // profile after the account's profile changes (#420).
+    pendingProfileReassign?.let { pending ->
+        AlertDialog(
+            onDismissRequest = { viewModel.dismissPendingProfileReassign() },
+            title = { Text("Move existing transactions?") },
+            text = {
+                Text(
+                    "${pending.transactionCount} transaction(s) from this account are set to a " +
+                        "different profile. Move them to the new profile too?"
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { viewModel.applyPendingProfileReassign() }) {
+                    Text("Move them")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { viewModel.dismissPendingProfileReassign() }) {
+                    Text("Keep as is")
+                }
+            }
+        )
+    }
 }
 
 @Composable
