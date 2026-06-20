@@ -4,6 +4,7 @@ import android.content.Context
 import android.os.Build
 import com.pennywiseai.tracker.BuildConfig
 import com.pennywiseai.tracker.data.database.PennyWiseDatabase
+import com.pennywiseai.tracker.data.database.SCHEMA_VERSION
 import com.pennywiseai.tracker.data.database.entity.*
 import com.pennywiseai.tracker.data.preferences.UserPreferencesRepository
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -128,7 +129,7 @@ class BackupExporter @Inject constructor(
             metadata = BackupMetadata(
                 exportId = UUID.randomUUID().toString(),
                 appVersion = BuildConfig.VERSION_NAME,
-                databaseVersion = 20, // Current database version
+                databaseVersion = SCHEMA_VERSION,
                 device = "${Build.MANUFACTURER} ${Build.MODEL}",
                 androidVersion = Build.VERSION.SDK_INT,
                 statistics = BackupStatistics(
