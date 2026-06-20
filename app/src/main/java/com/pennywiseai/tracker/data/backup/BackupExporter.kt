@@ -5,6 +5,7 @@ import android.os.Build
 import com.pennywiseai.tracker.BuildConfig
 import com.pennywiseai.tracker.data.database.PennyWiseDatabase
 import com.pennywiseai.tracker.data.database.SCHEMA_VERSION
+import com.pennywiseai.tracker.data.backup.transactionToJsonElement
 import com.pennywiseai.tracker.data.database.entity.*
 import com.pennywiseai.tracker.data.preferences.UserPreferencesRepository
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -153,7 +154,7 @@ class BackupExporter @Inject constructor(
                 )
             ),
             database = DatabaseSnapshot(
-                transactions = finalTransactions,
+                transactions = finalTransactions.map { transactionToJsonElement(it) },
                 categories = categories,
                 cards = cards,
                 accountBalances = accountBalances,

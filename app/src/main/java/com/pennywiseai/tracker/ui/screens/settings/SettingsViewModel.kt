@@ -684,7 +684,8 @@ class SettingsViewModel @Inject constructor(
                         includeRawSmsInNotes = config.includeRawSms
                     )
                     if (result is com.pennywiseai.tracker.data.firefly.FireflyClient.SyncResult.Success) {
-                        transactionRepository.markFireflySynced(tx.id, result.fireflyId)
+                        val extId = fireflyClient.computeExternalId(tx)
+                        transactionRepository.markFireflySynced(tx.id, extId)
                         successCount++
                     }
                 }

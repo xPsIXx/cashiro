@@ -3,6 +3,7 @@ package com.pennywiseai.tracker.data.backup
 import com.pennywiseai.tracker.data.database.entity.*
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonElement
 import java.time.LocalDateTime
 
 /**
@@ -158,7 +159,7 @@ data class DateRange(
 @Serializable
 data class DatabaseSnapshot(
     @SerialName("transactions")
-    val transactions: List<TransactionEntity> = emptyList(),
+    val transactions: List<JsonElement> = emptyList(),
 
     @SerialName("categories")
     val categories: List<CategoryEntity> = emptyList(),

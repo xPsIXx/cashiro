@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.3.0] - 2026-06-20
+
+### Fixed
+- Transient IR / KSP backend compiler error on TransactionEntity (and backup kotlinx port). Removed all `@Serializable` + `@Contextual` annotations from the Room entity (pure data class now). Updated backup path to store/retrieve transactions as `List<JsonElement>` in `DatabaseSnapshot` with `transactionToJsonElement` / `jsonElementToTransaction` helpers (camelCase keys for compatibility). Firefly sync fields, hash external IDs, and all legacy behaviour preserved.
+- Inconsistent Firefly external ID storage in auto-sync paths (AddTransactionUseCase, FireflyAutoSyncWorker, syncLast30Days) — now consistently compute + store the stable `pennywise-{hash}` external ID on success.
+- Full code recheck for errors after Pro removal + ports: no lingering billing/paywall references in executable code; all features unlocked; clean build verified.
+
 ## [1.2.0] - 2026-06-20
 
 ### Changed

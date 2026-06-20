@@ -5,6 +5,7 @@ import android.net.Uri
 import android.util.Log
 import androidx.room.withTransaction
 import com.pennywiseai.tracker.data.database.PennyWiseDatabase
+import com.pennywiseai.tracker.data.backup.jsonElementToTransaction
 import com.pennywiseai.tracker.data.database.entity.*
 import com.pennywiseai.tracker.data.preferences.UserPreferencesRepository
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -109,6 +110,9 @@ class BackupImporter @Inject constructor(
         var importedCategories = 0
         var skippedRows = 0
 
+        // Convert JsonElement transactions (no annotations on entity to avoid IR/KSP crash)
+        val txEntities: List<TransactionEntity> = backup.database.transactions.map(::jsonElementToTransaction)
+
         return database.withTransaction {
             try {
                 // Clear existing data
@@ -183,7 +187,7 @@ class BackupImporter @Inject constructor(
                     importedCategories++
                 }
 
-                backup.database.transactions.insertEachCounting({ skippedRows++ }) { transaction ->
+                txEntities.insertEachCounting({ skippedRows++ }) { transaction ->
                     database.transactionDao().insertTransaction(cleanTransaction(transaction))
                     importedTransactions++
                 }
@@ -282,6 +286,9 @@ class BackupImporter @Inject constructor(
         var skippedDuplicates = 0
         var skippedRows = 0
 
+        // Convert JsonElement transactions (no annotations on entity to avoid IR/KSP crash)
+        val txEntities: List<TransactionEntity> = backup.database.transactions.map(::jsonElementToTransaction)
+
         return database.withTransaction {
             try {
                 // Get existing data for duplicate checking
@@ -363,7 +370,7 @@ class BackupImporter @Inject constructor(
                 // Build mapping from old transaction IDs to new IDs for split/application imports
                 val oldToNewTransactionIdMap = mutableMapOf<Long, Long>()
 
-                backup.database.transactions.insertEachCounting({ skippedRows++ }) { transaction ->
+                txEntities.insertEachCounting({ skippedRows++ }) { transaction ->
                     if (!existingTransactionHashes.contains(transaction.transactionHash)) {
                         val oldId = transaction.id
                         val newTransaction = transaction.copy(

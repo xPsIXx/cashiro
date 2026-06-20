@@ -81,7 +81,8 @@ class FireflyAutoSyncWorker @AssistedInject constructor(
                     includeRawSmsInNotes = config.includeRawSms
                 )
                 if (result is com.pennywiseai.tracker.data.firefly.FireflyClient.SyncResult.Success) {
-                    transactionRepository.markFireflySynced(tx.id, result.fireflyId)
+                    val extId = fireflyClient.computeExternalId(tx)
+                    transactionRepository.markFireflySynced(tx.id, extId)
                     successCount++
                 } else if (result is com.pennywiseai.tracker.data.firefly.FireflyClient.SyncResult.Error) {
                     transactionRepository.markFireflyError(tx.id, result.message)

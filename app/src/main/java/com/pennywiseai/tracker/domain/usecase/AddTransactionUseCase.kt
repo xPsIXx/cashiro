@@ -122,7 +122,7 @@ class AddTransactionUseCase @Inject constructor(
 
             val includeRawSms = userPreferencesRepository.fireflyIncludeRawSmsFlow.first()
 
-            fireflyClient.syncTransaction(
+            val syncRes = fireflyClient.syncTransaction(
                 transaction = tx.copy(id = transactionId),
                 baseUrl = url,
                 accessToken = token,
@@ -131,6 +131,12 @@ class AddTransactionUseCase @Inject constructor(
                 categoryMappings = categoryMappings,
                 includeRawSmsInNotes = includeRawSms
             )
+            if (syncRes is com.pennywiseai.tracker.data.firefly.FireflyClient.SyncResult.Success) {
+                val ext = fireflyClient.computeExternalId(tx.copy(id = transactionId))
+                transactionRepository.markFireflySynced(transactionId, ext)
+            } else if (syncRes is com.pennywiseai.tracker.data.firefly.FireflyClient.SyncResult.Error) {
+                transactionRepository.markFireflyError(transactionId, syncRes.message)
+            }
         } catch (e: Exception) {
             // Fire and forget - don't block manual entry
         }

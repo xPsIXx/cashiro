@@ -40,28 +40,30 @@ class BackupModelsTest {
             ),
             database = DatabaseSnapshot(
                 transactions = listOf(
-                    TransactionEntity(
-                        id = 1,
-                        amount = BigDecimal("100.0"),
-                        merchantName = "Test Merchant",
-                        category = "Food",
-                        transactionType = TransactionType.EXPENSE,
-                        dateTime = LocalDateTime.of(2024, 1, 1, 10, 0),
-                        description = "Test description",
-                        smsBody = "Test SMS",
-                        bankName = "Test Bank",
-                        smsSender = "TEST",
-                        accountNumber = "1234567890",
-                        balanceAfter = BigDecimal("1000.0"),
-                        transactionHash = "hash123",
-                        isRecurring = false,
-                        isDeleted = false,
-                        createdAt = LocalDateTime.now(),
-                        updatedAt = LocalDateTime.now(),
-                        currency = "INR",
-                        fromAccount = null,
-                        toAccount = null,
-                        reference = null
+                    transactionToJsonElement(
+                        TransactionEntity(
+                            id = 1,
+                            amount = BigDecimal("100.0"),
+                            merchantName = "Test Merchant",
+                            category = "Food",
+                            transactionType = TransactionType.EXPENSE,
+                            dateTime = LocalDateTime.of(2024, 1, 1, 10, 0),
+                            description = "Test description",
+                            smsBody = "Test SMS",
+                            bankName = "Test Bank",
+                            smsSender = "TEST",
+                            accountNumber = "1234567890",
+                            balanceAfter = BigDecimal("1000.0"),
+                            transactionHash = "hash123",
+                            isRecurring = false,
+                            isDeleted = false,
+                            createdAt = LocalDateTime.now(),
+                            updatedAt = LocalDateTime.now(),
+                            currency = "INR",
+                            fromAccount = null,
+                            toAccount = null,
+                            reference = null
+                        )
                     )
                 ),
                 categories = listOf(
@@ -302,7 +304,7 @@ class BackupModelsTest {
                 )
             ),
             database = DatabaseSnapshot(
-                transactions = listOf(transactionLinkedToLoanAndGroup),
+                transactions = listOf(transactionToJsonElement(transactionLinkedToLoanAndGroup)),
                 categories = emptyList(),
                 cards = emptyList(),
                 accountBalances = emptyList(),
@@ -355,7 +357,7 @@ class BackupModelsTest {
 
         // The transaction's loan_id / group_id still match the deserialised
         // entities, so the importer can resolve the foreign-key references.
-        val deserializedTxn = deserialized.database.transactions[0]
+        val deserializedTxn = jsonElementToTransaction(deserialized.database.transactions[0])
         assertEquals(activeLoan.id, deserializedTxn.loanId)
         assertEquals(group.id, deserializedTxn.groupId)
     }
@@ -464,7 +466,7 @@ class BackupModelsTest {
         val backup = backupJson.decodeFromString<PennyWiseBackup>(json)
 
         // Transaction: newer non-null columns fall back to their defaults.
-        val tx = backup.database.transactions.single()
+        val tx = jsonElementToTransaction(backup.database.transactions.single())
         assertEquals("Old Merchant", tx.merchantName)
         assertEquals(false, tx.isDeleted)        // default
         assertEquals("INR", tx.currency)          // default
@@ -515,7 +517,7 @@ class BackupModelsTest {
 
         val backup = backupJson.decodeFromString<PennyWiseBackup>(json)
         assertEquals(1, backup.database.transactions.size)
-        assertEquals("Future", backup.database.transactions.single().merchantName)
+        assertEquals("Future", jsonElementToTransaction(backup.database.transactions.single()).merchantName)
     }
 
     /**
