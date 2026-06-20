@@ -148,6 +148,7 @@ fun RulesScreen(
             ) {
                 // Info Card
                 item {
+                    // Use primaryContainer for legibility in dark mode (#1 upstream fix)
                     PennyWiseCard(
                         modifier = Modifier.fillMaxWidth(),
                         colors = CardDefaults.cardColors(
