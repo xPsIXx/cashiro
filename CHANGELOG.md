@@ -33,6 +33,16 @@ All ported features were verified compatible with PennywiseAI-Firefly's Firefly 
 - Exclude flag treated as analytics-only (synced transactions still go to Firefly).
 - Account currency and manual vs SMS distinctions respected for mappings and payloads.
 
+### Added (additional upstream #1,2,4,5,6,7,8,9)
+- #1 Smart Rules info card dark mode legibility.
+- #2 Full subscriptions/recurring (autopay, link tx, mark paid, sort) - txs created use hash path for Firefly.
+- #4 Backup resilience (lists for subs/loans/groups; firefly fields roundtrip via entity).
+- #5 Account merge (core + sheet) - note: changes account key for txs (affects future mappings); existing fireflyExternalId preserved.
+- #6 Self-transfer refinements (suggest, convert, hints) - TRANSFER handled in Firefly payload.
+- #7 Duplicate tx as template - new tx fresh hash, not auto-synced.
+- #8 Smart rules edit/duplicate + account + notif category picker.
+- #9 Home 'This Month' cash-flow card with channel breakdown (UI only).
+
 ### Changed
 - Version bumped for this upstream sync release.
 
