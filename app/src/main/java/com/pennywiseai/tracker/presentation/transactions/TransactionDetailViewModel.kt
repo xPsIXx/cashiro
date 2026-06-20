@@ -201,7 +201,7 @@ class TransactionDetailViewModel @Inject constructor(
                     AccountInfo(
                         bankName = balance.bankName,
                         accountLast4 = balance.accountLast4,
-                        displayName = "${balance.bankName} ••••${balance.accountLast4}",
+                        displayName = "${balance.bankName} ****${balance.accountLast4}",
                         isCreditCard = balance.isCreditCard
                     )
                 }

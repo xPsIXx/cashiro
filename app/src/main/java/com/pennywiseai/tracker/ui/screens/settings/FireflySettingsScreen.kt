@@ -148,7 +148,7 @@ fun FireflySettingsScreen(
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Text("Enable automatic sync", modifier = Modifier.weight(1f))
+                Text("Enable automatic sync", modifier = Modifier.weight(1f), color = MaterialTheme.colorScheme.onSurface)
                 Switch(
                     checked = fireflySyncEnabled,
                     onCheckedChange = { viewModel.setFireflySyncEnabled(it) }
@@ -160,7 +160,7 @@ fun FireflySettingsScreen(
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Text("Auto sync", modifier = Modifier.weight(1f))
+                Text("Auto sync", modifier = Modifier.weight(1f), color = MaterialTheme.colorScheme.onSurface)
                 val intervalLabel = when (fireflyAutoSyncInterval) {
                     "daily" -> "Daily"
                     "weekly" -> "Weekly"
@@ -347,7 +347,7 @@ fun FireflySettingsScreen(
             Text(
                 "Used only if no matching account mapping is found for the transaction's bank account.",
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.outline,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(start = 4.dp, top = 2.dp)
             )
 
@@ -356,7 +356,7 @@ fun FireflySettingsScreen(
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Text("Hide raw SMS in Firefly notes", modifier = Modifier.weight(1f))
+                Text("Hide raw SMS in Firefly notes", modifier = Modifier.weight(1f), color = MaterialTheme.colorScheme.onSurface)
                 Switch(
                     checked = hideRawSms,
                     onCheckedChange = { hideRawSms = it }
@@ -479,7 +479,7 @@ fun FireflySettingsScreen(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text("Account Mappings", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+                    Text("Account Mappings", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f), color = MaterialTheme.colorScheme.onSurface)
                     IconButton(onClick = { viewModel.refreshFireflyAccounts() }, enabled = !isLoadingFireflyAccounts) {
                         if (isLoadingFireflyAccounts) {
                             CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
@@ -488,13 +488,13 @@ fun FireflySettingsScreen(
                         }
                     }
                     TextButton(onClick = { viewModel.clearAllFireflyAccountMappings() }) {
-                        Text("Clear all", style = MaterialTheme.typography.labelSmall)
+                        Text("Clear all", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
                     }
                 }
                 Text(
                     "Map specific accounts to Firefly asset accounts (default fallback used otherwise)",
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.outline
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
 
                 val mappedCount = fireflyMappings.size
@@ -503,7 +503,7 @@ fun FireflySettingsScreen(
                     Text(
                         "$mappedCount of $totalPennywiseAccounts PennyWise accounts have specific Firefly mappings (rest use default).",
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.outline
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
 
@@ -529,7 +529,7 @@ fun FireflySettingsScreen(
                         var expanded by remember { mutableStateOf(false) }
 
                         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = 4.dp)) {
-                            Text(account.displayName, style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
+                            Text(account.displayName, style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f), color = MaterialTheme.colorScheme.onSurface)
 
                             Column(modifier = Modifier.weight(1.1f)) {
                                 if (fireflyAccounts.isEmpty()) {
@@ -600,13 +600,14 @@ fun FireflySettingsScreen(
                                 Text(
                                     "→ Effective: $effectiveAccount",
                                     style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.outline
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
 
                                 if (fireflyAccounts.isNotEmpty() && currentValue.isNotBlank() && !fireflyAccounts.contains(currentValue)) {
                                     Text(
                                         " (not found in Firefly – please reselect)",
                                         style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.error,
                                         color = MaterialTheme.colorScheme.error
                                     )
                                 }

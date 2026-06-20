@@ -153,7 +153,7 @@ class SettingsViewModel @Inject constructor(
                         val key = "${balance.bankName}**${balance.accountLast4}"
                         AccountMappingItem(
                             key = key,
-                            displayName = "${balance.bankName} ••••${balance.accountLast4}",
+                            displayName = "${balance.bankName} ****${balance.accountLast4}",
                             isCreditCard = balance.isCreditCard
                         )
                     }
@@ -1121,7 +1121,7 @@ class SettingsViewModel @Inject constructor(
 /** UI model for showing accounts in the Firefly mapping section */
 data class AccountMappingItem(
     val key: String,           // e.g. "HDFC Bank**1234"
-    val displayName: String,   // e.g. "HDFC Bank ••••1234"
+    val displayName: String,   // e.g. "HDFC Bank ****1234"
     val isCreditCard: Boolean = false
 )
 
