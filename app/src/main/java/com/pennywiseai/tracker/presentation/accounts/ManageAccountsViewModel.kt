@@ -59,7 +59,8 @@ data class PendingProfileReassign(
 class ManageAccountsViewModel @Inject constructor(
     @ApplicationContext private val context: Context,
     private val accountBalanceRepository: AccountBalanceRepository,
-    private val cardRepository: CardRepository
+    private val cardRepository: CardRepository,
+    private val transactionRepository: com.pennywiseai.tracker.data.repository.TransactionRepository
 ) : ViewModel() {
     
     private val sharedPrefs = context.getSharedPreferences("account_prefs", Context.MODE_PRIVATE)
