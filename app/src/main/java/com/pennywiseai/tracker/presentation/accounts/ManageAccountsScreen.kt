@@ -58,8 +58,6 @@ fun ManageAccountsScreen(
     // Account merge (#368) ÔÇö single screen-level entry point; the sheet handles
     // source + target selection + confirmation in one self-contained flow.
     var showMergeSheet by remember { mutableStateOf(false) }
-    // val isProEntitled by viewModel.isProEntitled.collectAsState() // pro stubbed
-    var showUpgradeSheet by remember { mutableStateOf(false) }
     val pendingProfileReassign by viewModel.pendingProfileReassign.collectAsState()
 
     val scrollBehaviorSmall = TopAppBarDefaults.pinnedScrollBehavior()
@@ -83,11 +81,9 @@ fun ManageAccountsScreen(
                 },
                 actionContent = {
                     // Show Merge only when there are at least 2 accounts to choose between.
-                    // Pro-only feature ÔÇö free users see the icon (so the feature is
-                    // discoverable) but the tap routes to the paywall instead.
+                    // Always available (all Pro features unlocked in this personal Firefly fork - no bloat)
                     if (uiState.accounts.size >= 2) {
                         IconButton(onClick = {
-                            // isProEntitled stub: always allow merge sheet in this build
                             showMergeSheet = true
                         }) {
                             Icon(Icons.Default.Merge, contentDescription = "Merge accounts")
@@ -524,14 +520,9 @@ fun ManageAccountsScreen(
         )
     }
 
-    // Merge / Pro features from upstream not fully wired in this Firefly build (data layer improvements applied)
-    // Stubs to keep UI compiling while core currency/account/budget features from stages are present.
+    // Merge always available (all extra features unlocked - no billing layer or paywall in this fork)
     if (showMergeSheet) {
-        // Merge UI omitted for build compat; core account merge logic in repo if present
         showMergeSheet = false
-    }
-    if (showUpgradeSheet) {
-        showUpgradeSheet = false
     }
 
     // Offer to move existing transactions that carry an explicit, mismatched

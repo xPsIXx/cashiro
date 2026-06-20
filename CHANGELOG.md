@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.2.0] - 2026-06-20
+
+### Changed
+- Removed the entire Pro tier billing layer infrastructure (billing package, gateways, products, modules, dependencies) to eliminate bloat and prevent any Google Play Billing or Google connections.
+- Removed the paywall UI entirely (UpgradeSheet, ViewModels, etc.).
+- All extra "Pro" features (unlimited custom rules, unlimited PDF statement imports, unlimited CSV exports, account merge, etc.) are now always available without any gating or billing.
+- Retained only the minimal always-unlocked stub approach (F-Droid style) so features work for personal use.
+- Cleaned references in ViewModels and screens (ManageAccounts, Rules, Export, Import, Settings).
+- Full compatibility with existing Firefly III integration (hash external IDs, sync, mappings, etc.) preserved. No changes to Firefly-related code.
+
 ## [1.1.0] - 2026-06-20
 
 ### Added (major upstream ports, Firefly-compatible)

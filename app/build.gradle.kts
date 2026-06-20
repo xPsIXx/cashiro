@@ -228,6 +228,8 @@ dependencies {
 
     // Ktor for HTTP requests
     implementation(libs.ktor.client.core)
+
+    // No Pro billing layer - using always-unlocked for personal Firefly use (no Google connections)
     implementation(libs.ktor.client.android)
     implementation(libs.ktor.client.content.negotiation)
     implementation(libs.ktor.serialization.kotlinx.json)

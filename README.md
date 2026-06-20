@@ -9,6 +9,10 @@ This fork adds automatic syncing of transactions to your self-hosted [Firefly II
 
 > **Note**: This is a personal fork. The main development happens in the [original repository](https://github.com/sarim2000/pennywiseai-tracker).
 
+> **Disclaimer**: This project is vibe-coded and probably shouldn't be used by anyone. It's an experimental personal fork with Firefly III auto-sync bolted on. No guarantees, expect bugs, and don't run it in production or with real money without thorough review. You've been warned.
+
+
+
 ## What’s New in This Fork
 
 - Automatic sync of SMS transactions to Firefly III
@@ -62,3 +66,14 @@ This fork is **not** available on the Play Store or F-Droid.
 
 **Made for people who want both PennyWise and Firefly III.**  
 If you find this useful, consider starring the repository.
+
+
+
+
+
+
+
+
+
+
+
