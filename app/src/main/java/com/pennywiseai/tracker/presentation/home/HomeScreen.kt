@@ -1,5 +1,6 @@
 package com.pennywiseai.tracker.presentation.home
 
+import com.pennywiseai.tracker.R
 import android.view.HapticFeedbackConstants
 import androidx.activity.ComponentActivity
 import androidx.work.WorkInfo

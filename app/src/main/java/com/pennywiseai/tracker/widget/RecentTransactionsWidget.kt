@@ -1,5 +1,6 @@
 package com.pennywiseai.tracker.widget
 
+import com.pennywiseai.tracker.R
 import android.content.Context
 import android.os.Build
 import android.content.Intent

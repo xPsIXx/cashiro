@@ -5,6 +5,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -16,6 +17,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.IconButton
 import com.pennywiseai.tracker.data.database.entity.TransactionEntity
 import com.pennywiseai.tracker.ui.components.CustomTitleTopAppBar
 import com.pennywiseai.tracker.ui.components.PennyWiseEmptyState
@@ -41,12 +44,20 @@ fun FireflyFailedSyncsScreen(
         modifier = modifier,
         containerColor = Color.Transparent,
         topBar = {
+            val scrollBehaviorSmall = TopAppBarDefaults.pinnedScrollBehavior()
+            val scrollBehaviorLarge = TopAppBarDefaults.pinnedScrollBehavior()
             CustomTitleTopAppBar(
-                scrollBehaviorSmall = scrollBehavior,
+                scrollBehaviorSmall = scrollBehaviorSmall,
+                scrollBehaviorLarge = scrollBehaviorLarge,
                 title = "Failed Firefly Syncs",
-                navigationIcon = Icons.AutoMirrored.Filled.ArrowBack,
-                onNavigationClick = onNavigateBack,
-                actions = {
+                hasBackButton = true,
+                navigationContent = {
+                    IconButton(onClick = onNavigateBack) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                    }
+                },
+                hasActionButton = failedCount > 0,
+                actionContent = {
                     if (failedCount > 0) {
                         IconButton(
                             onClick = { viewModel.retryAll() },
@@ -79,8 +90,9 @@ fun FireflyFailedSyncsScreen(
 
             if (failedSyncs.isEmpty()) {
                 PennyWiseEmptyState(
-                    title = "No failed syncs",
-                    subtitle = "All Firefly syncs are succeeding",
+                    icon = Icons.Default.CheckCircle,
+                    headline = "No failed syncs",
+                    description = "All Firefly syncs are succeeding",
                     modifier = Modifier.fillMaxSize()
                 )
             } else {

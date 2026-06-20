@@ -1,5 +1,6 @@
 package com.pennywiseai.tracker.ui.components
 
+import com.pennywiseai.tracker.R
 
 
 object AvatarHelper {

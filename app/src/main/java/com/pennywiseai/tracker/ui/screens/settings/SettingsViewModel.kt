@@ -10,6 +10,7 @@ import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -585,7 +586,8 @@ class SettingsViewModel @Inject constructor(
                 }
 
                 val thirtyDaysAgo = LocalDateTime.now().minusDays(30)
-                val unsynced = transactionRepository.getTransactionsBetweenDatesList(thirtyDaysAgo, LocalDateTime.now())
+                val unsynced = transactionRepository.getTransactionsBetweenDates(thirtyDaysAgo, LocalDateTime.now())
+                    .first()
                     .filter { it.fireflySyncedAt == null && it.fireflyLastError == null }
 
                 if (unsynced.isEmpty()) {
@@ -598,7 +600,7 @@ class SettingsViewModel @Inject constructor(
                 val includeRaw = userPreferencesRepository.fireflyIncludeRawSmsFlow.first()
 
                 var successCount = 0
-                unsynced.forEach { tx ->
+                for (tx in unsynced) {
                     val result = fireflyClient.syncTransaction(
                         transaction = tx,
                         baseUrl = url,

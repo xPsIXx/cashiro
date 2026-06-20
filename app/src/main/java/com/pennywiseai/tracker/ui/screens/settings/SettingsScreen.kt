@@ -35,7 +35,6 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
@@ -669,142 +668,6 @@ fun SettingsScreen(
     // Firefly settings moved to dedicated full screen (FireflySettingsScreen)
     // The old dialog code has been removed. Navigation is handled via onNavigateToFireflySettings()
 
-                    if (fireflyFailedCount > 0) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Text(
-                                "$fireflyFailedCount failed sync(s)",
-                                color = MaterialTheme.colorScheme.error,
-                                style = MaterialTheme.typography.bodyMedium
-                            )
-                            TextButton(onClick = {
-                                onNavigateToFireflyFailedSyncs()
-                            }) {
-                                Text("View & Retry")
-                            }
-                        }
-                    }
-
-                    if (fireflyMappings.isNotEmpty()) {
-                        Text(
-                            "${fireflyMappings.size} account mapping(s) configured",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.primary
-                        )
-                    }
-
-                    OutlinedTextField(
-                        value = localUrl,
-                        onValueChange = { localUrl = it },
-                        label = { Text("Firefly URL (https://... )") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-
-                    OutlinedTextField(
-                        value = localToken,
-                        onValueChange = { localToken = it },
-                        label = { Text("Personal Access Token") },
-                        singleLine = true,
-                        visualTransformation = PasswordVisualTransformation(),
-                        modifier = Modifier.fillMaxWidth()
-                    )
-
-                    OutlinedTextField(
-                        value = localAccount,
-                        onValueChange = { localAccount = it },
-                        label = { Text("Default asset account (optional)") },
-                        placeholder = { Text("e.g. HDFC Checking") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-
-                    // === Account Mappings Section ===
-                    if (fireflyMappingAccounts.isNotEmpty()) {
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text(
-                            "Account Mappings",
-                            style = MaterialTheme.typography.labelMedium
-                        )
-                        Text(
-                            "Map specific PennyWise accounts to Firefly asset accounts",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.outline
-                        )
-
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .heightIn(max = 170.dp)
-                        ) {
-                            fireflyMappingAccounts.take(6).forEach { account ->
-                                val currentValue = fireflyMappings[account.key] ?: ""
-
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    modifier = Modifier.padding(vertical = 3.dp)
-                                ) {
-                                    Text(
-                                        account.displayName,
-                                        style = MaterialTheme.typography.bodySmall,
-                                        modifier = Modifier.weight(1f),
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
-
-                                    OutlinedTextField(
-                                        value = currentValue,
-                                        onValueChange = { newValue ->
-                                            settingsViewModel.setFireflyAccountMapping(account.key, newValue)
-                                        },
-                                        singleLine = true,
-                                        placeholder = { Text("Firefly account") },
-                                        textStyle = MaterialTheme.typography.bodySmall,
-                                        modifier = Modifier.weight(1.15f)
-                                    )
-                                }
-                            }
-                        }
-
-                        if (fireflyMappingAccounts.size > 6) {
-                            Text(
-                                "+ ${fireflyMappingAccounts.size - 6} more accounts",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.outline
-                            )
-                        }
-                    }
-
-                    if (fireflyLastError != null) {
-                        Text("Last error: $fireflyLastError", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
-                    }
-
-                    testResult?.let { res ->
-                        Text(res, style = MaterialTheme.typography.bodySmall, color = if (res.startsWith("Success")) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error)
-                    }
-
-                    val dialogScope = rememberCoroutineScope()
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedButton(
-                            onClick = {
-                                if (localUrl.isNotBlank() && localToken.isNotBlank()) {
-                                    isTesting = true
-                                    dialogScope.scopeLaunch {
-                                        val res = settingsViewModel.testFireflyConnection(localUrl, localToken)
-                                        testResult = when (res) {
-                                            is com.pennywiseai.tracker.data.firefly.FireflyClient.SyncResult.Success -> "Success! Connected."
-                                            is com.pennywiseai.tracker.data.firefly.FireflyClient.SyncResult.Error -> "Failed: ${res.message}"
-                                            else -> "Skipped"
-                                        }
-                                        isTesting = false
-                                    }
-                                }
-                            },
-    // Firefly dialog fully removed - settings now in dedicated screen
-
     // Show import/export message
     importExportMessage?.let { message ->
         if (exportedBackupFile != null && message.contains("successfully! Choose")) {
@@ -948,9 +811,9 @@ fun SettingsScreen(
 
 // ── Reusable Settings Components ──
 
-private enum class ItemPosition { TOP, MIDDLE, BOTTOM, SINGLE }
+internal enum class ItemPosition { TOP, MIDDLE, BOTTOM, SINGLE }
 
-fun ItemPosition.toShape(): RoundedCornerShape = when (this) {
+private fun ItemPosition.toShape(): RoundedCornerShape = when (this) {
     ItemPosition.TOP -> RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp, bottomStart = 4.dp, bottomEnd = 4.dp)
     ItemPosition.MIDDLE -> RoundedCornerShape(4.dp)
     ItemPosition.BOTTOM -> RoundedCornerShape(topStart = 4.dp, topEnd = 4.dp, bottomStart = 16.dp, bottomEnd = 16.dp)
@@ -958,7 +821,7 @@ fun ItemPosition.toShape(): RoundedCornerShape = when (this) {
 }
 
 @Composable
-fun SettingsGroup(
+private fun SettingsGroup(
     content: @Composable ColumnScope.() -> Unit
 ) {
     Column(
@@ -968,7 +831,7 @@ fun SettingsGroup(
 }
 
 @Composable
-fun SettingsNavItem(
+private fun SettingsNavItem(
     icon: ImageVector,
     iconBgColor: Color,
     iconTint: Color,
@@ -1032,7 +895,7 @@ fun SettingsNavItem(
 }
 
 @Composable
-fun SettingsSwitchRow(
+private fun SettingsSwitchRow(
     icon: ImageVector,
     iconBgColor: Color,
     iconTint: Color,
@@ -1089,7 +952,7 @@ fun SettingsSwitchRow(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SettingsDropdownItem(
+private fun SettingsDropdownItem(
     icon: ImageVector,
     iconBgColor: Color,
     iconTint: Color,

@@ -10,12 +10,15 @@ import androidx.compose.material.icons.filled.Send
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
+import kotlinx.coroutines.launch
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.IconButton
 import com.pennywiseai.tracker.ui.components.CustomTitleTopAppBar
 import com.pennywiseai.tracker.ui.theme.Spacing
 
@@ -37,11 +40,6 @@ fun FireflySettingsScreen(
     val fireflyCategoryMappings by viewModel.fireflyCategoryMappings.collectAsStateWithLifecycle(initialValue = emptyMap())
     val fireflyIncludeRawSms by viewModel.fireflyIncludeRawSms.collectAsStateWithLifecycle(initialValue = true)
 
-    // Sync local toggle with saved preference
-    LaunchedEffect(fireflyIncludeRawSms) {
-        hideRawSms = !fireflyIncludeRawSms
-    }
-
     // Local editing state
     val secureCreds = remember { viewModel.getFireflySecureCredentials() }
     var localUrl by remember { mutableStateOf(fireflyBaseUrl ?: secureCreds.first ?: "") }
@@ -49,7 +47,12 @@ fun FireflySettingsScreen(
     var localDefaultAccount by remember { mutableStateOf(fireflyDefaultAsset ?: "") }
     var testResult by remember { mutableStateOf<String?>(null) }
     var isTesting by remember { mutableStateOf(false) }
-    var hideRawSms by remember { mutableStateOf(true) } // default on
+    var hideRawSms by remember { mutableStateOf(!fireflyIncludeRawSms) } // default on
+
+    // Sync local toggle with saved preference (after declare)
+    LaunchedEffect(fireflyIncludeRawSms) {
+        hideRawSms = !fireflyIncludeRawSms
+    }
 
     val scrollState = rememberScrollState()
 
@@ -57,10 +60,18 @@ fun FireflySettingsScreen(
         modifier = modifier,
         containerColor = Color.Transparent,
         topBar = {
+            val scrollBehaviorSmall = TopAppBarDefaults.pinnedScrollBehavior()
+            val scrollBehaviorLarge = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
             CustomTitleTopAppBar(
+                scrollBehaviorSmall = scrollBehaviorSmall,
+                scrollBehaviorLarge = scrollBehaviorLarge,
                 title = "Firefly III Sync",
-                navigationIcon = Icons.AutoMirrored.Filled.ArrowBack,
-                onNavigationClick = onNavigateBack
+                hasBackButton = true,
+                navigationContent = {
+                    IconButton(onClick = onNavigateBack) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                    }
+                }
             )
         }
     ) { padding ->

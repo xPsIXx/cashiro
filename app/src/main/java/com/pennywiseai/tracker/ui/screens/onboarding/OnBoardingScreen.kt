@@ -1,5 +1,6 @@
 package com.pennywiseai.tracker.ui.screens.onboarding
 
+import com.pennywiseai.tracker.R
 import android.Manifest
 import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult

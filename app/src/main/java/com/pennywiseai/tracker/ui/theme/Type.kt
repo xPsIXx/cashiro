@@ -1,5 +1,6 @@
 package com.pennywiseai.tracker.ui.theme
 
+import com.pennywiseai.tracker.R
 import androidx.compose.material3.Typography
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.Font

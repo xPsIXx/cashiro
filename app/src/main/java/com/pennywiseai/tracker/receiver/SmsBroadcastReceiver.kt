@@ -1,5 +1,6 @@
 package com.pennywiseai.tracker.receiver
 
+import com.pennywiseai.tracker.R
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent

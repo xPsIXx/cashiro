@@ -2,27 +2,25 @@ import java.util.Properties
 
 plugins {
     alias(libs.plugins.android.application)
-    alias(libs.plugins.kotlin.android)
+    alias(libs.plugins.hilt.android)
     alias(libs.plugins.kotlin.compose)
-    id("com.google.devtools.ksp")
-    id("com.google.dagger.hilt.android")
-    id("org.jetbrains.kotlin.plugin.serialization") version "2.3.0"
+    alias(libs.plugins.ksp)
+    alias(libs.plugins.kotlin.serialization)
 }
+
+val appVersionCode = 89
+val appVersionName = "2.15.54"
 
 android {
     namespace = "com.pennywiseai.tracker"
     compileSdk = 36
-    
-    buildFeatures {
-        buildConfig = true
-    }
 
     defaultConfig {
         applicationId = "com.thenoticingbegins.pennywiseai.firefly"
         minSdk = 26
         targetSdk = 36
-        versionCode = 89
-        versionName = "2.15.54"
+        versionCode = appVersionCode
+        versionName = appVersionName
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         
@@ -143,6 +141,8 @@ android {
     }
     buildFeatures {
         compose = true
+        buildConfig = true
+        resValues = true
     }
 
     testOptions {
@@ -171,7 +171,7 @@ ksp {
 val generatedAssetsDir = layout.buildDirectory.dir("generated/assets/changelog")
 
 tasks.register<Copy>("copyChangelog") {
-    val versionCode = android.defaultConfig.versionCode
+    val versionCode = appVersionCode
     val changelogDir = rootProject.file("fastlane/metadata/android/en-US/changelogs")
     val changelogFile = file("$changelogDir/$versionCode.txt")
     val defaultFile = file("$changelogDir/default.txt")
@@ -181,7 +181,8 @@ tasks.register<Copy>("copyChangelog") {
     rename { "whats_new.txt" }
 }
 
-android.sourceSets["main"].assets.srcDir(generatedAssetsDir)
+// Register generated assets dir. Use resolved File to avoid Provider restrictions in AGP 9 SourceSet API.
+android.sourceSets["main"].assets.srcDir(generatedAssetsDir.get().asFile)
 
 tasks.matching { it.name.startsWith("merge") && it.name.contains("Assets") }.configureEach {
     dependsOn("copyChangelog")
@@ -305,3 +306,6 @@ dependencies {
     implementation(libs.pdfbox.android)
     testImplementation(kotlin("test"))
 }
+
+
+
