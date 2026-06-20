@@ -640,24 +640,28 @@ class TransactionDetailViewModel @Inject constructor(
                     (accountChanged || convertedFromTransfer)
 
                 if (shouldRunSingleAccount) {
-                    val currentBalance = accountBalanceRepository.getLatestBalance(newBank!!, newAccount!!)
-                    if (currentBalance != null) {
-                        val balanceChange = when (normalizedTransaction.transactionType) {
-                            TransactionType.INCOME -> normalizedTransaction.amount
-                            TransactionType.EXPENSE, TransactionType.CREDIT -> -normalizedTransaction.amount
-                            TransactionType.TRANSFER -> BigDecimal.ZERO // handled above
-                            TransactionType.INVESTMENT -> -normalizedTransaction.amount
-                        }
-                        accountBalanceRepository.insertBalance(
-                            currentBalance.copy(
-                                id = 0,
-                                balance = currentBalance.balance + balanceChange,
-                                timestamp = normalizedTransaction.dateTime,
-                                transactionId = normalizedTransaction.id,
-                                sourceType = "TRANSACTION",
-                                smsSource = null
+                    val bank = newBank
+                    val account = newAccount
+                    if (bank != null && account != null) {
+                        val currentBalance = accountBalanceRepository.getLatestBalance(bank, account)
+                        if (currentBalance != null) {
+                            val balanceChange = when (normalizedTransaction.transactionType) {
+                                TransactionType.INCOME -> normalizedTransaction.amount
+                                TransactionType.EXPENSE, TransactionType.CREDIT -> -normalizedTransaction.amount
+                                TransactionType.TRANSFER -> BigDecimal.ZERO // handled above
+                                TransactionType.INVESTMENT -> -normalizedTransaction.amount
+                            }
+                            accountBalanceRepository.insertBalance(
+                                currentBalance.copy(
+                                    id = 0,
+                                    balance = currentBalance.balance + balanceChange,
+                                    timestamp = normalizedTransaction.dateTime,
+                                    transactionId = normalizedTransaction.id,
+                                    sourceType = "TRANSACTION",
+                                    smsSource = null
+                                )
                             )
-                        )
+                        }
                     }
                 }
 

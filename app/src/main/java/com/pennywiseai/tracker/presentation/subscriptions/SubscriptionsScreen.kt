@@ -24,6 +24,7 @@ import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -405,17 +406,16 @@ private fun SwipeableSubscriptionItem(
     var showEditDialog by remember { mutableStateOf(false) }
     var showDeleteConfirm by remember { mutableStateOf(false) }
     
-    val dismissState = rememberSwipeToDismissBoxState(
-        confirmValueChange = { dismissValue ->
-            when (dismissValue) {
-                SwipeToDismissBoxValue.EndToStart -> {
+    val dismissState = rememberSwipeToDismissBoxState()
+
+    LaunchedEffect(dismissState) {
+        snapshotFlow { dismissState.currentValue }
+            .collect { value ->
+                if (value == SwipeToDismissBoxValue.EndToStart) {
                     onHide()
-                    true
                 }
-                else -> false
             }
-        }
-    )
+    }
     
     SwipeToDismissBox(
         state = dismissState,

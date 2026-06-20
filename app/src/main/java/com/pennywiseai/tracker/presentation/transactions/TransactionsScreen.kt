@@ -31,6 +31,7 @@ import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.outlined.AccountBalance
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
@@ -557,17 +558,19 @@ private fun SwipeToEditCategory(
     content: @Composable () -> Unit
 ) {
     val view = LocalView.current
-    val dismissState = rememberSwipeToDismissBoxState(
-        confirmValueChange = { value ->
-            if (value == SwipeToDismissBoxValue.EndToStart) {
-                view.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
-                onRequestEdit(transaction)
+    val dismissState = rememberSwipeToDismissBoxState()
+
+    LaunchedEffect(dismissState) {
+        snapshotFlow { dismissState.currentValue }
+            .collect { value ->
+                if (value == SwipeToDismissBoxValue.EndToStart) {
+                    view.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
+                    onRequestEdit(transaction)
+                    // Snap back without actually dismissing the item
+                    dismissState.animateTo(SwipeToDismissBoxValue.Settled)
+                }
             }
-            // Never let the swipe complete — we use it purely as a gesture trigger
-            // and snap back to the resting state.
-            false
-        }
-    )
+    }
     SwipeToDismissBox(
         state = dismissState,
         enableDismissFromStartToEnd = false,
