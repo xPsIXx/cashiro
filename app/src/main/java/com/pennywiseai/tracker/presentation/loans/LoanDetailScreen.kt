@@ -23,7 +23,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
+import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.pennywiseai.tracker.data.database.entity.LoanDirection
 import com.pennywiseai.tracker.data.database.entity.LoanStatus
@@ -160,7 +160,7 @@ fun LoanDetailScreen(
             verticalArrangement = Arrangement.spacedBy(Spacing.md),
             flingBehavior = rememberOverscrollFlingBehavior { lazyListState }
         ) {
-            // Hero card — compact layout
+            // Hero card ÔÇö compact layout
             item {
                 PennyWiseCardV2(modifier = Modifier.fillMaxWidth()) {
                     Column(
@@ -247,7 +247,7 @@ fun LoanDetailScreen(
                 }
 
                 items(uiState.linkedTransactions, key = { it.id }) { txn ->
-                    // Original transaction type matches loan direction (LENT→EXPENSE, BORROWED→INCOME)
+                    // Original transaction type matches loan direction (LENTÔåÆEXPENSE, BORROWEDÔåÆINCOME)
                     val isOriginal = if (loan.direction == LoanDirection.LENT)
                         txn.transactionType == TransactionType.EXPENSE
                     else txn.transactionType == TransactionType.INCOME
@@ -403,7 +403,7 @@ private fun LoanTransactionItem(
                             onClick = {},
                             label = { Text("Original", style = MaterialTheme.typography.labelSmall) },
                             modifier = Modifier.height(24.dp),
-                            border = null,
+                            border = null as androidx.compose.foundation.BorderStroke?,
                             colors = SuggestionChipDefaults.suggestionChipColors(
                                 containerColor = MaterialTheme.colorScheme.surfaceVariant
                             )

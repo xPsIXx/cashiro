@@ -117,6 +117,10 @@ class UserPreferencesRepository @Inject constructor(
         val HAS_COMPLETED_ONBOARDING = booleanPreferencesKey("has_completed_onboarding")
         val MAIN_ACCOUNT_KEY = stringPreferencesKey("main_account_key")
 
+        // Explicit base-currency choice from the Settings currency selector. Marks the
+        // currency as user-set so the main-account can no longer override it.
+        val BASE_CURRENCY_USER_SET = booleanPreferencesKey("base_currency_user_set")
+
         // UPI VPA → contact name lookup (opt-in; gated by READ_CONTACTS).
         val USE_CONTACTS_FOR_VPA = booleanPreferencesKey("use_contacts_for_vpa")
 
@@ -181,6 +185,7 @@ class UserPreferencesRepository @Inject constructor(
                 profileBackgroundColor = preferences[PreferencesKeys.PROFILE_BACKGROUND_COLOR] ?: 0,
                 hasCompletedOnboarding = preferences[PreferencesKeys.HAS_COMPLETED_ONBOARDING] ?: false,
                 mainAccountKey = preferences[PreferencesKeys.MAIN_ACCOUNT_KEY],
+                baseCurrencyUserSet = preferences[PreferencesKeys.BASE_CURRENCY_USER_SET] ?: false,
                 fireflySyncEnabled = preferences[PreferencesKeys.FIREFLY_SYNC_ENABLED] ?: false,
                 fireflyBaseUrl = preferences[PreferencesKeys.FIREFLY_BASE_URL],
                 fireflyAccessToken = preferences[PreferencesKeys.FIREFLY_ACCESS_TOKEN],
@@ -684,6 +689,30 @@ class UserPreferencesRepository @Inject constructor(
         }
     }
 
+    /**
+     * Explicitly set base currency from user selector in Settings.
+     * This marks the choice so main-account derivation will not override.
+     */
+    suspend fun setBaseCurrency(currency: String) {
+        context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.BASE_CURRENCY] = currency
+            preferences[PreferencesKeys.BASE_CURRENCY_USER_SET] = true
+        }
+    }
+
+    /**
+     * Sets the base currency derived from the user's main account, but only if the
+     * user hasn't explicitly chosen one via the Settings currency selector. The
+     * explicit selector always wins.
+     */
+    suspend fun applyMainAccountCurrency(currency: String) {
+        context.dataStore.edit { preferences ->
+            if (preferences[PreferencesKeys.BASE_CURRENCY_USER_SET] != true) {
+                preferences[PreferencesKeys.BASE_CURRENCY] = currency
+            }
+        }
+    }
+
     // Firefly III integration (opt-in SMS -> Firefly sync)
     val fireflySyncEnabledFlow: Flow<Boolean> = context.dataStore.data
         .map { preferences -> preferences[PreferencesKeys.FIREFLY_SYNC_ENABLED] ?: false }
@@ -907,6 +936,7 @@ data class UserPreferences(
     val hasCompletedOnboarding: Boolean = false,
     val mainAccountKey: String? = null,
     val selectedProfileId: Long? = null,
+    val baseCurrencyUserSet: Boolean = false,
     // Firefly III sync (opt-in)
     val fireflySyncEnabled: Boolean = false,
     val fireflyBaseUrl: String? = null,

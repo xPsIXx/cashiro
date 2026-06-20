@@ -38,6 +38,12 @@ class IndusIndBankParser : BaseIndianBankParser() {
         // IndusInd typically uses standard verbs; fall back to base for most, but
         // explicitly treat "spent" and "purchase" as expenses to avoid ambiguity.
         return when {
+            // A credit-card purchase ("spent on IndusInd Card ... Avl Lmt: INR ...") must
+            // type as CREDIT ÔÇö not EXPENSE ÔÇö so it counts as card spend and the base
+            // parser's available-limit extraction (gated on CREDIT) runs. Refund SMS say
+            // "credited to your ... Card" but carry no "Avl Lmt", so they fall through to
+            // INCOME via super. (#486)
+            lower.contains("card") && lower.contains("avl lmt") -> TransactionType.CREDIT
             lower.contains("spent") -> TransactionType.EXPENSE
             lower.contains("debited") -> TransactionType.EXPENSE
             lower.contains("purchase") -> TransactionType.EXPENSE
@@ -147,7 +153,7 @@ class IndusIndBankParser : BaseIndianBankParser() {
     override fun extractAmount(message: String): java.math.BigDecimal? {
         // Prefer transaction amount tied to action verbs to avoid picking Available Balance
         val verbAmountPattern = Regex(
-            """(?:INR|Rs\.?|₹)\s*([0-9,]+(?:\.\d{2})?)\s+(?:debited|credited|spent|withdrawn|paid|purchase)""",
+            """(?:INR|Rs\.?|Ôé╣)\s*([0-9,]+(?:\.\d{2})?)\s+(?:debited|credited|spent|withdrawn|paid|purchase)""",
             RegexOption.IGNORE_CASE
         )
         verbAmountPattern.find(message)?.let { match ->
@@ -193,8 +199,9 @@ class IndusIndBankParser : BaseIndianBankParser() {
             }
         }
 
-        // Card/POS: at <merchant>
-        val atPattern = Regex("""at\s+([^\n]+?)(?:\s+Ref|\s+on|$)""", RegexOption.IGNORE_CASE)
+        // Card/POS: at <merchant>. Stop at " Ref", " on", a sentence-boundary period
+        // (e.g. "at INSTAMART. Avl Lmt: ..." on credit-card spends), or end of line.
+        val atPattern = Regex("""at\s+([^\n]+?)(?:\s+Ref|\s+on|\.\s|$)""", RegexOption.IGNORE_CASE)
         atPattern.find(message)?.let { match ->
             val merchant = match.groupValues[1].trim()
             if (merchant.isNotEmpty()) return cleanMerchantName(merchant)

@@ -497,6 +497,12 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
+    fun setBaseCurrency(currency: String) {
+        viewModelScope.launch {
+            userPreferencesRepository.setBaseCurrency(currency)
+        }
+    }
+
     fun toggleDeveloperMode(enabled: Boolean) {
         viewModelScope.launch {
             userPreferencesRepository.setDeveloperModeEnabled(enabled)
@@ -1105,7 +1111,7 @@ class SettingsViewModel @Inject constructor(
     
     fun updateBaseCurrency(currency: String) {
         viewModelScope.launch {
-            userPreferencesRepository.updateBaseCurrency(currency)
+            userPreferencesRepository.setBaseCurrency(currency)
         }
     }
 }

@@ -61,6 +61,7 @@ fun FireflySettingsScreen(
     var isFullSyncing by remember { mutableStateOf(false) }
     var isSendingTest by remember { mutableStateOf(false) }
     var showSaved by remember { mutableStateOf(false) }
+    var syncResult by remember { mutableStateOf<String?>(null) }
 
     // "Hide raw SMS in notes" toggle (UI label)
     // We store the inverse in prefs as "includeRawSms"
@@ -178,8 +179,6 @@ fun FireflySettingsScreen(
                     Text(intervalLabel)
                 }
             }
-
-            var syncResult by remember { mutableStateOf<String?>(null) }
 
             // Sync controls
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {

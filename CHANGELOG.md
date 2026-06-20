@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.1.0] - 2026-06-20
+
+### Added (major upstream ports, Firefly-compatible)
+- Bank parser expansion and accuracy improvements:
+  - New parsers: M-Pesa Mozambique (content-aware with Portuguese "Confirmado" + MT), Access/Keystone/Zenith/Jaiz/Opay (Nigeria), Bankino + blu Bank (Iran/Persian), CRDB (Tanzania, multi-currency + TZS), Emirates Islamic (UAE, multi-currency cases), eMola + Millennium BIM (Mozambique), Mellat Bank (Iran), Navi Mutual Fund (AMC SIP/unit allotment), and supporting accuracy fixes for IndusInd (credit card, merchant boundary), Slice (UPI classification), CRDB (keyword tiering and income precedence), Opay/Zenith (merchant anchoring), etc.
+  - Content-aware parser dispatch (`getParsers`) for senders shared across regions (e.g. M-Pesa variants).
+- Currency support: Brazilian Real (BRL) + related locale/symbol handling.
+- Account improvements:
+  - Per-account currency selection (including NGN and others).
+  - Main account picker now drives the app's default/base currency (with explicit Settings selector override via user-set flag; main account changes apply without overriding explicit choice).
+  - Account aliases, manual/cash balance derivation from transactions (incl. transfers), atomic manual edits, SMS accounts no longer reclassified as manual, account merge (core logic), bulk profile apply to transactions, account filtering/grouping in Transactions & Analytics lists, Balance History promoted to dedicated page.
+- Budgets: Type-aware budgets — track spending against a transaction type (EXPENSE/INCOME/etc.) in addition to (or instead of) category; per-type current spending shown on edit; widget savings delta includes type buckets.
+- Analytics: Per-transaction "Exclude from analytics" toggle (stored in DB, respected in spending totals/trends/categories while still counting for balances/history); "Excluded" tag displayed on rows; account scoping (exclude hidden accounts + profile filter).
+- Transactions / Loans / UI polish:
+  - Bulk-edit selection mode on Transactions list with multi-select actions.
+  - Self-transfer detection, suggestion, one-tap convert to TRANSFER with proper from/toAccount, directional subtitles.
+  - Duplicate transaction as pre-filled template.
+  - Loan fixes: scrollable Mark-as-loan sheet, deletion gated on remaining principal, allow unmarking as loan, stale loan state clearing, principal correction on multi-entry unlinks.
+  - UI/UX: transaction actions moved to overflow menu, exclude toggle repositioned, top-bar icon overlap fixes, various polish (headers, gestures, recurring indicators).
+
+All ported features were verified compatible with PennywiseAI-Firefly's Firefly III integration:
+- New parsers continue to produce standard ParsedTransaction → TransactionEntity (including our transactionHash used for stable `external_id`, currency, from/toAccount, excludedFromAnalytics, firefly* fields).
+- Firefly sync (pre-check by external_id, bulk/full sync, auto worker, Settings mappings, detail-screen retry/resync status, hash migration + reconcile) unaffected and continues to work.
+- Exclude flag treated as analytics-only (synced transactions still go to Firefly).
+- Account currency and manual vs SMS distinctions respected for mappings and payloads.
+
+### Changed
+- Version bumped for this upstream sync release.
+
+---
+
 ## [Unreleased]
 
 ### Added

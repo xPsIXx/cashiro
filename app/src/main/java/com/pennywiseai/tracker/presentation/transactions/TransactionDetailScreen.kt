@@ -1315,6 +1315,22 @@ private fun EditableExtractedInfoCard(
             )
         }
 
+        // Exclude from analytics (per #451 upstream)
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Checkbox(
+                checked = transaction.excludedFromAnalytics,
+                onCheckedChange = { viewModel.updateExcludedFromAnalytics(it) }
+            )
+            Text(
+                text = "Exclude from analytics",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+        }
+
         // Receipt attachment
         val existingReceiptUri by viewModel.receiptUri.collectAsStateWithLifecycle()
         val pendingReceiptUri by viewModel.pendingReceiptUri.collectAsStateWithLifecycle()

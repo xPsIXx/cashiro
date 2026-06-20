@@ -109,7 +109,10 @@ data class TransactionEntity(
     val fireflyExternalId: String? = null,
 
     @ColumnInfo(name = "firefly_last_error", defaultValue = "NULL")
-    val fireflyLastError: String? = null
+    val fireflyLastError: String? = null,
+
+    @ColumnInfo(name = "excluded_from_analytics", defaultValue = "0")
+    val excludedFromAnalytics: Boolean = false
 )
 
 enum class BudgetImpactType {

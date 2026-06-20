@@ -57,7 +57,8 @@ interface AccountBalanceDao {
             ab1.sms_source,
             ab1.source_type,
             ab1.currency,
-            ab1.profile_id
+            ab1.profile_id,
+            ab1.alias
         FROM account_balances ab1
         INNER JOIN (
             SELECT bank_name, account_last4, MAX(timestamp) as max_timestamp
@@ -76,6 +77,38 @@ interface AccountBalanceDao {
     
     @Query("DELETE FROM account_balances")
     suspend fun deleteAllBalances()
+
+    /**
+     * Resync companion to [TransactionDao.deleteUncuratedTransactions].
+     * Wipes balance entries the SMS re-parse will regenerate, while
+     * preserving:
+     *
+     *  - Entries linked to a transaction that survived the resync
+     *    (loan-linked / grouped) ÔÇö their `transaction_id` still points
+     *    at an existing row. Without this, balance time-series develops
+     *    gaps because the re-parse short-circuits on hash collision and
+     *    never calls processBalanceUpdate() for surviving rows.
+     *  - User-curated entries with `source_type` MANUAL or CARD_LINK
+     *    (added from the Manage Accounts screen). These have no SMS to
+     *    re-derive from, so a wipe would lose them permanently.
+     *
+     * What it does delete:
+     *  - Orphans: `transaction_id` pointed at a transaction wiped this
+     *    resync.
+     *  - Balance-only SMS notifications (`transaction_id IS NULL` AND
+     *    `source_type IS NULL`) ÔÇö these will be re-inserted by the
+     *    re-parse and REPLACE on the (bank, account, timestamp) unique
+     *    index, so the wipe-then-rebuild round-trip is a no-op.
+     */
+    @Query("""
+        DELETE FROM account_balances
+        WHERE
+            (transaction_id IS NOT NULL
+             AND transaction_id NOT IN (SELECT id FROM transactions))
+            OR
+            (transaction_id IS NULL AND source_type IS NULL)
+    """)
+    suspend fun deleteRebuildableBalances()
     
     @Query("""
         SELECT DISTINCT 
@@ -91,7 +124,8 @@ interface AccountBalanceDao {
             ab1.sms_source,
             ab1.source_type,
             ab1.currency,
-            ab1.profile_id
+            ab1.profile_id,
+            ab1.alias
         FROM account_balances ab1
         INNER JOIN (
             SELECT bank_name, account_last4, MAX(timestamp) as max_timestamp
@@ -141,7 +175,10 @@ interface AccountBalanceDao {
     """)
     fun getAccountCount(): Flow<Int>
     
-    @Query("DELETE FROM account_balances WHERE timestamp < :beforeDate")
+    // Never prune OPENING anchors ÔÇö they carry an intentionally early timestamp (so
+    // they never win "latest"), which would otherwise make them the prime target of a
+    // timestamp-cutoff delete and silently break the derived manual-balance model.
+    @Query("DELETE FROM account_balances WHERE timestamp < :beforeDate AND (source_type IS NULL OR source_type != 'OPENING')")
     suspend fun deleteOldBalances(beforeDate: LocalDateTime): Int
     
     @Update
@@ -186,4 +223,59 @@ interface AccountBalanceDao {
 
     @Query("UPDATE account_balances SET profile_id = :profileId WHERE bank_name = :bankName AND account_last4 = :accountLast4")
     suspend fun setAccountProfile(bankName: String, accountLast4: String, profileId: Long): Int
+
+    @Query("UPDATE account_balances SET alias = :alias WHERE bank_name = :bankName AND account_last4 = :accountLast4")
+    suspend fun setAccountAlias(bankName: String, accountLast4: String, alias: String?): Int
+
+    // ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+    // Manual/cash account balance recompute support.
+    //
+    // A manual account's displayed balance = opening + ╬ú(its transactions). The
+    // opening is stored in a single OPENING row at an early timestamp (so it never
+    // wins "latest by timestamp"); the displayed value lives in a single MANUAL row
+    // that recompute refreshes. See AccountBalanceRepository.recomputeManualBalance.
+    // ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+
+    @Query("""
+        SELECT * FROM account_balances
+        WHERE bank_name = :bankName AND account_last4 = :accountLast4
+        AND source_type = 'OPENING'
+        ORDER BY timestamp ASC
+        LIMIT 1
+    """)
+    suspend fun getOpeningRow(bankName: String, accountLast4: String): AccountBalanceEntity?
+
+    @Query("""
+        SELECT * FROM account_balances
+        WHERE bank_name = :bankName AND account_last4 = :accountLast4
+        AND source_type = 'MANUAL'
+        ORDER BY timestamp DESC
+        LIMIT 1
+    """)
+    suspend fun getManualCurrentRow(bankName: String, accountLast4: String): AccountBalanceEntity?
+
+    @Query("""
+        SELECT MIN(timestamp) FROM account_balances
+        WHERE bank_name = :bankName AND account_last4 = :accountLast4
+    """)
+    suspend fun getEarliestBalanceTimestamp(bankName: String, accountLast4: String): LocalDateTime?
+
+    @Query("UPDATE account_balances SET balance = :balance, timestamp = :timestamp WHERE id = :id")
+    suspend fun updateBalanceAndTimestampById(id: Long, balance: BigDecimal, timestamp: LocalDateTime)
+
+    @Query("UPDATE account_balances SET currency = :currency WHERE bank_name = :bankName AND account_last4 = :accountLast4")
+    suspend fun updateAccountCurrency(bankName: String, accountLast4: String, currency: String): Int
+
+    /**
+     * Count of SMS-sourced balance rows for an account. Real bank SMS balances always
+     * carry a non-null `sms_source`, so a positive count means the account is
+     * SMS-tracked ÔÇö used to keep the manual-balance recompute away from SMS accounts
+     * that merely had a one-off "Update balance" override.
+     */
+    @Query("""
+        SELECT COUNT(*) FROM account_balances
+        WHERE bank_name = :bankName AND account_last4 = :accountLast4
+        AND sms_source IS NOT NULL
+    """)
+    suspend fun countSmsSourcedBalances(bankName: String, accountLast4: String): Int
 }

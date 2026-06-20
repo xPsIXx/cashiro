@@ -15,6 +15,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.pennywiseai.tracker.data.database.entity.AccountBalanceEntity
+import com.pennywiseai.tracker.ui.components.cards.PennyWiseCardV2
 import com.pennywiseai.tracker.ui.theme.*
 import com.pennywiseai.tracker.utils.CurrencyFormatter
 import java.math.BigDecimal
@@ -31,7 +32,7 @@ fun UnifiedAccountsCard(
 ) {
     var showAllAccounts by remember { mutableStateOf(false) }
     
-    PennyWiseCard(
+    PennyWiseCardV2(
         modifier = modifier.fillMaxWidth()
     ) {
         Column {
@@ -70,7 +71,7 @@ fun UnifiedAccountsCard(
                     )
                     Text(
                         text = if (bankAccounts.isNotEmpty()) {
-                            "Bank Balance • ${bankAccounts.size}"
+                            "Bank Balance ÔÇó ${bankAccounts.size}"
                         } else {
                             "Bank Balance"
                         },
@@ -107,7 +108,7 @@ fun UnifiedAccountsCard(
                     )
                     Text(
                         text = if (creditCards.isNotEmpty()) {
-                            "Available Credit • ${creditCards.size}"
+                            "Available Credit ÔÇó ${creditCards.size}"
                         } else {
                             "Available Credit"
                         },
@@ -237,7 +238,7 @@ private fun CompactAccountItem(
                 overflow = TextOverflow.Ellipsis
             )
             Text(
-                text = "••$accountLast4",
+                text = "ÔÇóÔÇó$accountLast4",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )

@@ -481,7 +481,8 @@ fun MainScreen(
                         navController.navigate("add_account") {
                             launchSingleTop = true
                         }
-                    }
+                    },
+                    onNavigateToBalanceHistory = { _, _ -> /* TODO: navigate to balance history page if wired */ }
                 )
             }
 

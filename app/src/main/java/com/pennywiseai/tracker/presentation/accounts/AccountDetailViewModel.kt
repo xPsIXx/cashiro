@@ -61,8 +61,12 @@ class AccountDetailViewModel @Inject constructor(
                 selectedDateRange,
                 transactionRepository.getTransactionsByAccount(bankName, accountLast4),
                 userPreferencesRepository.unifiedCurrencyMode,
-                userPreferencesRepository.displayCurrency
-            ) { dateRange, allTransactions, isUnified, displayCurrency ->
+                userPreferencesRepository.displayCurrency,
+                // Include the balance flow so editing the account's currency (which writes
+                // a new balance row, not a transaction) re-emits and updates the displayed
+                // currency live, even while this screen is already open.
+                accountBalanceRepository.getLatestBalanceFlow(bankName, accountLast4)
+            ) { dateRange, allTransactions, isUnified, displayCurrency, latestBalance ->
                 val (startDate, endDate) = getDateRangeValues(dateRange)
 
                 val filteredTransactions = if (dateRange == DateRange.ALL_TIME) {
@@ -75,7 +79,7 @@ class AccountDetailViewModel @Inject constructor(
                 }
 
                 // Use display currency when unified, otherwise account's primary currency
-                val targetCurrency = if (isUnified) displayCurrency else getPrimaryCurrencyForAccount(bankName)
+                val targetCurrency = if (isUnified) displayCurrency else primaryCurrencyForAccount(latestBalance)
                 val hasMultipleCurrencies = filteredTransactions
                     .map { it.currency }
                     .distinct()
@@ -251,8 +255,14 @@ class AccountDetailViewModel @Inject constructor(
         return billed to unbilled
     }
 
-    private fun getPrimaryCurrencyForAccount(bankName: String): String {
-        return CurrencyFormatter.getBankBaseCurrency(bankName)
+    // Derives the account's display currency from its latest balance row. Pure function
+    // of the flowed balance so the caller stays reactive to currency edits.
+    private fun primaryCurrencyForAccount(latestBalance: AccountBalanceEntity?): String {
+        return CurrencyFormatter.resolveAccountCurrency(
+            sourceType = latestBalance?.sourceType,
+            storedCurrency = latestBalance?.currency ?: "INR",
+            bankName = bankName
+        )
     }
 }
 

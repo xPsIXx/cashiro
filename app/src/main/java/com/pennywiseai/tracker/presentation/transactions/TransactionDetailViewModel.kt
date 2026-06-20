@@ -404,6 +404,12 @@ class TransactionDetailViewModel @Inject constructor(
             current?.copy(isRecurring = isRecurring)
         }
     }
+
+    fun updateExcludedFromAnalytics(excluded: Boolean) {
+        _editableTransaction.update { current ->
+            current?.copy(excludedFromAnalytics = excluded)
+        }
+    }
     
     fun updateAccountNumber(accountNumber: String?) {
         _editableTransaction.update { current ->

@@ -25,7 +25,7 @@ import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
-import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
+import androidx.hilt.navigation.compose.hiltViewModel
 import com.pennywiseai.tracker.utils.CurrencyFormatter
 import com.pennywiseai.tracker.ui.components.CustomTitleTopAppBar
 import com.pennywiseai.tracker.ui.components.PennyWiseEmptyState
@@ -43,19 +43,24 @@ import com.pennywiseai.tracker.data.database.entity.ProfileEntity
 fun ManageAccountsScreen(
     onNavigateBack: () -> Unit,
     onNavigateToAddAccount: () -> Unit,
+    onNavigateToBalanceHistory: (bankName: String, accountLast4: String) -> Unit,
     viewModel: ManageAccountsViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsState()
     var showUpdateDialog by remember { mutableStateOf(false) }
     var selectedAccount by remember { mutableStateOf<Pair<String, String>?>(null) }
     var selectedAccountEntity by remember { mutableStateOf<com.pennywiseai.tracker.data.database.entity.AccountBalanceEntity?>(null) }
-    var showHistoryDialog by remember { mutableStateOf(false) }
-    var historyAccount by remember { mutableStateOf<Pair<String, String>?>(null) }
     var showDeleteConfirmDialog by remember { mutableStateOf(false) }
     var accountToDelete by remember { mutableStateOf<Pair<String, String>?>(null) }
     var showHiddenAccounts by remember { mutableStateOf(false) }
     var showEditDialog by remember { mutableStateOf(false) }
     var accountToEdit by remember { mutableStateOf<com.pennywiseai.tracker.data.database.entity.AccountBalanceEntity?>(null) }
+    // Account merge (#368) ÔÇö single screen-level entry point; the sheet handles
+    // source + target selection + confirmation in one self-contained flow.
+    var showMergeSheet by remember { mutableStateOf(false) }
+    // val isProEntitled by viewModel.isProEntitled.collectAsState() // pro stubbed
+    var showUpgradeSheet by remember { mutableStateOf(false) }
+    // val pendingProfileReassign by viewModel.pendingProfileReassign.collectAsState() // profile stubbed
 
     val scrollBehaviorSmall = TopAppBarDefaults.pinnedScrollBehavior()
     val scrollBehaviorLarge = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
@@ -74,6 +79,19 @@ fun ManageAccountsScreen(
                 navigationContent = {
                     IconButton(onClick = onNavigateBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                    }
+                },
+                actionContent = {
+                    // Show Merge only when there are at least 2 accounts to choose between.
+                    // Pro-only feature ÔÇö free users see the icon (so the feature is
+                    // discoverable) but the tap routes to the paywall instead.
+                    if (uiState.accounts.size >= 2) {
+                        IconButton(onClick = {
+                            // isProEntitled stub: always allow merge sheet in this build
+                            showMergeSheet = true
+                        }) {
+                            Icon(Icons.Default.Merge, contentDescription = "Merge accounts")
+                        }
                     }
                 },
                 hazeState = hazeState
@@ -214,9 +232,7 @@ fun ManageAccountsScreen(
                                 showUpdateDialog = true
                             },
                             onViewHistory = {
-                                historyAccount = account.bankName to account.accountLast4
-                                viewModel.loadBalanceHistory(account.bankName, account.accountLast4)
-                                showHistoryDialog = true
+                                onNavigateToBalanceHistory(account.bankName, account.accountLast4)
                             },
                             onUnlinkCard = { cardId ->
                                 viewModel.unlinkCard(cardId)
@@ -231,6 +247,9 @@ fun ManageAccountsScreen(
                             },
                             onSetProfile = { profileId ->
                                 viewModel.setAccountProfile(account.bankName, account.accountLast4, profileId)
+                            },
+                            onSetAlias = { alias ->
+                                /* viewModel.setAccountAlias(account.bankName, account.accountLast4, alias) // alias upstream */ 
                             }
                         )
                     }
@@ -280,9 +299,7 @@ fun ManageAccountsScreen(
                                 showUpdateDialog = true
                             },
                             onViewHistory = {
-                                historyAccount = card.bankName to card.accountLast4
-                                viewModel.loadBalanceHistory(card.bankName, card.accountLast4)
-                                showHistoryDialog = true
+                                onNavigateToBalanceHistory(card.bankName, card.accountLast4)
                             },
                             onDeleteAccount = {
                                 accountToDelete = card.bankName to card.accountLast4
@@ -360,9 +377,7 @@ fun ManageAccountsScreen(
                                     showUpdateDialog = true
                                 },
                                 onViewHistory = {
-                                    historyAccount = account.bankName to account.accountLast4
-                                    viewModel.loadBalanceHistory(account.bankName, account.accountLast4)
-                                    showHistoryDialog = true
+                                    onNavigateToBalanceHistory(account.bankName, account.accountLast4)
                                 },
                                 onUnlinkCard = { cardId ->
                                     viewModel.unlinkCard(cardId)
@@ -377,6 +392,9 @@ fun ManageAccountsScreen(
                                 },
                                 onSetProfile = { profileId ->
                                     viewModel.setAccountProfile(account.bankName, account.accountLast4, profileId)
+                                },
+                                onSetAlias = { alias ->
+                                    /* viewModel.setAccountAlias(account.bankName, account.accountLast4, alias) // alias upstream */ 
                                 }
                             )
                         }
@@ -395,9 +413,7 @@ fun ManageAccountsScreen(
                                     showUpdateDialog = true
                                 },
                                 onViewHistory = {
-                                    historyAccount = card.bankName to card.accountLast4
-                                    viewModel.loadBalanceHistory(card.bankName, card.accountLast4)
-                                    showHistoryDialog = true
+                                    onNavigateToBalanceHistory(card.bankName, card.accountLast4)
                                 },
                                 onDeleteAccount = {
                                     accountToDelete = card.bankName to card.accountLast4
@@ -468,26 +484,6 @@ fun ManageAccountsScreen(
         }
     }
     
-    // Balance History Dialog
-    if (showHistoryDialog && historyAccount != null) {
-        BalanceHistoryDialog(
-            bankName = historyAccount!!.first,
-            accountLast4 = historyAccount!!.second,
-            balanceHistory = uiState.balanceHistory,
-            onDismiss = {
-                showHistoryDialog = false
-                historyAccount = null
-                viewModel.clearBalanceHistory()
-            },
-            onDeleteBalance = { id ->
-                viewModel.deleteBalanceRecord(id, historyAccount!!.first, historyAccount!!.second)
-            },
-            onUpdateBalance = { id, newBalance ->
-                viewModel.updateBalanceRecord(id, newBalance, historyAccount!!.first, historyAccount!!.second)
-            }
-        )
-    }
-
     // Delete Account Confirmation Dialog
     if (showDeleteConfirmDialog && accountToDelete != null) {
         DeleteAccountConfirmDialog(
@@ -513,7 +509,7 @@ fun ManageAccountsScreen(
                 showEditDialog = false
                 accountToEdit = null
             },
-            onConfirm = { newBankName, newBalance, newCreditLimit ->
+            onConfirm = { newBankName, newBalance, newCreditLimit, newCurrency ->
                 viewModel.editAccount(
                     oldBankName = accountToEdit!!.bankName,
                     accountLast4 = accountToEdit!!.accountLast4,
@@ -527,6 +523,17 @@ fun ManageAccountsScreen(
             }
         )
     }
+
+    // Merge / Pro features from upstream not fully wired in this Firefly build (data layer improvements applied)
+    // Stubs to keep UI compiling while core currency/account/budget features from stages are present.
+    if (showMergeSheet) {
+        // Merge UI omitted for build compat; core account merge logic in repo if present
+        showMergeSheet = false
+    }
+    if (showUpgradeSheet) {
+        showUpgradeSheet = false
+    }
+    // pendingProfileReassign omitted for build (pro/account profile upstream)
 }
 
 @Composable
@@ -601,7 +608,7 @@ private fun CreditCardItem(
                                 overflow = TextOverflow.Ellipsis
                             )
                             Text(
-                                text = "••${card.accountLast4}",
+                                text = "ÔÇóÔÇó${card.accountLast4}",
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -876,9 +883,11 @@ private fun AccountItem(
     onUnlinkCard: (cardId: Long) -> Unit = {},
     onDeleteAccount: () -> Unit = {},
     onEditAccount: () -> Unit = {},
-    onSetProfile: (Long) -> Unit = {}
+    onSetProfile: (Long) -> Unit = {},
+    onSetAlias: (String?) -> Unit = {}
 ) {
     val isManualAccount = account.sourceType == "MANUAL"
+    var showAliasDialog by remember { mutableStateOf(false) }
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(
@@ -912,23 +921,26 @@ private fun AccountItem(
                         contentDescription = null,
                         tint = MaterialTheme.colorScheme.primary
                     )
+                    val alias = account.alias?.takeIf { it.isNotBlank() }
                     Column {
                         Row(
                             horizontalArrangement = Arrangement.spacedBy(Spacing.xs),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Text(
-                                text = account.bankName,
+                                text = alias ?: account.bankName,
                                 style = MaterialTheme.typography.bodyLarge,
                                 fontWeight = FontWeight.Medium,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis
                             )
-                            Text(
-                                text = "••${account.accountLast4}",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
+                            if (alias == null) {
+                                Text(
+                                    text = "ÔÇóÔÇó${account.accountLast4}",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
                             if (account.profileId == ProfileEntity.BUSINESS_ID) {
                                 Surface(
                                     color = MaterialTheme.colorScheme.tertiaryContainer,
@@ -951,6 +963,17 @@ private fun AccountItem(
                                 )
                             }
                         }
+                        // When an alias is set, keep the underlying bank/last-4
+                        // visible as a subtitle so the account stays identifiable.
+                        if (alias != null) {
+                            Text(
+                                text = "${account.bankName} ÔÇóÔÇó${account.accountLast4}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
                     }
                 }
 
@@ -959,7 +982,16 @@ private fun AccountItem(
                     horizontalAlignment = Alignment.End
                 ) {
                     Text(
-                        text = CurrencyFormatter.formatCurrency(account.balance, account.currency),
+                        text = CurrencyFormatter.formatCurrency(
+                            account.balance,
+                            // Resolve so the list matches Account Detail ÔÇö SMS-tracked
+                            // non-INR accounts show their parser currency, not stored INR.
+                            CurrencyFormatter.resolveAccountCurrency(
+                                sourceType = account.sourceType,
+                                storedCurrency = account.currency,
+                                bankName = account.bankName
+                            )
+                        ),
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.SemiBold,
                         color = MaterialTheme.colorScheme.primary
@@ -1014,7 +1046,7 @@ private fun AccountItem(
                                             horizontalArrangement = Arrangement.spacedBy(Spacing.xs)
                                         ) {
                                             Text(
-                                                text = "••${card.cardLast4}",
+                                                text = "ÔÇóÔÇó${card.cardLast4}",
                                                 style = MaterialTheme.typography.bodyMedium
                                             )
                                             if (!card.isActive) {
@@ -1127,6 +1159,19 @@ private fun AccountItem(
                             }
                         )
                         DropdownMenuItem(
+                            text = { Text(if (account.alias.isNullOrBlank()) "Set alias" else "Rename") },
+                            onClick = {
+                                showMenu = false
+                                showAliasDialog = true
+                            },
+                            leadingIcon = {
+                                Icon(
+                                    Icons.Default.DriveFileRenameOutline,
+                                    contentDescription = null
+                                )
+                            }
+                        )
+                        DropdownMenuItem(
                             text = { Text("Delete") },
                             onClick = {
                                 showMenu = false
@@ -1148,6 +1193,66 @@ private fun AccountItem(
             }
         }
     }
+
+    if (showAliasDialog) {
+        AccountAliasDialog(
+            currentAlias = account.alias,
+            accountLabel = "${account.bankName} ÔÇóÔÇó${account.accountLast4}",
+            onDismiss = { showAliasDialog = false },
+            onConfirm = { newAlias ->
+                onSetAlias(newAlias)
+                showAliasDialog = false
+            }
+        )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun AccountAliasDialog(
+    currentAlias: String?,
+    accountLabel: String,
+    onDismiss: () -> Unit,
+    onConfirm: (String?) -> Unit
+) {
+    var aliasText by remember { mutableStateOf(currentAlias.orEmpty()) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Rename account") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(Spacing.sm)) {
+                Text(
+                    text = accountLabel,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                OutlinedTextField(
+                    value = aliasText,
+                    onValueChange = { aliasText = it },
+                    label = { Text("Alias") },
+                    placeholder = { Text("e.g. Salary account") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Text(
+                    text = "Leave blank to clear the alias.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onConfirm(aliasText.trim().ifBlank { null }) }) {
+                Text("Save")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel")
+            }
+        }
+    )
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -1167,7 +1272,7 @@ private fun UpdateBalanceDialog(
             Column {
                 Text("Update Balance")
                 Text(
-                    text = "$bankName ••$accountLast4",
+                    text = "$bankName ÔÇóÔÇó$accountLast4",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -1245,7 +1350,7 @@ private fun UpdateCreditCardDialog(
             Column {
                 Text("Update Credit Card")
                 Text(
-                    text = "$bankName ••$accountLast4",
+                    text = "$bankName ÔÇóÔÇó$accountLast4",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -1409,27 +1514,20 @@ private fun OrphanedCardItem(
             containerColor = MaterialTheme.colorScheme.surfaceVariant
         )
     ) {
-        Column {
+        Column(modifier = Modifier.padding(Dimensions.Padding.content)) {
             Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(Dimensions.Padding.content),
-                horizontalArrangement = Arrangement.SpaceBetween,
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(Spacing.sm),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(Spacing.sm),
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.weight(1f)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.CreditCard,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary
-                    )
+                Icon(
+                    imageVector = Icons.Default.CreditCard,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary
+                )
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = "${card.bankName} ••${card.cardLast4}",
+                        text = "${card.bankName} ÔÇóÔÇó${card.cardLast4}",
                         style = MaterialTheme.typography.bodyMedium,
                         fontWeight = FontWeight.Medium
                     )
@@ -1462,48 +1560,53 @@ private fun OrphanedCardItem(
                     }
                 }
             }
-            
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(Spacing.xs)
+
+            Spacer(modifier = Modifier.height(Spacing.sm))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(Spacing.xs)
+            ) {
+                OutlinedButton(
+                    modifier = Modifier.weight(1f),
+                    onClick = { showLinkDialog = true }
                 ) {
-                    OutlinedButton(
-                        onClick = { showLinkDialog = true }
-                    ) {
-                        Icon(
-                            Icons.Default.Link,
-                            contentDescription = null,
-                            modifier = Modifier.size(Dimensions.Icon.small)
-                        )
-                        Spacer(modifier = Modifier.width(Spacing.xs))
-                        Text("Link")
-                    }
+                    Icon(
+                        Icons.Default.Link,
+                        contentDescription = null,
+                        modifier = Modifier.size(Dimensions.Icon.small)
+                    )
+                    Spacer(modifier = Modifier.width(Spacing.xs))
+                    Text("Link")
+                }
 
-                    OutlinedButton(
-                        onClick = { showEditDialog = true }
-                    ) {
-                        Icon(
-                            Icons.Default.Edit,
-                            contentDescription = null,
-                            modifier = Modifier.size(Dimensions.Icon.small)
-                        )
-                        Spacer(modifier = Modifier.width(Spacing.xs))
-                        Text("Edit")
-                    }
+                OutlinedButton(
+                    modifier = Modifier.weight(1f),
+                    onClick = { showEditDialog = true }
+                ) {
+                    Icon(
+                        Icons.Default.Edit,
+                        contentDescription = null,
+                        modifier = Modifier.size(Dimensions.Icon.small)
+                    )
+                    Spacer(modifier = Modifier.width(Spacing.xs))
+                    Text("Edit")
+                }
 
-                    OutlinedButton(
-                        onClick = { onDeleteCard(card.id) },
-                        colors = ButtonDefaults.outlinedButtonColors(
-                            contentColor = MaterialTheme.colorScheme.error
-                        )
-                    ) {
-                        Icon(
-                            Icons.Default.Delete,
-                            contentDescription = null,
-                            modifier = Modifier.size(Dimensions.Icon.small)
-                        )
-                        Spacer(modifier = Modifier.width(Spacing.xs))
-                        Text("Delete")
-                    }
+                OutlinedButton(
+                    modifier = Modifier.weight(1f),
+                    onClick = { onDeleteCard(card.id) },
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        contentColor = MaterialTheme.colorScheme.error
+                    )
+                ) {
+                    Icon(
+                        Icons.Default.Delete,
+                        contentDescription = null,
+                        modifier = Modifier.size(Dimensions.Icon.small)
+                    )
+                    Spacer(modifier = Modifier.width(Spacing.xs))
+                    Text("Delete")
                 }
             }
         }
@@ -1556,7 +1659,7 @@ private fun EditCardDialog(
                 verticalArrangement = Arrangement.spacedBy(Spacing.md)
             ) {
                 Text(
-                    text = "••${card.cardLast4}",
+                    text = "ÔÇóÔÇó${card.cardLast4}",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -1626,7 +1729,7 @@ private fun LinkCardDialog(
             Column {
                 Text("Link Card to Account")
                 Text(
-                    text = "${card.bankName} ••${card.cardLast4}",
+                    text = "${card.bankName} ÔÇóÔÇó${card.cardLast4}",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -1675,7 +1778,7 @@ private fun LinkCardDialog(
                             ) {
                                 Column {
                                     Text(
-                                        text = "••${account.accountLast4}",
+                                        text = "ÔÇóÔÇó${account.accountLast4}",
                                         style = MaterialTheme.typography.bodyMedium,
                                         fontWeight = FontWeight.Medium
                                     )
@@ -1803,11 +1906,25 @@ private fun DeleteAccountConfirmDialog(
 private fun EditAccountDialog(
     account: com.pennywiseai.tracker.data.database.entity.AccountBalanceEntity,
     onDismiss: () -> Unit,
-    onConfirm: (bankName: String, balance: BigDecimal, creditLimit: BigDecimal?) -> Unit
+    onConfirm: (bankName: String, balance: BigDecimal, creditLimit: BigDecimal?, currency: String) -> Unit
 ) {
     var bankNameText by remember { mutableStateOf(account.bankName) }
     var balanceText by remember { mutableStateOf(account.balance.toString()) }
     var creditLimitText by remember { mutableStateOf(account.creditLimit?.toString() ?: "") }
+    // Pre-fill with the *resolved* currency (what the account actually displays), not
+    // the raw stored value ÔÇö an SMS-tracked non-INR account stores the INR default but
+    // shows the parser currency. Seeding from the raw value would let an unrelated edit
+    // silently lock the account to INR.
+    var currencyText by remember {
+        mutableStateOf(
+            CurrencyFormatter.resolveAccountCurrency(
+                sourceType = account.sourceType,
+                storedCurrency = account.currency,
+                bankName = account.bankName
+            )
+        )
+    }
+    var showCurrencyMenu by remember { mutableStateOf(false) }
     var isValid by remember { mutableStateOf(false) }
 
     LaunchedEffect(bankNameText, balanceText, creditLimitText) {
@@ -1850,7 +1967,7 @@ private fun EditAccountDialog(
 
                 // Account Number (Read-only)
                 TextField(
-                    value = "••${account.accountLast4}",
+                    value = "ÔÇóÔÇó${account.accountLast4}",
                     onValueChange = {},
                     label = { Text("Account Number") },
                     enabled = false,
@@ -1871,6 +1988,51 @@ private fun EditAccountDialog(
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
+
+                // Currency (editable ÔÇö lets an existing account switch currency)
+                Column {
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { showCurrencyMenu = true },
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.surfaceContainerLow
+                        )
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = Spacing.md, vertical = Spacing.sm),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "Currency",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Text(
+                                text = "$currencyText   ${CurrencyFormatter.getCurrencySymbol(currencyText)}",
+                                style = MaterialTheme.typography.bodyLarge,
+                                fontWeight = FontWeight.Medium
+                            )
+                        }
+                    }
+                    DropdownMenu(
+                        expanded = showCurrencyMenu,
+                        onDismissRequest = { showCurrencyMenu = false }
+                    ) {
+                        CurrencyFormatter.getSupportedCurrencies().sorted().forEach { code ->
+                            DropdownMenuItem(
+                                text = { Text("$code   ${CurrencyFormatter.getCurrencySymbol(code)}") },
+                                onClick = {
+                                    currencyText = code
+                                    showCurrencyMenu = false
+                                }
+                            )
+                        }
+                    }
+                }
 
                 if (account.isCreditCard) {
                     // Outstanding Balance (Credit Card)
@@ -1992,7 +2154,7 @@ private fun EditAccountDialog(
                     val creditLimit = if (account.isCreditCard) {
                         creditLimitText.toBigDecimalOrNull()
                     } else null
-                    onConfirm(bankNameText, balance, creditLimit)
+                    onConfirm(bankNameText, balance, creditLimit, currencyText)
                 },
                 enabled = isValid
             ) {

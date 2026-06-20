@@ -19,7 +19,7 @@ object CurrencyUtils {
     /**
      * Formats a BigDecimal amount as Indian Rupees
      * @param amount The amount to format
-     * @return Formatted string like "₹1,234" or "₹1,23,456"
+     * @return Formatted string like "Ôé╣1,234" or "Ôé╣1,23,456"
      */
     fun formatCurrency(amount: BigDecimal): String {
         // For amounts with decimals, show them

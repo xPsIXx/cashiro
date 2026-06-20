@@ -17,25 +17,28 @@ object CurrencyFormatter {
      * Currency symbol mapping for display
      */
     private val CURRENCY_SYMBOLS = mapOf(
-        "INR" to "₹",
+        "INR" to "Ôé╣",
         "PKR" to "Rs",
         "USD" to "$",
-        "EUR" to "€",
-        "GBP" to "£",
+        "EUR" to "Ôé¼",
+        "GBP" to "┬ú",
         "AED" to "AED",
         "SGD" to "S$",
         "CAD" to "C$",
         "MXN" to "MX$",
         "AUD" to "A$",
-        "JPY" to "¥",
-        "CNY" to "¥",
-        "IRR" to "﷼",
-        "NPR" to "₨",
-        "ETB" to "ብር",
-        "THB" to "฿",
+        "JPY" to "┬Ñ",
+        "CNY" to "┬Ñ",
+        "IRR" to "´À╝",
+        "NPR" to "Ôé¿",
+        "ETB" to "ßëÑßê¡",
+        "THB" to "Ó©┐",
         "MYR" to "RM",
         "KWD" to "KD",
-        "KRW" to "₩"
+        "KRW" to "Ôé®",
+        "NGN" to "Ôéª",
+        "TZS" to "TSh",
+        "BRL" to "R$"
     )
 
     /**
@@ -60,7 +63,10 @@ object CurrencyFormatter {
         "THB" to Locale.Builder().setLanguage("th").setRegion("TH").build(),
         "MYR" to Locale.Builder().setLanguage("ms").setRegion("MY").build(),
         "KWD" to Locale.Builder().setLanguage("en").setRegion("KW").build(),
-        "KRW" to Locale.KOREA
+        "KRW" to Locale.KOREA,
+        "NGN" to Locale.Builder().setLanguage("en").setRegion("NG").build(),
+        "TZS" to Locale.Builder().setLanguage("en").setRegion("TZ").build(),
+        "BRL" to Locale.Builder().setLanguage("pt").setRegion("BR").build()
     )
 
     /**
@@ -156,6 +162,25 @@ object CurrencyFormatter {
                 "${symbol}${String.format("%.1f", absValue / 1_000)}K"
             absValue > 0 -> "${symbol}${absValue.toInt()}"
             else -> "${symbol}0"
+        }
+    }
+
+    /**
+     * Resolves the effective currency for an account. Manual accounts store the
+     * currency the user chose ÔÇö trust it. SMS-tracked accounts fall back to the bank
+     * parser's currency (their stored value may be the INR default even for a non-INR
+     * bank). Shared by Account Detail, onboarding, and Settings so the rule stays
+     * consistent everywhere.
+     */
+    fun resolveAccountCurrency(
+        sourceType: String?,
+        storedCurrency: String,
+        bankName: String?
+    ): String {
+        return if (sourceType == "MANUAL") {
+            storedCurrency
+        } else {
+            getBankBaseCurrency(bankName)
         }
     }
 

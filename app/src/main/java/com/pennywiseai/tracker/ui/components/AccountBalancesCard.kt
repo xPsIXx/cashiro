@@ -12,6 +12,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.pennywiseai.tracker.data.database.entity.AccountBalanceEntity
+import com.pennywiseai.tracker.ui.components.cards.PennyWiseCardV2
 import com.pennywiseai.tracker.ui.theme.*
 import com.pennywiseai.tracker.utils.CurrencyFormatter
 import java.math.BigDecimal
@@ -51,7 +52,7 @@ fun AccountBalancesCard(
         regularAccounts.take(4)
     }
 
-    PennyWiseCard(
+    PennyWiseCardV2(
         modifier = modifier.fillMaxWidth()
     ) {
         Column {
@@ -90,7 +91,7 @@ fun AccountBalancesCard(
                 if (regularAccounts.size > 5) {
                     Spacer(modifier = Modifier.height(Spacing.xs))
                     Text(
-                        text = "View all ${regularAccounts.size} accounts →",
+                        text = "View all ${regularAccounts.size} accounts ÔåÆ",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.primary,
                         modifier = Modifier
