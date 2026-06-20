@@ -48,7 +48,7 @@ class SliceParserTest {
                 expected = ExpectedTransaction(
                     amount = BigDecimal("500"),
                     currency = "INR",
-                    type = TransactionType.CREDIT,
+                    type = TransactionType.EXPENSE,
                     merchant = "John Doe",
                     accountLast4 = null,
                     reference = null

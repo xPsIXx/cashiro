@@ -7,6 +7,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.3.1] - 2026-06-20
+
+### Fixed
+- **GitHub Actions CI parser tests now pass** (`:parser-core:jvmTest`).
+  - SliceParserTest: "Slice UPI transfer (sent to)" case corrected from `CREDIT` to `EXPENSE`. This matches the updated `SliceParser.extractTransactionType()` logic (post-RBI PPI changes: "sent" UPI transfers from the bank account are regular `EXPENSE`; `CREDIT` type is reserved for explicit credit-card context only).
+- Re-audit of all parser test expectations after the large bank parser expansion.
+
+### Release Summary (full changelog highlights)
+This release consolidates major work to make PennywiseAI-Firefly stable and CI-clean:
+
+**Parser improvements (major upstream port, fully Firefly-compatible)**
+- Many new / improved bank parsers added with high accuracy:
+  - Africa: M-Pesa Mozambique (content-aware), CRDB (Tanzania, multi-currency), eMola, Millennium BIM, Standard Bank Mozambique, Telebirr, Zemen, Dashen.
+  - Middle East / Iran: Emirates Islamic, Bankino, blu Bank, Mellat, Melli, Parsian.
+  - Nigeria: Access, Zenith, Keystone, Jaiz, Opay.
+  - India: Navi Mutual Fund, various accuracy fixes (IndusInd, Slice, etc.).
+  - Others: Thailand banks, more Nepal, Pakistan, etc.
+- Content-aware parser dispatch (`getParsers` + `parse`) for shared senders (e.g. M-Pesa variants).
+- All new parsers produce standard output (including `transactionHash` for Firefly external IDs).
+
+**Firefly III Integration (core feature of this fork)**
+- Stable hash-based `external_id` (`pennywise-{transactionHash}`) — survives reinstalls and re-parsing.
+- One-time migration + reconcile on first enable.
+- Multiple sync modes: Sync Last 30 Days, Sync All Unsynced, Full Sync, auto periodic sync (configurable interval).
+- Account + category mappings (live accounts fetched from Firefly).
+- Per-transaction sync status + manual "Sync to Firefly" / "Resync" on detail screen.
+- Failed syncs queue + retry UI.
+- Optional raw SMS in notes; "Synced from PennyWise" footer.
+- Pre-existence check before POST to avoid duplicates.
+
+**Bloat removal & personal use focus**
+- Complete removal of Pro tier / Google Play Billing layer (no paywall, no billing code, no Google connections).
+- All previously paid features (unlimited rules, imports, exports, account merge, etc.) are now always unlocked.
+
+**Build & reliability fixes**
+- Fixed transient IR/KSP backend error when using kotlinx.serialization directly on Room entities (TransactionEntity + backup path now uses plain entities + JsonElement bridge for serialization).
+- Consistent external ID handling across auto-sync, manual sync, and add-transaction paths.
+- GitHub Actions workflow verified (parser tests + clean compile + unit tests).
+- Full code recheck for errors, deprecations, and compatibility.
+
+**Other notes**
+- This is a vibe-coded personal fork. Probably shouldn't be used by anyone in production with real money without thorough review.
+- See README for Firefly setup and known limitations.
+
 ## [1.3.0] - 2026-06-20
 
 ### Fixed
