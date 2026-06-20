@@ -7,6 +7,7 @@ import kotlinx.serialization.encodeToString
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.math.BigDecimal
 import java.time.LocalDate
@@ -323,8 +324,8 @@ class BackupModelsTest {
             )
         )
 
-        val json = gson.toJson(backup)
-        val deserialized = gson.fromJson(json, PennyWiseBackup::class.java)
+        val json = backupJson.encodeToString(backup)
+        val deserialized = backupJson.decodeFromString<PennyWiseBackup>(json)
 
         // Statistics survive.
         assertEquals(2, deserialized.metadata.statistics.totalLoans)
