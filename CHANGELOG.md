@@ -33,6 +33,16 @@ All ported features were verified compatible with PennywiseAI-Firefly's Firefly 
 - Exclude flag treated as analytics-only (synced transactions still go to Firefly).
 - Account currency and manual vs SMS distinctions respected for mappings and payloads.
 
+### Ported from remaining "other" list (#11,13,14,15,16,18,20)
+- #11: DB infra - single shared MIGRATION list (Firefly columns unaffected).
+- #13: Notif 'More categories' picker.
+- #14: Credit card outstanding (not limit) in carousel.
+- #15: Prefer description over merchant as row title.
+- #16: Rule icon refresh + bg fixes.
+- #18: Parser unused import cleanup.
+- #20: Small polish (rules, empty account, redundant).
+All confirmed no impact on Firefly sync paths.
+
 ### Added (additional upstream #1,2,4,5,6,7,8,9)
 - #1 Smart Rules info card dark mode legibility.
 - #2 Full subscriptions/recurring (autopay, link tx, mark paid, sort) - txs created use hash path for Firefly.
