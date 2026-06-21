@@ -41,6 +41,27 @@ class FireflyClient @Inject constructor() {
         private val DATE_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd")
     }
 
+    // Simple response models for account and category fetching
+    @Serializable
+    private data class FireflyAccountsResponse(val data: List<FireflyAccountWrapper>)
+
+    @Serializable
+    private data class FireflyAccountWrapper(val attributes: FireflyAccountAttributes)
+
+    @Serializable
+    private data class FireflyAccountAttributes(val name: String, val active: Boolean = true)
+
+    @Serializable
+    private data class FireflyCategoriesResponse(val data: List<FireflyCategoryWrapper>)
+
+    @Serializable
+    private data class FireflyCategoryWrapper(val attributes: FireflyCategoryAttributes)
+
+    @Serializable
+    private data class FireflyCategoryAttributes(val name: String)
+
+    data class FireflyAccountInfo(val name: String, val active: Boolean = true)
+
     private val json = Json {
         ignoreUnknownKeys = true
         isLenient = true
@@ -74,7 +95,7 @@ class FireflyClient @Inject constructor() {
     /**
      * Fetches asset accounts from Firefly for mapping UI.
      */
-    suspend fun getAccounts(baseUrl: String, accessToken: String): List<String> {
+    suspend fun getAccounts(baseUrl: String, accessToken: String): List<FireflyAccountInfo> {
         if (baseUrl.isBlank() || accessToken.isBlank()) return emptyList()
 
         return withContext(Dispatchers.IO) {
@@ -88,14 +109,42 @@ class FireflyClient @Inject constructor() {
                 if (!response.status.isSuccess()) return@withContext emptyList()
 
                 val body = response.bodyAsText()
-                // Simple parsing for account names in JSON:API format
-                val names = mutableListOf<String>()
-                Regex(""""name"\s*:\s*"([^"]+)"""").findAll(body).forEach { match ->
-                    match.groupValues.getOrNull(1)?.let { names.add(it) }
-                }
-                names.distinct().sorted()
+                val parsed = json.decodeFromString<FireflyAccountsResponse>(body)
+                parsed.data
+                    .map { item ->
+                        val attrs = item.attributes
+                        FireflyAccountInfo(name = attrs.name, active = attrs.active)
+                    }
+                    .distinctBy { it.name }
+                    .sortedBy { it.name }
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to fetch Firefly accounts", e)
+                emptyList()
+            }
+        }
+    }
+
+    suspend fun getCategories(baseUrl: String, accessToken: String): List<String> {
+        if (baseUrl.isBlank() || accessToken.isBlank()) return emptyList()
+
+        return withContext(Dispatchers.IO) {
+            try {
+                val normalizedUrl = normalizeBaseUrl(baseUrl)
+                val response: HttpResponse = client.get("$normalizedUrl$API_PATH/categories") {
+                    header("Authorization", "Bearer $accessToken")
+                    header("Accept", "application/vnd.api+json")
+                }
+
+                if (!response.status.isSuccess()) return@withContext emptyList()
+
+                val body = response.bodyAsText()
+                val parsed = json.decodeFromString<FireflyCategoriesResponse>(body)
+                parsed.data
+                    .map { it.attributes.name }
+                    .distinct()
+                    .sorted()
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to fetch Firefly categories", e)
                 emptyList()
             }
         }

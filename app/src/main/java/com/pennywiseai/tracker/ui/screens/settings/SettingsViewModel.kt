@@ -133,8 +133,11 @@ class SettingsViewModel @Inject constructor(
             initialValue = emptyList()
         )
 
-    private val _fireflyAccounts = MutableStateFlow<List<String>>(emptyList())
-    val fireflyAccounts: StateFlow<List<String>> = _fireflyAccounts.asStateFlow()
+    private val _fireflyAccounts = MutableStateFlow<List<com.pennywiseai.tracker.data.firefly.FireflyClient.FireflyAccountInfo>>(emptyList())
+    val fireflyAccounts: StateFlow<List<com.pennywiseai.tracker.data.firefly.FireflyClient.FireflyAccountInfo>> = _fireflyAccounts.asStateFlow()
+
+    private val _fireflyCategories = MutableStateFlow<List<String>>(emptyList())
+    val fireflyCategories: StateFlow<List<String>> = _fireflyCategories.asStateFlow()
 
     private val _isLoadingFireflyAccounts = MutableStateFlow(false)
     val isLoadingFireflyAccounts: StateFlow<Boolean> = _isLoadingFireflyAccounts.asStateFlow()
@@ -601,8 +604,11 @@ class SettingsViewModel @Inject constructor(
                 if (!url.isNullOrBlank() && !token.isNullOrBlank()) {
                     val accounts = fireflyClient.getAccounts(url, token)
                     _fireflyAccounts.value = accounts
+                    val categories = fireflyClient.getCategories(url, token)
+                    _fireflyCategories.value = categories
                 } else {
                     _fireflyAccounts.value = emptyList()
+                    _fireflyCategories.value = emptyList()
                 }
             } finally {
                 _isLoadingFireflyAccounts.value = false

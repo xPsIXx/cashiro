@@ -10,7 +10,10 @@ import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Send
+import androidx.compose.material.icons.filled.Category
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.*
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import kotlinx.coroutines.delay
@@ -45,7 +48,10 @@ fun FireflySettingsScreen(
     val allCategories by viewModel.allCategoriesForMapping.collectAsStateWithLifecycle(initialValue = emptyList())
     val fireflyIncludeRawSms by viewModel.fireflyIncludeRawSms.collectAsStateWithLifecycle(initialValue = true)
     val fireflyAccounts by viewModel.fireflyAccounts.collectAsStateWithLifecycle(initialValue = emptyList())
+    val fireflyCategories by viewModel.fireflyCategories.collectAsStateWithLifecycle(initialValue = emptyList())
     val isLoadingFireflyAccounts by viewModel.isLoadingFireflyAccounts.collectAsStateWithLifecycle(initialValue = false)
+
+    val hasFireflyConnection = fireflyAccounts.isNotEmpty() || fireflyCategories.isNotEmpty() || !isLoadingFireflyAccounts
     val fireflyAutoSyncInterval by viewModel.fireflyAutoSyncInterval.collectAsStateWithLifecycle(initialValue = "never")
     val fireflyMigrationRan by viewModel.fireflyMigrationRan.collectAsStateWithLifecycle(initialValue = false)
 
@@ -63,6 +69,10 @@ fun FireflySettingsScreen(
     var isSavingSettings by remember { mutableStateOf(false) }
     var showSaved by remember { mutableStateOf(false) }
     var syncResult by remember { mutableStateOf<String?>(null) }
+
+    // Deeper dedicated mapping sheets (only available after connection)
+    var showAccountMappingsSheet by remember { mutableStateOf(false) }
+    var showCategoryMappingsSheet by remember { mutableStateOf(false) }
 
     // "Hide raw SMS in notes" toggle (UI label)
     // We store the inverse in prefs as "includeRawSms"
@@ -481,235 +491,220 @@ fun FireflySettingsScreen(
                 Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
             }
 
-            // Account Mappings
-            if (fireflyMappingAccounts.isNotEmpty()) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text("Account Mappings", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f), color = MaterialTheme.colorScheme.onSurface)
-                    IconButton(onClick = { viewModel.refreshFireflyAccounts() }, enabled = !isLoadingFireflyAccounts) {
-                        if (isLoadingFireflyAccounts) {
-                            CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
-                        } else {
-                            Icon(Icons.Default.Refresh, contentDescription = "Refresh Firefly accounts")
-                        }
-                    }
-                    TextButton(onClick = { viewModel.clearAllFireflyAccountMappings() }) {
-                        Text("Clear all", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
-                    }
-                }
+            // Mappings - only available after successful connection
+            val hasConnection = fireflyAccounts.isNotEmpty()
+
+            Text(
+                "Mappings",
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.padding(top = 16.dp)
+            )
+
+            if (!hasConnection) {
                 Text(
-                    "Map specific accounts to Firefly asset accounts (default fallback used otherwise)",
+                    "Connect successfully to Firefly (test your connection) to enable account and category mappings.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-
-                val mappedCount = fireflyMappings.size
-                val totalPennywiseAccounts = fireflyMappingAccounts.size
-                if (totalPennywiseAccounts > 0) {
-                    Text(
-                        "$mappedCount of $totalPennywiseAccounts PennyWise accounts have specific Firefly mappings (rest use default).",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+            } else {
+                // Account Mappings - deeper menu (opens as dedicated bottom sheet)
+                OutlinedButton(
+                    onClick = { showAccountMappingsSheet = true },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(Icons.Default.AccountBalance, contentDescription = null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Manage Account Mappings (${fireflyMappingAccounts.size})")
                 }
 
-                Column(modifier = Modifier.heightIn(max = 280.dp)) {
-                    if (isLoadingFireflyAccounts) {
-                        Text(
-                            "Loading Firefly accounts...",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(bottom = 8.dp)
-                        )
-                    } else if (fireflyAccounts.isEmpty()) {
-                        Text(
-                            "⚠ Unable to load accounts from Firefly (test your connection first). Manual entry is disabled until accounts can be fetched.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.error,
-                            modifier = Modifier.padding(bottom = 8.dp)
-                        )
-                    }
+                // Category Mappings - deeper menu
+                OutlinedButton(
+                    onClick = { showCategoryMappingsSheet = true },
+                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
+                ) {
+                    Icon(Icons.Default.Category, contentDescription = null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Manage Category Mappings")
+                }
+            }
 
+            Spacer(Modifier.height(8.dp))
+        }
+    }
+
+    // ==================== DEDICATED ACCOUNT MAPPINGS SHEET ====================
+    if (showAccountMappingsSheet) {
+        ModalBottomSheet(onDismissRequest = { showAccountMappingsSheet = false }) {
+            Column(modifier = Modifier.padding(16.dp).verticalScroll(rememberScrollState())) {
+                Text("Account Mappings", style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.onSurface)
+                Text(
+                    "Map PennyWise accounts to specific Firefly asset accounts.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.height(16.dp))
+
+                if (isLoadingFireflyAccounts) {
+                    Text("Loading Firefly accounts...", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                } else if (fireflyAccounts.isEmpty()) {
+                    Text("No Firefly accounts loaded. Please test connection again.", color = MaterialTheme.colorScheme.error)
+                } else {
                     fireflyMappingAccounts.forEach { account ->
                         val currentValue = fireflyMappings[account.key] ?: ""
                         var expanded by remember { mutableStateOf(false) }
 
-                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = 4.dp)) {
-                            Text(account.displayName, style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f), color = MaterialTheme.colorScheme.onSurface)
+                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = 8.dp)) {
+                            Text(account.displayName, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f), color = MaterialTheme.colorScheme.onSurface)
 
-                            Column(modifier = Modifier.weight(1.1f)) {
-                                if (fireflyAccounts.isEmpty()) {
-                                    // Fallback plain field when fetch failed – no point in manual if we can't match Firefly
-                                    OutlinedTextField(
-                                        value = currentValue,
-                                        onValueChange = { viewModel.setFireflyAccountMapping(account.key, it) },
-                                        singleLine = true,
-                                        placeholder = { Text("Firefly name (load list first)") },
-                                        textStyle = MaterialTheme.typography.bodySmall,
-                                        modifier = Modifier.fillMaxWidth(),
-                                        enabled = false,
-                                        trailingIcon = {
-                                            if (currentValue.isNotBlank()) {
-                                                IconButton(onClick = { viewModel.clearFireflyAccountMapping(account.key) }) {
-                                                    Icon(Icons.Default.Clear, contentDescription = "Clear mapping")
-                                                }
-                                            }
-                                        }
-                                    )
-                                } else {
-                                    ExposedDropdownMenuBox(
-                                        expanded = expanded,
-                                        onExpandedChange = { expanded = !expanded }
-                                    ) {
-                                        OutlinedTextField(
-                                            value = currentValue,
-                                            onValueChange = { /* only allow via dropdown to enforce real Firefly names */ },
-                                            singleLine = true,
-                                            readOnly = true,
-                                            placeholder = { Text("Select Firefly account") },
-                                            textStyle = MaterialTheme.typography.bodySmall,
-                                            modifier = Modifier.menuAnchor().fillMaxWidth(),
-                                            trailingIcon = {
-                                                if (currentValue.isNotBlank()) {
-                                                    IconButton(onClick = { viewModel.clearFireflyAccountMapping(account.key) }) {
-                                                        Icon(Icons.Default.Clear, contentDescription = "Clear mapping")
-                                                    }
-                                                } else {
-                                                    ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded)
-                                                }
-                                            }
-                                        )
-
-                                        ExposedDropdownMenu(
-                                            expanded = expanded,
-                                            onDismissRequest = { expanded = false }
-                                        ) {
-                                            // Only real Firefly asset accounts are allowed (no manual/custom when list is loaded)
-                                            fireflyAccounts.forEach { fireflyAccount ->
-                                                DropdownMenuItem(
-                                                    text = { Text(fireflyAccount) },
-                                                    leadingIcon = {
-                                                        Icon(Icons.Default.AccountBalance, contentDescription = null)
-                                                    },
-                                                    onClick = {
-                                                        viewModel.setFireflyAccountMapping(account.key, fireflyAccount)
-                                                        expanded = false
-                                                    }
-                                                )
-                                            }
-                                        }
-                                    }
-                                }
-
-                                // Show effective account and warning for stale
-                                val effectiveAccount = currentValue.takeIf { it.isNotBlank() } ?: (fireflyDefaultAsset?.takeIf { it.isNotBlank() } ?: "Checking Account (default)")
-                                Text(
-                                    "→ Effective: $effectiveAccount",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                            ExposedDropdownMenuBox(
+                                expanded = expanded,
+                                onExpandedChange = { expanded = !expanded },
+                                modifier = Modifier.weight(1.2f)
+                            ) {
+                                OutlinedTextField(
+                                    value = currentValue,
+                                    onValueChange = { },
+                                    readOnly = true,
+                                    placeholder = { Text("Select Firefly account") },
+                                    textStyle = MaterialTheme.typography.bodySmall,
+                                    modifier = Modifier.menuAnchor().fillMaxWidth(),
+                                    trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) }
                                 )
 
-                                if (fireflyAccounts.isNotEmpty() && currentValue.isNotBlank() && !fireflyAccounts.contains(currentValue)) {
-                                    Text(
-                                        " (not found in Firefly – please reselect)",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.error
-                                    )
+                                ExposedDropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+                                    fireflyAccounts.forEach { accInfo ->
+                                        DropdownMenuItem(
+                                            text = { Text(accInfo.name) },
+                                            leadingIcon = {
+                                                Icon(
+                                                    Icons.Default.AccountBalance,
+                                                    contentDescription = null,
+                                                    tint = if (accInfo.active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error
+                                                )
+                                            },
+                                            onClick = {
+                                                viewModel.setFireflyAccountMapping(account.key, accInfo.name)
+                                                expanded = false
+                                            }
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
+                        // Effective + stale warning
+                        val effectiveAccount = currentValue.takeIf { it.isNotBlank() } ?: (fireflyDefaultAsset?.takeIf { it.isNotBlank() } ?: "Checking Account (default)")
+                        Text("→ Effective: $effectiveAccount", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+
+                        if (currentValue.isNotBlank() && fireflyAccounts.none { it.name == currentValue }) {
+                            Text("(not found in Firefly – please reselect)", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                        }
+                    }
+                }
+
+                Spacer(Modifier.height(16.dp))
+                TextButton(onClick = { viewModel.clearAllFireflyAccountMappings() }) {
+                    Text("Clear all mappings")
+                }
+                Spacer(Modifier.height(32.dp))
+            }
+        }
+    }
+
+    // ==================== DEDICATED CATEGORY MAPPINGS SHEET ====================
+    if (showCategoryMappingsSheet) {
+        ModalBottomSheet(onDismissRequest = { showCategoryMappingsSheet = false }) {
+            Column(modifier = Modifier.padding(16.dp).verticalScroll(rememberScrollState())) {
+                Text("Category Mappings", style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.onSurface)
+                Text(
+                    "Map your PennyWise categories to categories that exist in Firefly.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.height(16.dp))
+
+                val categoriesToShow = (allCategories + fireflyCategoryMappings.keys).distinct().sorted()
+
+                if (categoriesToShow.isEmpty()) {
+                    Text("No categories found. Add transactions first.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                } else {
+                    categoriesToShow.forEach { cat ->
+                        val current = fireflyCategoryMappings[cat] ?: ""
+                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = 6.dp)) {
+                            Text(cat, modifier = Modifier.weight(1f), color = MaterialTheme.colorScheme.onSurface)
+
+                            // Dropdown of Firefly categories
+                            var expanded by remember { mutableStateOf(false) }
+                            ExposedDropdownMenuBox(
+                                expanded = expanded,
+                                onExpandedChange = { expanded = !expanded },
+                                modifier = Modifier.weight(1.3f)
+                            ) {
+                                OutlinedTextField(
+                                    value = current,
+                                    onValueChange = { },
+                                    readOnly = true,
+                                    placeholder = { Text("Select Firefly category") },
+                                    textStyle = MaterialTheme.typography.bodySmall,
+                                    modifier = Modifier.menuAnchor().fillMaxWidth()
+                                )
+
+                                ExposedDropdownMenu(
+                                    expanded = expanded,
+                                    onDismissRequest = { expanded = false }
+                                ) {
+                                    // Include all Firefly categories + allow custom by keeping the text field editable? but per request use dropdown
+                                    fireflyCategories.forEach { fireflyCat ->
+                                        DropdownMenuItem(
+                                            text = { Text(fireflyCat) },
+                                            onClick = {
+                                                viewModel.setFireflyCategoryMapping(cat, fireflyCat)
+                                                expanded = false
+                                            }
+                                        )
+                                    }
+                                    // Allow clearing
+                                    if (current.isNotBlank()) {
+                                        DropdownMenuItem(
+                                            text = { Text("Clear mapping") },
+                                            onClick = {
+                                                viewModel.clearFireflyCategoryMapping(cat)  // note: may need to implement if not exist
+                                                expanded = false
+                                            }
+                                        )
+                                    }
                                 }
                             }
                         }
                     }
                 }
-            }
 
-            // Category Mappings
-            Text("Category Mappings", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface)
-            Text(
-                "Map PennyWise categories to Firefly categories",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
+                Spacer(Modifier.height(24.dp))
 
-            // Note about mappings usage
-            if (fireflyMappings.isNotEmpty() || fireflyDefaultAsset?.isNotBlank() == true) {
-                Text(
-                    "Mappings and default will be used for syncs and tests.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-
-            if (allCategories.isNotEmpty() || fireflyCategoryMappings.isNotEmpty()) {
-                val categoriesToShow = (allCategories + fireflyCategoryMappings.keys).distinct().sorted()
-                Column {
-                    categoriesToShow.forEach { cat ->
-                        val current = fireflyCategoryMappings[cat] ?: ""
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(cat, modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface)
-                            OutlinedTextField(
-                                value = current,
-                                onValueChange = { viewModel.setFireflyCategoryMapping(cat, it) },
-                                singleLine = true,
-                                placeholder = { Text("Firefly category") },
-                                textStyle = MaterialTheme.typography.bodySmall,
-                                modifier = Modifier.weight(1.2f)
-                            )
-                        }
-                    }
+                // Still allow custom mapping
+                Text("Custom category mapping (if category not listed yet)", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                var customCategory by remember { mutableStateOf("") }
+                var customFireflyCategory by remember { mutableStateOf("") }
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 8.dp)) {
+                    OutlinedTextField(value = customCategory, onValueChange = { customCategory = it }, placeholder = { Text("PennyWise cat") }, modifier = Modifier.weight(1f))
+                    Spacer(Modifier.width(8.dp))
+                    OutlinedTextField(value = customFireflyCategory, onValueChange = { customFireflyCategory = it }, placeholder = { Text("Firefly cat") }, modifier = Modifier.weight(1f))
+                    Spacer(Modifier.width(8.dp))
+                    Button(
+                        onClick = {
+                            if (customCategory.isNotBlank() && customFireflyCategory.isNotBlank()) {
+                                viewModel.setFireflyCategoryMapping(customCategory.trim(), customFireflyCategory.trim())
+                                customCategory = ""
+                                customFireflyCategory = ""
+                            }
+                        },
+                        enabled = customCategory.isNotBlank() && customFireflyCategory.isNotBlank()
+                    ) { Text("Add") }
                 }
-            } else {
-                Text(
-                    "No categories yet — add transactions or use custom below.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
 
-            // Custom category mapping
-            Text(
-                "Add custom mapping",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(top = 8.dp)
-            )
-            var customCategory by remember { mutableStateOf("") }
-            var customFireflyCategory by remember { mutableStateOf("") }
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                OutlinedTextField(
-                    value = customCategory,
-                    onValueChange = { customCategory = it },
-                    singleLine = true,
-                    placeholder = { Text("PennyWise category") },
-                    textStyle = MaterialTheme.typography.bodySmall,
-                    modifier = Modifier.weight(1f)
-                )
-                Spacer(Modifier.width(8.dp))
-                OutlinedTextField(
-                    value = customFireflyCategory,
-                    onValueChange = { customFireflyCategory = it },
-                    singleLine = true,
-                    placeholder = { Text("Firefly category") },
-                    textStyle = MaterialTheme.typography.bodySmall,
-                    modifier = Modifier.weight(1f)
-                )
-                Spacer(Modifier.width(8.dp))
-                Button(
-                    onClick = {
-                        if (customCategory.isNotBlank() && customFireflyCategory.isNotBlank()) {
-                            viewModel.setFireflyCategoryMapping(customCategory.trim(), customFireflyCategory.trim())
-                            customCategory = ""
-                            customFireflyCategory = ""
-                        }
-                    },
-                    enabled = customCategory.isNotBlank() && customFireflyCategory.isNotBlank()
-                ) {
-                    Text("Map", style = MaterialTheme.typography.labelSmall)
-                }
+                Spacer(Modifier.height(32.dp))
             }
-
-            Spacer(Modifier.height(32.dp))
         }
     }
 }

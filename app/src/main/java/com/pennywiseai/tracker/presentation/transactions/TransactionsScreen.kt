@@ -566,8 +566,8 @@ private fun SwipeToEditCategory(
                 if (value == SwipeToDismissBoxValue.EndToStart) {
                     view.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
                     onRequestEdit(transaction)
-                    // Snap back without actually dismissing the item
-                    dismissState.animateTo(SwipeToDismissBoxValue.Settled)
+                    // The swipe is used as a gesture trigger only; the item stays in the list.
+                    // The SwipeToDismissBox will naturally settle back when the gesture ends.
                 }
             }
     }
