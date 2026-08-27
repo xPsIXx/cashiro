@@ -31,7 +31,7 @@ This is a personal fork of the excellent [PennyWise AI](https://github.com/sarim
 
 ### Fork Improvements
 - App renamed to **PennywiseAI-Firefly**
-- Package renamed (`com.thenoticingbegins.pennywiseai.firefly`)
+- Package renamed (`com.xpsixx.pennywiseai.firefly`)
 - Removed automatic reporting of unrecognized SMS to the original project
 - Updated all external links to point to this fork
 
@@ -42,7 +42,7 @@ This is a personal fork of the excellent [PennyWise AI](https://github.com/sarim
 ### From Source (Recommended)
 
 ```bash
-git clone https://github.com/TheNoticingBegins/pennywiseai-Firefly.git
+git clone https://github.com/xPsIXx/Pennywiseai-Firefly.git
 cd pennywiseai-Firefly
 ./gradlew assembleDebug
 ```
@@ -79,7 +79,7 @@ The Firefly III integration and fork-specific changes were developed in this rep
 
 ## 🔗 Links
 
-- **GitHub**: https://github.com/TheNoticingBegins/pennywiseai-Firefly
+- **GitHub**: https://github.com/xPsIXx/Pennywiseai-Firefly
 - **Original Project**: https://github.com/sarim2000/pennywiseai-tracker
 - **Firefly III**: https://www.firefly-iii.org/
 

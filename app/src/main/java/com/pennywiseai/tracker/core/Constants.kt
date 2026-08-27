@@ -82,7 +82,7 @@ object Constants {
      */
     object Links {
         // Updated for this fork - do not point users to original repo for issues
-        const val GITHUB_URL = "https://github.com/TheNoticingBegins/pennywiseai-Firefly"
+        const val GITHUB_URL = "https://github.com/xPsIXx/Pennywiseai-Firefly"
         const val DISCORD_URL = "" // Disabled to prevent confusion with original project
         const val WEB_PARSER_URL = "" // Reporting disabled for this fork
     }

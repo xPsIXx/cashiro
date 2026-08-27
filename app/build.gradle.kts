@@ -16,7 +16,7 @@ android {
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "com.thenoticingbegins.pennywiseai.firefly"
+        applicationId = "com.xpsixx.pennywiseai.firefly"
         minSdk = 26
         targetSdk = 36
         versionCode = appVersionCode

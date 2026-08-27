@@ -174,7 +174,7 @@ All confirmed no impact on Firefly sync paths.
 
 ### Changed
 - App renamed to **PennywiseAI-Firefly**
-- `applicationId` and `namespace` changed to `com.thenoticingbegins.pennywiseai.firefly`
+- `applicationId` and `namespace` changed to `com.xpsixx.pennywiseai.firefly`
 - Removed automatic reporting of unrecognized SMS (prevents users from reporting issues to the original project)
 - Updated all external links to point to this fork
 

@@ -1,7 +1,7 @@
 # PennywiseAI-Firefly
 
-[![GitHub Release](https://img.shields.io/github/v/release/TheNoticingBegins/pennywiseai-Firefly)](https://github.com/TheNoticingBegins/pennywiseai-Firefly/releases)
-[![GitHub stars](https://img.shields.io/github/stars/TheNoticingBegins/pennywiseai-Firefly?style=social)](https://github.com/TheNoticingBegins/pennywiseai-Firefly)
+[![GitHub Release](https://img.shields.io/github/v/release/xPsIXx/Pennywiseai-Firefly)](https://github.com/xPsIXx/Pennywiseai-Firefly/releases)
+[![GitHub stars](https://img.shields.io/github/stars/xPsIXx/Pennywiseai-Firefly?style=social)](https://github.com/xPsIXx/Pennywiseai-Firefly)
 
 **A fork of [PennyWise AI](https://github.com/sarim2000/pennywiseai-tracker) with Firefly III integration.**
 
@@ -33,14 +33,14 @@ This fork adds automatic syncing of transactions to your self-hosted [Firefly II
 - Older Firefly-only transactions (e.g. pre-SMS era or manual entries without PennyWise counterpart) are completely unaffected
 - SMS received timestamps used for transaction `dateTime` (ensures proper chronological order when pushed to Firefly)
 
-**Full release notes and changelog**: See [CHANGELOG.md](CHANGELOG.md) and [releases](https://github.com/TheNoticingBegins/pennywiseai-Firefly/releases)
+**Full release notes and changelog**: See [CHANGELOG.md](CHANGELOG.md) and [releases](https://github.com/xPsIXx/Pennywiseai-Firefly/releases)
 
-**Full release notes**: [v1.0.0](https://github.com/TheNoticingBegins/pennywiseai-Firefly/releases/tag/v1.0.0)
+**Full release notes**: [v1.0.0](https://github.com/xPsIXx/Pennywiseai-Firefly/releases/tag/v1.0.0)
 
 ## Installation
 
 ```bash
-git clone https://github.com/TheNoticingBegins/pennywiseai-Firefly.git
+git clone https://github.com/xPsIXx/Pennywiseai-Firefly.git
 cd pennywiseai-Firefly
 ./gradlew assembleDebug
 ```
@@ -54,7 +54,7 @@ This fork is **not** available on the Play Store or F-Droid.
 
 ## Links
 
-- **This Fork**: https://github.com/TheNoticingBegins/pennywiseai-Firefly
+- **This Fork**: https://github.com/xPsIXx/Pennywiseai-Firefly
 - **Original Project**: https://github.com/sarim2000/pennywiseai-tracker
 - **Firefly III**: https://www.firefly-iii.org/
 
