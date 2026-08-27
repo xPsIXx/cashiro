@@ -3,6 +3,7 @@ package com.pennywiseai.tracker.data.repository
 import com.pennywiseai.tracker.data.database.dao.SubscriptionDao
 import com.pennywiseai.tracker.data.database.entity.SubscriptionEntity
 import com.pennywiseai.tracker.data.database.entity.SubscriptionState
+import com.pennywiseai.tracker.data.database.entity.SubscriptionDirection
 import com.pennywiseai.parser.core.bank.HDFCBankParser
 import com.pennywiseai.parser.core.bank.IndianBankParser
 import com.pennywiseai.parser.core.bank.SBIBankParser
@@ -12,6 +13,7 @@ import com.pennywiseai.tracker.ui.icons.CategoryMapping
 import kotlinx.coroutines.flow.Flow
 import java.math.BigDecimal
 import java.time.LocalDate
+import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -43,6 +45,37 @@ class SubscriptionRepository @Inject constructor(
     suspend fun getSubscriptionById(id: Long): SubscriptionEntity? = 
         subscriptionDao.getSubscriptionById(id)
     
+    suspend fun getSubscriptionByFireflyRecurringId(id: String): SubscriptionEntity? =
+        subscriptionDao.getSubscriptionByFireflyRecurringId(id)
+
+    suspend fun updateRecurringSyncInfo(
+        subscriptionId: Long,
+        recurringId: String?,
+        syncedAt: LocalDateTime?
+    ) = subscriptionDao.updateRecurringSyncInfo(subscriptionId, recurringId, syncedAt)
+
+    suspend fun updateSubscriptionFromSync(
+        subscriptionId: Long,
+        merchantName: String,
+        amount: BigDecimal,
+        nextPaymentDate: LocalDate?,
+        billingCycle: String,
+        currency: String,
+        direction: SubscriptionDirection,
+        recurringId: String?,
+        syncedAt: LocalDateTime?
+    ) = subscriptionDao.updateSubscriptionFromSync(
+        subscriptionId = subscriptionId,
+        merchantName = merchantName,
+        amount = amount,
+        nextPaymentDate = nextPaymentDate,
+        billingCycle = billingCycle,
+        currency = currency,
+        direction = direction,
+        recurringId = recurringId,
+        syncedAt = syncedAt
+    )
+
     suspend fun insertSubscription(subscription: SubscriptionEntity): Long = 
         subscriptionDao.insertSubscription(subscription)
     

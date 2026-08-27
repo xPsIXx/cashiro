@@ -56,7 +56,7 @@ import com.pennywiseai.tracker.data.database.entity.UnrecognizedSmsEntity
  * that needs to record the version it was exported against. Bump this in lock-
  * step with any schema change.
  */
-const val SCHEMA_VERSION = 47
+const val SCHEMA_VERSION = 51
 
 /**
  * The PennyWise Room database.
@@ -115,7 +115,10 @@ const val SCHEMA_VERSION = 47
         AutoMigration(from = 43, to = 44, spec = Migration43To44::class),
         // 44→45, 45→46 and 46→47 are manual migrations registered in DatabaseModule
         // (profile_id columns and loan_contribution column).
-        AutoMigration(from = 47, to = 48)
+        AutoMigration(from = 47, to = 48),
+        AutoMigration(from = 48, to = 49),
+        AutoMigration(from = 49, to = 50),
+        AutoMigration(from = 50, to = 51)
     ]
 )
 @TypeConverters(Converters::class)

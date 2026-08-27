@@ -52,6 +52,64 @@ interface BudgetDao {
     @Query("DELETE FROM budgets WHERE id = :budgetId")
     suspend fun deleteBudgetById(budgetId: Long)
 
+    @Query("SELECT * FROM budgets WHERE firefly_budget_id = :id LIMIT 1")
+    suspend fun getBudgetByFireflyId(id: String): BudgetEntity?
+
+    @Query("""
+        UPDATE budgets 
+        SET firefly_budget_id = :budgetId,
+            firefly_limit_id = :limitId,
+            firefly_synced_at = :syncedAt,
+            updated_at = datetime('now')
+        WHERE id = :budgetIdLocal
+    """)
+    suspend fun updateFireflySyncInfo(
+        budgetIdLocal: Long,
+        budgetId: String?,
+        limitId: String?,
+        syncedAt: java.time.LocalDateTime?
+    )
+
+    @Query("""
+        UPDATE budgets 
+        SET name = :name,
+            limit_amount = :limitAmount,
+            start_date = :startDate,
+            end_date = :endDate,
+            currency = :currency,
+            period_type = :periodType,
+            is_active = :isActive,
+            firefly_budget_id = :fireflyBudgetId,
+            firefly_limit_id = :fireflyLimitId,
+            firefly_synced_at = :syncedAt,
+            updated_at = datetime('now')
+        WHERE id = :budgetId
+    """)
+    suspend fun updateBudgetFromSync(
+        budgetId: Long,
+        name: String,
+        limitAmount: java.math.BigDecimal,
+        startDate: java.time.LocalDate,
+        endDate: java.time.LocalDate,
+        currency: String,
+        periodType: com.pennywiseai.tracker.data.database.entity.BudgetPeriodType,
+        isActive: Boolean,
+        fireflyBudgetId: String?,
+        fireflyLimitId: String?,
+        syncedAt: java.time.LocalDateTime?
+    )
+
+    @Query("""
+        UPDATE budgets 
+        SET is_active = 0,
+            updated_at = datetime('now')
+        WHERE id = :budgetId
+    """)
+    suspend fun deactivateBudgetById(budgetId: Long)
+
+    @Query("SELECT * FROM budgets ORDER BY created_at DESC")
+    suspend fun getAllBudgetsList(): List<BudgetEntity>
+
     // Budget Categories
     @Query("SELECT * FROM budget_categories WHERE budget_id = :budgetId")
     fun getCategoriesForBudget(budgetId: Long): Flow<List<BudgetCategoryEntity>>

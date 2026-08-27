@@ -86,6 +86,13 @@ data class SubscriptionEntity(
     @ColumnInfo(name = "last_paid_at")
     @Contextual
     val lastPaidAt: LocalDate? = null,
+
+    @ColumnInfo(name = "firefly_recurring_id", defaultValue = "NULL")
+    val fireflyRecurringId: String? = null,
+
+    @ColumnInfo(name = "firefly_recurring_synced_at", defaultValue = "NULL")
+    @Contextual
+    val fireflyRecurringSyncedAt: LocalDateTime? = null,
 )
 
 @Serializable

@@ -1,7 +1,6 @@
 package com.pennywiseai.tracker.data.manager
 
 import android.content.Context
-import android.util.Log
 import com.pennywiseai.parser.core.ParsedTransaction
 import com.pennywiseai.parser.core.bank.BankParserFactory
 import com.pennywiseai.tracker.data.database.entity.AccountBalanceEntity
@@ -48,7 +47,8 @@ class SmsTransactionProcessor @Inject constructor(
     private val ruleRepository: RuleRepository,
     private val ruleEngine: RuleEngine,
     private val userPreferencesRepository: UserPreferencesRepository,
-    private val fireflyClient: FireflyClient
+    private val fireflyClient: FireflyClient,
+    private val diagnosticLogger: com.pennywiseai.tracker.data.diagnostic.DiagnosticLogger
 ) {
     private val syncScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     companion object {
@@ -90,12 +90,12 @@ class SmsTransactionProcessor @Inject constructor(
                 return ProcessingResult(false, reason = "Could not parse transaction from SMS")
             }
 
-            Log.d(TAG, "Parsed transaction: ${parsedTransaction.amount} from ${parsedTransaction.bankName}")
+            diagnosticLogger.d("SmsProcessor", "Parsed transaction: ${parsedTransaction.amount} from ${parsedTransaction.bankName}")
 
             // Save the transaction
             return saveParsedTransaction(parsedTransaction, body)
         } catch (e: Exception) {
-            Log.e(TAG, "Error processing SMS", e)
+            diagnosticLogger.e("SmsProcessor", "Error processing SMS", e)
             return ProcessingResult(false, reason = e.message)
         }
     }
@@ -120,18 +120,18 @@ class SmsTransactionProcessor @Inject constructor(
             val existingTransaction = transactionRepository.getTransactionByHash(entity.transactionHash)
             if (existingTransaction != null) {
                 if (existingTransaction.isDeleted) {
-                    Log.d(TAG, "Skipping previously deleted transaction with hash: ${entity.transactionHash}")
+                    diagnosticLogger.d("SmsProcessor", "Skipping previously deleted transaction with hash: ${entity.transactionHash}")
                     return ProcessingResult(false, reason = "Transaction was previously deleted")
                 }
                 // Transaction already exists and not deleted - normal deduplication
-                Log.d(TAG, "Transaction already exists: ${entity.transactionHash}")
+                diagnosticLogger.d("SmsProcessor", "Transaction already exists: ${entity.transactionHash}")
                 return ProcessingResult(false, reason = "Duplicate transaction")
             }
 
             // Check for custom merchant mapping
             val customCategory = merchantMappingRepository.getCategoryForMerchant(entity.merchantName)
             val entityWithMapping = if (customCategory != null) {
-                Log.d(TAG, "Found custom category mapping: ${entity.merchantName} -> $customCategory")
+                diagnosticLogger.d("SmsProcessor", "Found custom category mapping: ${entity.merchantName} -> $customCategory")
                 entity.copy(category = customCategory)
             } else {
                 entity
@@ -148,7 +148,7 @@ class SmsTransactionProcessor @Inject constructor(
             )
 
             if (blockingRule != null) {
-                Log.d(TAG, "Transaction blocked by rule: ${blockingRule.name}")
+                diagnosticLogger.d("SmsProcessor", "Transaction blocked by rule: ${blockingRule.name}")
                 return ProcessingResult(false, reason = "Blocked by rule: ${blockingRule.name}")
             }
 
@@ -159,7 +159,7 @@ class SmsTransactionProcessor @Inject constructor(
             )
 
             if (ruleApplications.isNotEmpty()) {
-                Log.d(TAG, "Applied ${ruleApplications.size} rules to transaction")
+                diagnosticLogger.d("SmsProcessor", "Applied ${ruleApplications.size} rules to transaction")
             }
 
             // Check if this transaction matches an active subscription
@@ -169,7 +169,7 @@ class SmsTransactionProcessor @Inject constructor(
             )
 
             val finalEntity = if (matchedSubscription != null) {
-                Log.d(TAG, "Transaction matched to active subscription: ${matchedSubscription.merchantName}")
+                diagnosticLogger.d("SmsProcessor", "Transaction matched to active subscription: ${matchedSubscription.merchantName}")
                 subscriptionRepository.updateNextPaymentDateAfterCharge(
                     matchedSubscription.id,
                     entityWithRules.dateTime.toLocalDate()
@@ -181,7 +181,7 @@ class SmsTransactionProcessor @Inject constructor(
 
             val rowId = transactionRepository.insertTransaction(finalEntity)
             if (rowId != -1L) {
-                Log.d(TAG, "Saved new transaction with ID: $rowId${if (finalEntity.isRecurring) " (Recurring)" else ""}")
+                diagnosticLogger.d("SmsProcessor", "Saved new transaction with ID: $rowId${if (finalEntity.isRecurring) " (Recurring)" else ""}")
 
                 // Save rule applications if any rules were applied
                 if (ruleApplications.isNotEmpty()) {
@@ -199,11 +199,11 @@ class SmsTransactionProcessor @Inject constructor(
 
                 return ProcessingResult(true, transactionId = rowId)
             } else {
-                Log.d(TAG, "Transaction already exists (duplicate): ${entity.transactionHash}")
+                diagnosticLogger.d("SmsProcessor", "Transaction already exists (duplicate): ${entity.transactionHash}")
                 return ProcessingResult(false, reason = "Duplicate transaction")
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Error saving transaction: ${e.message}")
+            diagnosticLogger.e("SmsProcessor", "Error saving transaction: ${e.message}")
             return ProcessingResult(false, reason = e.message)
         }
     }
@@ -237,7 +237,7 @@ class SmsTransactionProcessor @Inject constructor(
             }
 
             if (card == null) {
-                Log.w(TAG, "Could not create/find card for ${parsedTransaction.bankName}")
+                diagnosticLogger.w("SmsProcessor", "Could not create/find card for ${parsedTransaction.bankName}")
                 null
             } else {
                 // Update card's balance
@@ -319,7 +319,7 @@ class SmsTransactionProcessor @Inject constructor(
             )
 
             accountBalanceRepository.insertBalance(balanceEntity)
-            Log.d(TAG, "Saved balance update for ${parsedTransaction.bankName} **$targetAccountLast4")
+            diagnosticLogger.d("SmsProcessor", "Saved balance update for ${parsedTransaction.bankName} **$targetAccountLast4")
         }
     }
 
@@ -330,6 +330,8 @@ class SmsTransactionProcessor @Inject constructor(
     private fun triggerFireflySyncIfEnabled(transactionId: Long, entity: TransactionEntity) {
         syncScope.launch {
             try {
+                userPreferencesRepository.migrateTokenToSecureIfNeeded()
+
                 val prefs = userPreferencesRepository.userPreferences.first()
                 if (!prefs.fireflySyncEnabled) return@launch
                 val url = prefs.fireflyBaseUrl?.takeIf { it.isNotBlank() } ?: return@launch
@@ -356,18 +358,20 @@ class SmsTransactionProcessor @Inject constructor(
                         val extId = fireflyClient.computeExternalId(entity)
                         transactionRepository.markFireflySynced(transactionId, extId)
                         userPreferencesRepository.updateFireflyLastSync(System.currentTimeMillis(), error = null)
-                        Log.d(TAG, "Firefly sync succeeded for tx $transactionId")
+                        diagnosticLogger.d("SmsProcessor", "Firefly sync succeeded for tx $transactionId")
                     }
                     is FireflyClient.SyncResult.Error -> {
                         // Record the error on the transaction and in prefs for UI visibility
                         transactionRepository.markFireflyError(transactionId, result.message)
                         userPreferencesRepository.updateFireflyLastSync(System.currentTimeMillis(), error = result.message)
-                        Log.w(TAG, "Firefly sync error for tx $transactionId: ${result.message}")
+                        diagnosticLogger.w("SmsProcessor", "Firefly sync error for tx $transactionId: ${result.message}")
+                        com.pennywiseai.tracker.worker.FireflyRetryWorker.enqueue(appContext)
                     }
                     FireflyClient.SyncResult.Skipped -> Unit
                 }
             } catch (e: Exception) {
-                Log.e(TAG, "Unexpected error during Firefly sync trigger", e)
+                diagnosticLogger.e("SmsProcessor", "Unexpected error during Firefly sync trigger", e)
+                com.pennywiseai.tracker.worker.FireflyRetryWorker.enqueue(appContext)
             }
         }
     }

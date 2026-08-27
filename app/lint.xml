@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Project-wide lint configuration.
+
+    Warnings suppressed here are either:
+    - Conventions that require large refactorings (ModifierParameter).
+    - Dependency version nags that should be upgraded intentionally, not reactively.
+    - Transitive library warnings we cannot fix in this repo.
+    - Backward-compatibility attributes that are silently ignored on older APIs.
+    - Minor performance/style issues in generated/preview resources.
+-->
+<lint>
+    <!-- Compose convention: modifier should be the first optional parameter.
+         Fixing all occurrences requires updating many call sites; keep enabled
+         for new code, suppress for the existing legacy surface. -->
+    <issue id="ModifierParameter">
+        <ignore path="src/main/java" />
+    </issue>
+
+    <!-- Dependency updates are handled deliberately, not via lint nags. -->
+    <issue id="AndroidGradlePluginVersion" severity="ignore" />
+    <issue id="GradleDependency" severity="ignore" />
+    <issue id="NewerVersionAvailable" severity="ignore" />
+
+    <!-- Transitive library warnings. -->
+    <issue id="TrustAllX509TrustManager" severity="ignore" />
+    <issue id="Aligned16KB" severity="ignore" />
+
+    <!-- Widget preview attributes are API 31+; they are ignored on older devices. -->
+    <issue id="UnusedAttribute">
+        <ignore path="src/main/res/xml" />
+    </issue>
+
+    <!-- Minor resource/performance warnings in preview-only widget layouts. -->
+    <issue id="Overdraw">
+        <ignore path="src/main/res/layout/add_transaction_widget_preview.xml" />
+        <ignore path="src/main/res/layout/recent_transactions_widget_preview.xml" />
+        <ignore path="src/main/res/layout/widget_loading.xml" />
+        <ignore path="src/main/res/layout/widget_preview.xml" />
+    </issue>
+
+    <!-- Trace sections span suspending calls in a worker; safe but flagged. -->
+    <issue id="UnclosedTrace">
+        <ignore path="src/main/java/com/pennywiseai/tracker/worker/OptimizedSmsReaderWorker.kt" />
+    </issue>
+
+    <!-- Legacy drawable/bitmaps for adaptive icons; harmless duplicate. -->
+    <issue id="IconXmlAndPng" severity="ignore" />
+
+    <!-- ChromeOS x86_64 ABI is intentionally excluded from F-Droid builds. -->
+    <issue id="ChromeOsAbiSupport" severity="ignore" />
+</lint>

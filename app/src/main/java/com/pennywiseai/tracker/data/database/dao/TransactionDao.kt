@@ -246,18 +246,66 @@ interface TransactionDao {
     ): List<TransactionEntity>
 
     // Firefly III sync status updates (called from processor after opt-in push)
-    @Query("UPDATE transactions SET firefly_synced_at = :syncedAt, firefly_external_id = :externalId, firefly_last_error = NULL, updated_at = :updatedAt WHERE id = :transactionId")
+    @Query("""
+        UPDATE transactions 
+        SET firefly_synced_at = :syncedAt,
+            firefly_external_id = :externalId,
+            firefly_transaction_id = :transactionIdRemote,
+            firefly_updated_at = :fireflyUpdatedAt,
+            firefly_last_error = NULL,
+            updated_at = :updatedAt
+        WHERE id = :transactionId
+    """)
     suspend fun markFireflySynced(
         transactionId: Long,
         externalId: String?,
+        transactionIdRemote: String? = null,
+        fireflyUpdatedAt: LocalDateTime? = null,
         syncedAt: LocalDateTime = java.time.LocalDateTime.now(),
         updatedAt: LocalDateTime = java.time.LocalDateTime.now()
     )
 
-    @Query("UPDATE transactions SET firefly_last_error = :error, updated_at = :updatedAt WHERE id = :transactionId")
+    @Query("""
+        UPDATE transactions 
+        SET firefly_last_error = :error, updated_at = :updatedAt 
+        WHERE id = :transactionId
+    """)
     suspend fun markFireflyError(
         transactionId: Long,
         error: String,
+        updatedAt: LocalDateTime = java.time.LocalDateTime.now()
+    )
+
+    @Query("""
+        UPDATE transactions
+        SET amount = :amount,
+            merchant_name = :merchantName,
+            category = :category,
+            description = :description,
+            date_time = :dateTime,
+            transaction_type = :transactionType,
+            firefly_transaction_id = :fireflyTransactionId,
+            firefly_source_name = :fireflySourceName,
+            firefly_destination_name = :fireflyDestinationName,
+            firefly_updated_at = :fireflyUpdatedAt,
+            firefly_synced_at = :syncedAt,
+            firefly_last_error = NULL,
+            updated_at = :updatedAt
+        WHERE id = :transactionId
+    """)
+    suspend fun updateTransactionFromFirefly(
+        transactionId: Long,
+        amount: BigDecimal,
+        merchantName: String,
+        category: String,
+        description: String?,
+        dateTime: LocalDateTime,
+        transactionType: String,
+        fireflyTransactionId: String?,
+        fireflySourceName: String?,
+        fireflyDestinationName: String?,
+        fireflyUpdatedAt: LocalDateTime?,
+        syncedAt: LocalDateTime?,
         updatedAt: LocalDateTime = java.time.LocalDateTime.now()
     )
 

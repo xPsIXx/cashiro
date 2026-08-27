@@ -26,6 +26,7 @@ import com.pennywiseai.tracker.data.firefly.FireflyClient
 import com.pennywiseai.tracker.data.database.entity.TransactionGroupEntity
 import com.pennywiseai.tracker.core.Constants
 import dagger.hilt.android.lifecycle.HiltViewModel
+import com.pennywiseai.tracker.data.diagnostic.DiagnosticLogger
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
@@ -47,6 +48,7 @@ class TransactionDetailViewModel @Inject constructor(
     private val userPreferencesRepository: UserPreferencesRepository,
     private val receiptManager: ReceiptManager,
     private val fireflyClient: FireflyClient,
+    private val diagnosticLogger: DiagnosticLogger,
     @dagger.hilt.android.qualifiers.ApplicationContext private val context: android.content.Context
 ) : ViewModel() {
     
@@ -964,14 +966,19 @@ class TransactionDetailViewModel @Inject constructor(
                 val categoryMappings = userPreferencesRepository.fireflyCategoryMappingsFlow.first()
                 val includeRawSms = userPreferencesRepository.fireflyIncludeRawSmsFlow.first()
 
+                // Preserve splits when syncing from detail so they are not dropped remotely.
+                val splits = transactionRepository.getTransactionWithSplitsSync(txn.id)?.splits ?: emptyList()
+
                 val result = fireflyClient.syncTransaction(
                     transaction = txn,
+                    splits = splits,
                     baseUrl = url,
                     accessToken = token,
                     defaultAssetAccount = prefs.fireflyDefaultAssetAccount,
                     accountMappings = accountMappings,
                     categoryMappings = categoryMappings,
-                    includeRawSmsInNotes = includeRawSms
+                    includeRawSmsInNotes = includeRawSms,
+                    uploadReceipt = true
                 )
 
                 when (result) {
@@ -980,15 +987,18 @@ class TransactionDetailViewModel @Inject constructor(
                         transactionRepository.markFireflySynced(txn.id, extId)
                         // Refresh the transaction
                         _transaction.value = transactionRepository.getTransactionById(txn.id)
+                        diagnosticLogger.d("TxnDetail", "Firefly sync succeeded for tx ${txn.id}")
                     }
                     is com.pennywiseai.tracker.data.firefly.FireflyClient.SyncResult.Error -> {
                         transactionRepository.markFireflyError(txn.id, result.message)
                         _transaction.value = transactionRepository.getTransactionById(txn.id)
+                        diagnosticLogger.w("TxnDetail", "Firefly sync error for tx ${txn.id}: ${result.message}")
                     }
                     else -> {}
                 }
             } catch (e: Exception) {
                 _errorMessage.value = "Firefly sync failed: ${e.message}"
+                diagnosticLogger.e("TxnDetail", "Firefly sync failed for tx ${txn.id}", e)
             }
         }
     }

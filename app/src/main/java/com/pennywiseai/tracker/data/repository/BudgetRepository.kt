@@ -39,6 +39,50 @@ class BudgetRepository @Inject constructor(
     suspend fun getBudgetById(id: Long): BudgetEntity? =
         budgetDao.getBudgetById(id)
 
+    suspend fun getBudgetByFireflyId(fireflyId: String): BudgetEntity? =
+        budgetDao.getBudgetByFireflyId(fireflyId)
+
+    suspend fun getAllBudgetsList(): List<BudgetEntity> =
+        budgetDao.getAllBudgetsList()
+
+    suspend fun updateBudgetFromSync(
+        budgetId: Long,
+        name: String,
+        limitAmount: BigDecimal,
+        startDate: LocalDate,
+        endDate: LocalDate,
+        currency: String,
+        periodType: BudgetPeriodType,
+        isActive: Boolean,
+        fireflyBudgetId: String?,
+        fireflyLimitId: String?,
+        syncedAt: LocalDateTime?
+    ) = budgetDao.updateBudgetFromSync(
+        budgetId = budgetId,
+        name = name,
+        limitAmount = limitAmount,
+        startDate = startDate,
+        endDate = endDate,
+        currency = currency,
+        periodType = periodType,
+        isActive = isActive,
+        fireflyBudgetId = fireflyBudgetId,
+        fireflyLimitId = fireflyLimitId,
+        syncedAt = syncedAt
+    )
+
+    suspend fun updateFireflySyncInfo(
+        budgetId: Long,
+        fireflyBudgetId: String?,
+        fireflyLimitId: String?,
+        syncedAt: LocalDateTime?
+    ) = budgetDao.updateFireflySyncInfo(
+        budgetIdLocal = budgetId,
+        budgetId = fireflyBudgetId,
+        limitId = fireflyLimitId,
+        syncedAt = syncedAt
+    )
+
     fun getBudgetByIdFlow(id: Long): Flow<BudgetEntity?> =
         budgetDao.getBudgetByIdFlow(id)
 

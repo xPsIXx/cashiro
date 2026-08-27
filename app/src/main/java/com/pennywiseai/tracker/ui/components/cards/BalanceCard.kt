@@ -158,7 +158,7 @@ fun BalanceCard(
                             .padding(bottom = Spacing.xs)
                     ) {
                         SpendingAmountHeader(
-                            amountText = if (isBalanceHidden) "••••••" else CurrencyFormatter.formatCurrency(currentMonthExpenses, currency),
+                            amountText = if (isBalanceHidden) "*****" else CurrencyFormatter.formatCurrency(currentMonthExpenses, currency),
                             amountStyle = MaterialTheme.typography.headlineSmall,
                             isBalanceHidden = isBalanceHidden,
                             onToggleBalanceVisibility = {
@@ -173,7 +173,7 @@ fun BalanceCard(
                             currency = currency,
                             showCurrencyChip = availableCurrencies.size > 1 && !isUnifiedMode,
                             onCurrencyClick = onCurrencyClick,
-                            changeText = if (isBalanceHidden) "••••" else changeText,
+                            changeText = if (isBalanceHidden) "****" else changeText,
                             changeColor = changeColor
                         )
 
@@ -184,7 +184,7 @@ fun BalanceCard(
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Text(
-                                    text = if (isBalanceHidden) "Balance: ••••••" else "Balance: ${CurrencyFormatter.formatCurrency(totalBalance, currency)}",
+                                    text = if (isBalanceHidden) "Balance: *****" else "Balance: ${CurrencyFormatter.formatCurrency(totalBalance, currency)}",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
                                     fontWeight = FontWeight.Medium
@@ -204,14 +204,14 @@ fun BalanceCard(
                     // ── Expanded View ──
                     Column(modifier = Modifier.fillMaxWidth()) {
                         SpendingAmountHeader(
-                            amountText = if (isBalanceHidden) "••••••" else CurrencyFormatter.formatCurrency(currentMonthExpenses, currency),
+                            amountText = if (isBalanceHidden) "*****" else CurrencyFormatter.formatCurrency(currentMonthExpenses, currency),
                             amountStyle = MaterialTheme.typography.headlineMedium,
                             isBalanceHidden = isBalanceHidden,
                             onToggleBalanceVisibility = {
                                 view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
                                 onToggleBalanceVisibility()
                             },
-                            supportingText = if (isBalanceHidden) "Last month: ••••" else "Last month: ${CurrencyFormatter.formatCurrency(lastMonthSpending, currency)}"
+                            supportingText = if (isBalanceHidden) "Last month: ****" else "Last month: ${CurrencyFormatter.formatCurrency(lastMonthSpending, currency)}"
                         )
 
                         Spacer(modifier = Modifier.height(Spacing.sm))
@@ -220,7 +220,7 @@ fun BalanceCard(
                             currency = currency,
                             showCurrencyChip = availableCurrencies.size > 1 && !isUnifiedMode,
                             onCurrencyClick = onCurrencyClick,
-                            changeText = if (isBalanceHidden) "••••" else changeText,
+                            changeText = if (isBalanceHidden) "****" else changeText,
                             changeColor = changeColor
                         )
                         // Spending sparkline
@@ -307,24 +307,24 @@ fun BalanceCard(
 
                             SummaryItem(
                                 label = "Income",
-                                value = if (isBalanceHidden) "••••" else CurrencyFormatter.formatCurrency(currentMonthIncome, currency),
+                                value = if (isBalanceHidden) "****" else CurrencyFormatter.formatCurrency(currentMonthIncome, currency),
                                 accentColor = incomeColor
                             )
                             SummaryItem(
                                 label = "Expenses",
-                                value = if (isBalanceHidden) "••••" else CurrencyFormatter.formatCurrency(currentMonthExpenses, currency),
+                                value = if (isBalanceHidden) "****" else CurrencyFormatter.formatCurrency(currentMonthExpenses, currency),
                                 accentColor = expenseColor
                             )
                             if (currentMonthLent > BigDecimal.ZERO) {
                                 SummaryItem(
                                     label = "Lent",
-                                    value = if (isBalanceHidden) "••••" else CurrencyFormatter.formatCurrency(currentMonthLent, currency),
+                                    value = if (isBalanceHidden) "****" else CurrencyFormatter.formatCurrency(currentMonthLent, currency),
                                     accentColor = MaterialTheme.colorScheme.tertiary
                                 )
                             }
                             SummaryItem(
                                 label = "Saved",
-                                value = if (isBalanceHidden) "••••" else CurrencyFormatter.formatCurrency(currentMonthTotal, currency),
+                                value = if (isBalanceHidden) "****" else CurrencyFormatter.formatCurrency(currentMonthTotal, currency),
                                 accentColor = netColor
                             )
                         }
@@ -360,7 +360,7 @@ fun BalanceCard(
                                         color = MaterialTheme.colorScheme.onSurface
                                     )
                                     Text(
-                                        text = if (isBalanceHidden) "••••••" else CurrencyFormatter.formatCurrency(account.balance, currency),
+                                        text = if (isBalanceHidden) "*****" else CurrencyFormatter.formatCurrency(account.balance, currency),
                                         style = MaterialTheme.typography.titleSmall,
                                         fontWeight = FontWeight.Bold,
                                         color = MaterialTheme.colorScheme.onSurface
@@ -395,7 +395,7 @@ fun BalanceCard(
                                             color = MaterialTheme.colorScheme.onSurface
                                         )
                                         Text(
-                                            text = if (isBalanceHidden) "••••••" else CurrencyFormatter.formatCurrency(availableCredit, currency),
+                                            text = if (isBalanceHidden) "*****" else CurrencyFormatter.formatCurrency(availableCredit, currency),
                                             style = MaterialTheme.typography.titleSmall,
                                             fontWeight = FontWeight.Bold,
                                             color = MaterialTheme.colorScheme.onSurface
@@ -422,7 +422,7 @@ fun BalanceCard(
                                     fontWeight = FontWeight.Bold
                                 )
                                 Text(
-                                    text = if (isBalanceHidden) "••••••" else CurrencyFormatter.formatCurrency(totalBalance, currency),
+                                    text = if (isBalanceHidden) "*****" else CurrencyFormatter.formatCurrency(totalBalance, currency),
                                     style = MaterialTheme.typography.titleSmall,
                                     fontWeight = FontWeight.Bold,
                                     color = MaterialTheme.colorScheme.onSurface

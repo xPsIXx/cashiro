@@ -6,11 +6,13 @@ import com.pennywiseai.tracker.data.database.entity.SubscriptionState
 import com.pennywiseai.tracker.data.database.entity.BudgetImpactType
 import com.pennywiseai.tracker.data.database.entity.TransactionEntity
 import com.pennywiseai.tracker.data.database.entity.TransactionType
+import android.content.Context
 import com.pennywiseai.tracker.data.firefly.FireflyClient
 import com.pennywiseai.tracker.data.preferences.UserPreferencesRepository
 import com.pennywiseai.tracker.data.repository.AccountBalanceRepository
 import com.pennywiseai.tracker.data.repository.SubscriptionRepository
 import com.pennywiseai.tracker.data.repository.TransactionRepository
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.first
 import java.math.BigDecimal
 import java.security.MessageDigest
@@ -18,11 +20,13 @@ import java.time.LocalDateTime
 import javax.inject.Inject
 
 class AddTransactionUseCase @Inject constructor(
+    @ApplicationContext private val appContext: Context,
     private val transactionRepository: TransactionRepository,
     private val subscriptionRepository: SubscriptionRepository,
     private val accountBalanceRepository: AccountBalanceRepository,
     private val userPreferencesRepository: UserPreferencesRepository,
-    private val fireflyClient: FireflyClient
+    private val fireflyClient: FireflyClient,
+    private val diagnosticLogger: com.pennywiseai.tracker.data.diagnostic.DiagnosticLogger
 ) {
     suspend fun execute(
         amount: BigDecimal,
@@ -134,11 +138,16 @@ class AddTransactionUseCase @Inject constructor(
             if (syncRes is com.pennywiseai.tracker.data.firefly.FireflyClient.SyncResult.Success) {
                 val ext = fireflyClient.computeExternalId(tx.copy(id = transactionId))
                 transactionRepository.markFireflySynced(transactionId, ext)
+                diagnosticLogger.d("AddTransaction", "Firefly sync succeeded for tx $transactionId")
             } else if (syncRes is com.pennywiseai.tracker.data.firefly.FireflyClient.SyncResult.Error) {
                 transactionRepository.markFireflyError(transactionId, syncRes.message)
+                userPreferencesRepository.updateFireflyLastSync(System.currentTimeMillis(), error = syncRes.message)
+                diagnosticLogger.w("AddTransaction", "Firefly sync error for tx $transactionId: ${syncRes.message}")
+                com.pennywiseai.tracker.worker.FireflyRetryWorker.enqueue(appContext)
             }
         } catch (e: Exception) {
-            // Fire and forget - don't block manual entry
+            diagnosticLogger.e("AddTransaction", "Unexpected error during Firefly sync trigger", e)
+            com.pennywiseai.tracker.worker.FireflyRetryWorker.enqueue(appContext)
         }
     }
     

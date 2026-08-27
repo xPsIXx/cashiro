@@ -2,8 +2,10 @@ package com.pennywiseai.tracker.worker
 
 import android.content.Context
 import androidx.hilt.work.HiltWorker
+import androidx.work.Constraints
 import androidx.work.CoroutineWorker
 import androidx.work.ExistingPeriodicWorkPolicy
+import androidx.work.NetworkType
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
@@ -12,7 +14,6 @@ import com.pennywiseai.tracker.data.preferences.UserPreferencesRepository
 import com.pennywiseai.tracker.data.repository.TransactionRepository
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import java.time.LocalDateTime
 import java.util.concurrent.TimeUnit
@@ -23,7 +24,8 @@ class FireflyAutoSyncWorker @AssistedInject constructor(
     @Assisted workerParams: WorkerParameters,
     private val userPreferencesRepository: UserPreferencesRepository,
     private val transactionRepository: TransactionRepository,
-    private val fireflyClient: FireflyClient
+    private val fireflyClient: FireflyClient,
+    private val diagnosticLogger: com.pennywiseai.tracker.data.diagnostic.DiagnosticLogger
 ) : CoroutineWorker(appContext, workerParams) {
 
     companion object {
@@ -40,9 +42,16 @@ class FireflyAutoSyncWorker @AssistedInject constructor(
                 else -> return
             }
 
+            val constraints = Constraints.Builder()
+                .setRequiredNetworkType(NetworkType.CONNECTED)
+                .setRequiresBatteryNotLow(true)
+                .build()
+
             val request = PeriodicWorkRequestBuilder<FireflyAutoSyncWorker>(
                 repeatInterval.first, repeatInterval.second
-            ).build()
+            )
+                .setConstraints(constraints)
+                .build()
 
             WorkManager.getInstance(context)
                 .enqueueUniquePeriodicWork(
@@ -59,6 +68,8 @@ class FireflyAutoSyncWorker @AssistedInject constructor(
 
     override suspend fun doWork(): Result {
         return try {
+            userPreferencesRepository.migrateTokenToSecureIfNeeded()
+
             val enabled = userPreferencesRepository.fireflySyncEnabledFlow.first()
             if (!enabled) return Result.success()
 
@@ -69,34 +80,59 @@ class FireflyAutoSyncWorker @AssistedInject constructor(
 
             if (unsynced.isEmpty()) return Result.success()
 
-            var successCount = 0
-            unsynced.forEach { tx ->
-                val result = fireflyClient.syncTransaction(
-                    transaction = tx,
-                    baseUrl = config.url,
-                    accessToken = config.token,
-                    defaultAssetAccount = config.defaultAssetAccount,
-                    accountMappings = config.accountMappings,
-                    categoryMappings = config.categoryMappings,
-                    includeRawSmsInNotes = config.includeRawSms
-                )
-                if (result is com.pennywiseai.tracker.data.firefly.FireflyClient.SyncResult.Success) {
-                    val extId = fireflyClient.computeExternalId(tx)
-                    transactionRepository.markFireflySynced(tx.id, extId)
-                    successCount++
-                } else if (result is com.pennywiseai.tracker.data.firefly.FireflyClient.SyncResult.Error) {
-                    transactionRepository.markFireflyError(tx.id, result.message)
+            val syncables = unsynced.map { tx ->
+                val splits = transactionRepository.getTransactionWithSplitsSync(tx.id)?.splits ?: emptyList()
+                FireflyClient.SyncableTransaction(tx, splits)
+            }
+
+            val result = fireflyClient.syncTransactionsBatch(
+                syncables = syncables,
+                baseUrl = config.url,
+                accessToken = config.token,
+                defaultAssetAccount = config.defaultAssetAccount,
+                accountMappings = config.accountMappings,
+                categoryMappings = config.categoryMappings,
+                includeRawSmsInNotes = config.includeRawSms,
+                uploadReceipts = true
+            )
+
+            result.details.forEach { item ->
+                val tx = unsynced.find { it.id == item.transactionId } ?: return@forEach
+                when (item.status) {
+                    FireflyClient.ItemResult.ItemStatus.SUCCESS -> {
+                        transactionRepository.markFireflySynced(
+                            tx.id,
+                            item.externalId,
+                            item.fireflyId,
+                            item.remoteUpdatedAt?.let { java.time.LocalDateTime.ofInstant(it, java.time.ZoneId.systemDefault()) }
+                        )
+                    }
+                    FireflyClient.ItemResult.ItemStatus.SKIPPED -> {
+                        transactionRepository.markFireflySynced(
+                            tx.id,
+                            item.externalId,
+                            item.fireflyId,
+                            item.remoteUpdatedAt?.let { java.time.LocalDateTime.ofInstant(it, java.time.ZoneId.systemDefault()) }
+                        )
+                    }
+                    FireflyClient.ItemResult.ItemStatus.ERROR -> {
+                        transactionRepository.markFireflyError(tx.id, item.message ?: "Unknown Firefly error")
+                    }
                 }
-                delay(200) // throttle
             }
 
             userPreferencesRepository.updateFireflyLastSync(
                 System.currentTimeMillis(),
-                error = if (successCount < unsynced.size) "Some failed" else null
+                error = if (result.failed > 0) "${result.failed} failed" else null
             )
+
+            if (result.failed > 0) {
+                FireflyRetryWorker.enqueue(applicationContext)
+            }
 
             Result.success()
         } catch (e: Exception) {
+            FireflyRetryWorker.enqueue(applicationContext)
             Result.retry()
         }
     }

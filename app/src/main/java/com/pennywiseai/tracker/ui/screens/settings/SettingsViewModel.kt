@@ -4,7 +4,6 @@ import android.app.DownloadManager
 import android.content.Context
 import android.net.Uri
 import android.os.Environment
-import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -41,7 +40,10 @@ import java.io.File
 import com.pennywiseai.tracker.data.firefly.FireflyClient
 import com.pennywiseai.tracker.data.firefly.FireflyTokenManager
 import com.pennywiseai.tracker.data.repository.AccountBalanceRepository
+import com.pennywiseai.tracker.data.repository.BudgetRepository
 import com.pennywiseai.tracker.data.repository.CategoryRepository
+import com.pennywiseai.tracker.data.repository.SubscriptionRepository
+import com.pennywiseai.tracker.data.database.entity.TransactionEntity
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import java.time.LocalDateTime
@@ -60,7 +62,10 @@ class SettingsViewModel @Inject constructor(
     private val fireflyClient: FireflyClient,
     private val accountBalanceRepository: AccountBalanceRepository,
     private val categoryRepository: CategoryRepository,
-    private val fireflyTokenManager: FireflyTokenManager
+    private val budgetRepository: BudgetRepository,
+    private val subscriptionRepository: SubscriptionRepository,
+    private val fireflyTokenManager: FireflyTokenManager,
+    private val diagnosticLogger: com.pennywiseai.tracker.data.diagnostic.DiagnosticLogger
 ) : ViewModel() {
     
     private val downloadManager = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
@@ -191,6 +196,9 @@ class SettingsViewModel @Inject constructor(
         modelRepository.checkModelState()
         // Schedule Firefly auto sync based on current preference
         viewModelScope.launch {
+            // Migrate any legacy plain-text DataStore token into encrypted storage.
+            userPreferencesRepository.migrateTokenToSecureIfNeeded()
+
             val interval = userPreferencesRepository.fireflyAutoSyncIntervalFlow.first()
             com.pennywiseai.tracker.worker.FireflyAutoSyncWorker.schedule(context, interval)
             // Run legacy migration if needed (one-time)
@@ -202,7 +210,7 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch {
             // First check for active download
             val savedDownloadId = userPreferencesRepository.getActiveDownloadId()
-            Log.d("SettingsViewModel", "Checking download status, saved ID: $savedDownloadId")
+            diagnosticLogger.d("SettingsViewModel", "Checking download status, saved ID: $savedDownloadId")
             
             if (savedDownloadId != null) {
                 // Query DownloadManager for this ID
@@ -214,7 +222,7 @@ class SettingsViewModel @Inject constructor(
                     
                     if (statusIndex != -1) {
                         val status = cursor.getInt(statusIndex)
-                        Log.d("SettingsViewModel", "Found active download with status: $status")
+                        diagnosticLogger.d("SettingsViewModel", "Found active download with status: $status")
                         
                         when (status) {
                             DownloadManager.STATUS_RUNNING,
@@ -260,7 +268,7 @@ class SettingsViewModel @Inject constructor(
                     cursor.close()
                 } else {
                     // Download ID not found in DownloadManager, clear it and check file
-                    Log.d("SettingsViewModel", "Download ID not found in DownloadManager, checking file")
+                    diagnosticLogger.d("SettingsViewModel", "Download ID not found in DownloadManager, checking file")
                     userPreferencesRepository.clearActiveDownloadId()
                     checkModelFile()
                 }
@@ -273,8 +281,8 @@ class SettingsViewModel @Inject constructor(
     
     private fun checkModelFile() {
         val modelFile = File(context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS), Constants.ModelDownload.MODEL_FILE_NAME)
-        Log.d("SettingsViewModel", "Checking model file at: ${modelFile.absolutePath}")
-        Log.d("SettingsViewModel", "Model file exists: ${modelFile.exists()}, size: ${modelFile.length()}, expected: ${Constants.ModelDownload.MODEL_SIZE_BYTES}")
+        diagnosticLogger.d("SettingsViewModel", "Checking model file at: ${modelFile.absolutePath}")
+        diagnosticLogger.d("SettingsViewModel", "Model file exists: ${modelFile.exists()}, size: ${modelFile.length()}, expected: ${Constants.ModelDownload.MODEL_SIZE_BYTES}")
         
         // Check against expected size to ensure it's complete
         // Allow 5% variance in file size as download sizes can vary slightly
@@ -287,7 +295,7 @@ class SettingsViewModel @Inject constructor(
             _downloadedMB.value = _totalMB.value
             _downloadProgress.value = 100
             // Update model repository state
-            Log.d("SettingsViewModel", "Model complete (${modelFile.length()} bytes), updating repository state to READY")
+            diagnosticLogger.d("SettingsViewModel", "Model complete (${modelFile.length()} bytes), updating repository state to READY")
             modelRepository.updateModelState(ModelState.READY)
         } else if (modelFile.exists() && modelFile.length() > maxSize) {
             // File is too large, but might still be valid - mark as complete
@@ -295,15 +303,15 @@ class SettingsViewModel @Inject constructor(
             _totalMB.value = modelFile.length() / (1024 * 1024)
             _downloadedMB.value = _totalMB.value
             _downloadProgress.value = 100
-            Log.d("SettingsViewModel", "Model file larger than expected (${modelFile.length()} bytes), but marking as complete")
+            diagnosticLogger.d("SettingsViewModel", "Model file larger than expected (${modelFile.length()} bytes), but marking as complete")
             modelRepository.updateModelState(ModelState.READY)
         } else if (modelFile.exists()) {
             // Partial file exists, delete it
-            Log.d("SettingsViewModel", "Partial model file found (${modelFile.length()} bytes), deleting")
+            diagnosticLogger.d("SettingsViewModel", "Partial model file found (${modelFile.length()} bytes), deleting")
             modelFile.delete()
             _downloadState.value = DownloadState.NOT_DOWNLOADED
         } else {
-            Log.d("SettingsViewModel", "Model not found")
+            diagnosticLogger.d("SettingsViewModel", "Model not found")
             _downloadState.value = DownloadState.NOT_DOWNLOADED
         }
     }
@@ -325,7 +333,7 @@ class SettingsViewModel @Inject constructor(
                             status == DownloadManager.STATUS_PENDING ||
                             status == DownloadManager.STATUS_PAUSED) {
                             // Download is already active, just monitor it
-                            Log.d("SettingsViewModel", "Download already active with ID: $existingDownloadId")
+                            diagnosticLogger.d("SettingsViewModel", "Download already active with ID: $existingDownloadId")
                             cursor.close()
                             _downloadState.value = DownloadState.DOWNLOADING
                             currentDownloadId = existingDownloadId
@@ -348,7 +356,7 @@ class SettingsViewModel @Inject constructor(
             // Validate model URL before attempting download
             val modelUrl = Constants.ModelDownload.MODEL_URL
             if (modelUrl.isBlank() || !modelUrl.startsWith("http")) {
-                Log.e("SettingsViewModel", "Invalid MODEL_URL: '$modelUrl'")
+                diagnosticLogger.e("SettingsViewModel", "Invalid MODEL_URL: '$modelUrl'")
                 _downloadState.value = DownloadState.FAILED
                 return@launch
             }
@@ -377,12 +385,12 @@ class SettingsViewModel @Inject constructor(
 
                 // Save download ID
                 userPreferencesRepository.saveActiveDownloadId(currentDownloadId!!)
-                Log.d("SettingsViewModel", "Started download with ID: $currentDownloadId")
+                diagnosticLogger.d("SettingsViewModel", "Started download with ID: $currentDownloadId")
 
                 // Start monitoring progress
                 monitorDownload(currentDownloadId!!)
             } catch (e: Exception) {
-                Log.e("SettingsViewModel", "Failed to start download", e)
+                diagnosticLogger.e("SettingsViewModel", "Failed to start download", e)
                 _downloadState.value = DownloadState.FAILED
             }
         }
@@ -423,7 +431,7 @@ class SettingsViewModel @Inject constructor(
                                 userPreferencesRepository.clearActiveDownloadId()
                                 // Update model repository state
                                 modelRepository.updateModelState(ModelState.READY)
-                                Log.d("SettingsViewModel", "Download completed successfully")
+                                diagnosticLogger.d("SettingsViewModel", "Download completed successfully")
                             }
                             DownloadManager.STATUS_FAILED -> {
                                 _downloadState.value = DownloadState.FAILED
@@ -431,7 +439,7 @@ class SettingsViewModel @Inject constructor(
                                 userPreferencesRepository.clearActiveDownloadId()
                                 // Sync ModelRepository state
                                 modelRepository.updateModelState(ModelState.NOT_DOWNLOADED)
-                                Log.d("SettingsViewModel", "Download failed")
+                                diagnosticLogger.d("SettingsViewModel", "Download failed")
                             }
                             DownloadManager.STATUS_PAUSED -> {
                                 _downloadState.value = DownloadState.PAUSED
@@ -462,7 +470,7 @@ class SettingsViewModel @Inject constructor(
                 if (modelFile.exists()) {
                     modelFile.delete()
                 }
-                Log.d("SettingsViewModel", "Download cancelled and cleaned up")
+                diagnosticLogger.d("SettingsViewModel", "Download cancelled and cleaned up")
             }
         }
     }
@@ -480,7 +488,7 @@ class SettingsViewModel @Inject constructor(
                 userPreferencesRepository.clearActiveDownloadId()
                 // Update model repository state
                 modelRepository.updateModelState(ModelState.NOT_DOWNLOADED)
-                Log.d("SettingsViewModel", "Model deleted")
+                diagnosticLogger.d("SettingsViewModel", "Model deleted")
             }
         }
     }
@@ -539,7 +547,7 @@ class SettingsViewModel @Inject constructor(
                     migrateLegacyFireflyExternalIds()
                     reconcileWithFirefly { result ->
                         // The result will be shown via UI toast/log in settings
-                        Log.d("SettingsViewModel", "Migration reconcile result: $result")
+                        diagnosticLogger.d("SettingsViewModel", "Migration reconcile result: $result")
                     }
                     userPreferencesRepository.setFireflyMigrationRan(true)
                 }
@@ -552,12 +560,6 @@ class SettingsViewModel @Inject constructor(
     fun setFireflyBaseUrl(url: String) {
         viewModelScope.launch {
             userPreferencesRepository.setFireflyBaseUrl(url)
-        }
-    }
-
-    fun setFireflyAccessToken(token: String) {
-        viewModelScope.launch {
-            userPreferencesRepository.setFireflyAccessToken(token)
         }
     }
 
@@ -643,13 +645,12 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
-    /** Saves Firefly credentials securely (token in EncryptedSharedPreferences) */
+    /** Saves Firefly credentials. The token is stored in EncryptedSharedPreferences only. */
     fun saveFireflyCredentials(url: String, token: String, defaultAsset: String?) {
         viewModelScope.launch {
             userPreferencesRepository.setFireflyBaseUrl(url)
-            // Always set (blank/empty will clear the fallback)
             userPreferencesRepository.setFireflyDefaultAssetAccount(defaultAsset)
-            // Save token securely
+            // Token lives only in encrypted storage; DataStore no longer keeps a copy.
             fireflyTokenManager.saveCredentials(url, token)
         }
     }
@@ -678,25 +679,11 @@ class SettingsViewModel @Inject constructor(
                     return@launch
                 }
 
-                var successCount = 0
-                for (tx in unsynced) {
-                    val result = fireflyClient.syncTransaction(
-                        transaction = tx,
-                        baseUrl = config.url,
-                        accessToken = config.token,
-                        defaultAssetAccount = config.defaultAssetAccount,
-                        accountMappings = config.accountMappings,
-                        categoryMappings = config.categoryMappings,
-                        includeRawSmsInNotes = config.includeRawSms
-                    )
-                    if (result is com.pennywiseai.tracker.data.firefly.FireflyClient.SyncResult.Success) {
-                        val extId = fireflyClient.computeExternalId(tx)
-                        transactionRepository.markFireflySynced(tx.id, extId)
-                        successCount++
-                    }
-                }
-
-                onResult("Synced $successCount of ${unsynced.size} transactions from last 30 days")
+                val result = syncTransactions(unsynced, config)
+                onResult(
+                    "Synced ${result.created} of ${unsynced.size} transactions from last 30 days" +
+                        if (result.skipped > 0) " (${result.skipped} already present)" else ""
+                )
             } catch (e: Exception) {
                 onResult("Error syncing last 30 days: ${e.message}")
             }
@@ -720,27 +707,11 @@ class SettingsViewModel @Inject constructor(
                     return@launch
                 }
 
-                var successCount = 0
-                unsynced.forEach { tx ->
-                    val result = fireflyClient.syncTransaction(
-                        transaction = tx,
-                        baseUrl = config.url,
-                        accessToken = config.token,
-                        defaultAssetAccount = config.defaultAssetAccount,
-                        accountMappings = config.accountMappings,
-                        categoryMappings = config.categoryMappings,
-                        includeRawSmsInNotes = config.includeRawSms
-                    )
-                    if (result is com.pennywiseai.tracker.data.firefly.FireflyClient.SyncResult.Success) {
-                        val extId = fireflyClient.computeExternalId(tx)
-                        transactionRepository.markFireflySynced(tx.id, extId)
-                        successCount++
-                    } else if (result is com.pennywiseai.tracker.data.firefly.FireflyClient.SyncResult.Error) {
-                        transactionRepository.markFireflyError(tx.id, result.message)
-                    }
-                }
-
-                onResult("Synced $successCount of ${unsynced.size} unsynced transactions")
+                val result = syncTransactions(unsynced, config)
+                onResult(
+                    "Synced ${result.created} of ${unsynced.size} unsynced transactions" +
+                        if (result.skipped > 0) " (${result.skipped} already present)" else ""
+                )
             } catch (e: Exception) {
                 onResult("Error syncing unsynced: ${e.message}")
             }
@@ -756,40 +727,233 @@ class SettingsViewModel @Inject constructor(
                     return@launch
                 }
 
-                // Include both never-synced and previously errored
                 val toSync = transactionRepository.getAllTransactionsList()
-                    .filter { it.fireflySyncedAt == null }  // includes both no success and errored (since errored have syncedAt null)
+                    .filter { it.fireflySyncedAt == null }
 
                 if (toSync.isEmpty()) {
                     onResult("All transactions are already synced")
                     return@launch
                 }
 
-                var successCount = 0
-                var errorCount = 0
-                toSync.forEach { tx ->
-                    val result = fireflyClient.syncTransaction(
-                        transaction = tx,
-                        baseUrl = config.url,
-                        accessToken = config.token,
-                        defaultAssetAccount = config.defaultAssetAccount,
-                        accountMappings = config.accountMappings,
-                        categoryMappings = config.categoryMappings,
-                        includeRawSmsInNotes = config.includeRawSms
+                val result = syncTransactions(toSync, config)
+                onResult(
+                    "Full sync complete. Created: ${result.created}, Skipped: ${result.skipped}, Errors: ${result.failed} (out of ${toSync.size})"
+                )
+            } catch (e: Exception) {
+                onResult("Error during full sync: ${e.message}")
+            }
+        }
+    }
+
+    /**
+     * Push a list of transactions to Firefly in batch. Also handles splits and receipt uploads.
+     */
+    private suspend fun syncTransactions(
+        transactions: List<TransactionEntity>,
+        config: FireflyConfig
+    ): FireflyClient.BatchSyncResult {
+        val syncables = transactions.map { tx ->
+            val splits = transactionRepository.getTransactionWithSplitsSync(tx.id)?.splits ?: emptyList()
+            FireflyClient.SyncableTransaction(tx, splits)
+        }
+
+        val result = fireflyClient.syncTransactionsBatch(
+            syncables = syncables,
+            baseUrl = config.url,
+            accessToken = config.token,
+            defaultAssetAccount = config.defaultAssetAccount,
+            accountMappings = config.accountMappings,
+            categoryMappings = config.categoryMappings,
+            includeRawSmsInNotes = config.includeRawSms,
+            uploadReceipts = true
+        )
+
+        result.details.forEach { item ->
+            val tx = transactions.find { it.id == item.transactionId } ?: return@forEach
+            when (item.status) {
+                FireflyClient.ItemResult.ItemStatus.SUCCESS -> {
+                    transactionRepository.markFireflySynced(
+                        tx.id,
+                        item.externalId,
+                        item.fireflyId,
+                        item.remoteUpdatedAt?.let { java.time.LocalDateTime.ofInstant(it, java.time.ZoneId.systemDefault()) }
                     )
-                    if (result is com.pennywiseai.tracker.data.firefly.FireflyClient.SyncResult.Success) {
-                        val extId = fireflyClient.computeExternalId(tx)
-                        transactionRepository.markFireflySynced(tx.id, extId)
-                        successCount++
-                    } else if (result is com.pennywiseai.tracker.data.firefly.FireflyClient.SyncResult.Error) {
-                        transactionRepository.markFireflyError(tx.id, result.message)
-                        errorCount++
+                }
+                FireflyClient.ItemResult.ItemStatus.SKIPPED -> {
+                    // Already exists remotely; mark local record as synced.
+                    transactionRepository.markFireflySynced(
+                        tx.id,
+                        item.externalId,
+                        item.fireflyId,
+                        item.remoteUpdatedAt?.let { java.time.LocalDateTime.ofInstant(it, java.time.ZoneId.systemDefault()) }
+                    )
+                }
+                FireflyClient.ItemResult.ItemStatus.ERROR -> {
+                    transactionRepository.markFireflyError(tx.id, item.message ?: "Unknown Firefly error")
+                }
+            }
+        }
+
+        userPreferencesRepository.updateFireflyLastSync(
+            System.currentTimeMillis(),
+            error = if (result.failed > 0) "${result.failed} failed" else null
+        )
+
+        if (result.failed > 0) {
+            com.pennywiseai.tracker.worker.FireflyRetryWorker.enqueue(context)
+        }
+
+        return result
+    }
+
+    // Sync PennyWise categories to Firefly (auto-create missing ones + default mappings)
+    fun syncFireflyCategories(onResult: (String) -> Unit) {
+        viewModelScope.launch {
+            try {
+                val config = fetchFireflyConfig() ?: run {
+                    onResult("Firefly not configured")
+                    return@launch
+                }
+
+                val pennywiseCategories = categoryRepository.getAllCategories()
+                    .first()
+                    .map { it.name }
+
+                if (pennywiseCategories.isEmpty()) {
+                    onResult("No categories to sync")
+                    return@launch
+                }
+
+                val result = fireflyClient.syncCategories(
+                    pennywiseCategories = pennywiseCategories,
+                    baseUrl = config.url,
+                    accessToken = config.token
+                )
+
+                if (result.error != null) {
+                    onResult("Category sync error: ${result.error}")
+                    return@launch
+                }
+
+                // Save default exact-name mappings for categories that aren't already mapped.
+                result.mappings.forEach { (pennywiseName, fireflyName) ->
+                    val current = userPreferencesRepository.fireflyCategoryMappingsFlow.first()
+                    if (!current.containsKey(pennywiseName)) {
+                        userPreferencesRepository.setFireflyCategoryMapping(pennywiseName, fireflyName)
                     }
                 }
 
-                onResult("Full sync complete. Success: $successCount, Errors: $errorCount (out of ${toSync.size})")
+                val failurePart = if (result.failureNames.isNotEmpty()) {
+                    " Could not create: ${result.failureNames.joinToString(", ")}"
+                } else ""
+                onResult("Synced categories: ${result.created} created in Firefly${failurePart}")
             } catch (e: Exception) {
-                onResult("Error during full sync: ${e.message}")
+                onResult("Error syncing categories: ${e.message}")
+            }
+        }
+    }
+
+    // Sync PennyWise TARGET budgets to Firefly piggy banks
+    fun syncFireflyPiggyBanks(onResult: (String) -> Unit) {
+        viewModelScope.launch {
+            try {
+                val config = fetchFireflyConfig() ?: run {
+                    onResult("Firefly not configured")
+                    return@launch
+                }
+
+                val targetBudgets = budgetRepository.getActiveBudgets()
+                    .first()
+                    .filter { it.groupType == com.pennywiseai.tracker.data.database.entity.BudgetGroupType.TARGET }
+
+                if (targetBudgets.isEmpty()) {
+                    onResult("No target budgets to sync")
+                    return@launch
+                }
+
+                val result = fireflyClient.syncBudgetTargetsToPiggyBanks(
+                    targetBudgets = targetBudgets,
+                    baseUrl = config.url,
+                    accessToken = config.token
+                )
+
+                onResult(
+                    when {
+                        result.failed == 0 -> "Synced ${result.created} created, ${result.updated} updated piggy banks"
+                        else -> "Piggy banks: ${result.created} created, ${result.updated} updated, ${result.failed} failed"
+                    }
+                )
+            } catch (e: Exception) {
+                onResult("Error syncing piggy banks: ${e.message}")
+            }
+        }
+    }
+
+    // Two-way sync PennyWise subscriptions with Firefly recurring transactions
+    fun syncFireflyRecurring(onResult: (String) -> Unit) {
+        viewModelScope.launch {
+            try {
+                val config = fetchFireflyConfig() ?: run {
+                    onResult("Firefly not configured")
+                    return@launch
+                }
+
+                val subscriptions = subscriptionRepository.getActiveSubscriptions()
+                    .first() + subscriptionRepository.getEndedSubscriptions().first()
+
+                if (subscriptions.isEmpty()) {
+                    onResult("No subscriptions to sync")
+                    return@launch
+                }
+
+                val result = fireflyClient.syncRecurringTransactions(
+                    subscriptions = subscriptions,
+                    baseUrl = config.url,
+                    accessToken = config.token,
+                    defaultAssetAccount = config.defaultAssetAccount
+                )
+
+                onResult(
+                    when {
+                        result.error != null -> "Recurring sync error: ${result.error}"
+                        result.failed == 0 -> "Synced recurring: ${result.created} created, ${result.updated} updated"
+                        else -> "Recurring sync: ${result.created} created, ${result.updated} updated, ${result.failed} failed"
+                    }
+                )
+            } catch (e: Exception) {
+                onResult("Error syncing recurring transactions: ${e.message}")
+            }
+        }
+    }
+    fun syncFireflyBudgets(onResult: (String) -> Unit) {
+        viewModelScope.launch {
+            try {
+                val config = fetchFireflyConfig() ?: run {
+                    onResult("Firefly not configured")
+                    return@launch
+                }
+
+                val budgets = budgetRepository.getActiveBudgets().first()
+                if (budgets.isEmpty()) {
+                    onResult("No active budgets to sync")
+                    return@launch
+                }
+
+                val result = fireflyClient.syncBudgets(
+                    budgets = budgets,
+                    baseUrl = config.url,
+                    accessToken = config.token
+                )
+
+                onResult(
+                    when {
+                        result.error != null -> "Budget sync error: ${result.error}"
+                        result.failed == 0 -> "Synced budgets: ${result.created} created, ${result.updated} updated"
+                        else -> "Synced budgets: ${result.created} created, ${result.updated} updated, ${result.failed} failed"
+                    }
+                )
+            } catch (e: Exception) {
+                onResult("Error syncing budgets: ${e.message}")
             }
         }
     }
@@ -861,11 +1025,11 @@ class SettingsViewModel @Inject constructor(
                     }
                 }
                 if (migrated > 0) {
-                    Log.d("SettingsViewModel", "Migrated $migrated legacy Firefly external IDs to hash-based")
+                    diagnosticLogger.d("SettingsViewModel", "Migrated $migrated legacy Firefly external IDs to hash-based")
                 }
                 userPreferencesRepository.setFireflyMigrationRan(true)
             } catch (e: Exception) {
-                Log.e("SettingsViewModel", "Migration error", e)
+                diagnosticLogger.e("SettingsViewModel", "Migration error", e)
             }
         }
     }
@@ -957,7 +1121,7 @@ class SettingsViewModel @Inject constructor(
             // If increasing scan period, reset scan timestamp to force full scan
             if (months > currentMonths) {
                 userPreferencesRepository.setLastScanTimestamp(0L)
-                Log.d("SettingsViewModel", "Scan period increased from $currentMonths to $months months - will perform full scan")
+                diagnosticLogger.d("SettingsViewModel", "Scan period increased from $currentMonths to $months months - will perform full scan")
             }
 
             userPreferencesRepository.updateSmsScanMonths(months)
@@ -969,7 +1133,7 @@ class SettingsViewModel @Inject constructor(
             // If enabling all time scanning, reset scan timestamp to force full scan
             if (allTime) {
                 userPreferencesRepository.setLastScanTimestamp(0L)
-                Log.d("SettingsViewModel", "All time scanning enabled - will perform full scan")
+                diagnosticLogger.d("SettingsViewModel", "All time scanning enabled - will perform full scan")
             }
 
             userPreferencesRepository.updateSmsScanAllTime(allTime)
@@ -988,19 +1152,19 @@ class SettingsViewModel @Inject constructor(
                     
                     // Encrypt device data for verification
                     val encryptedDeviceData = com.pennywiseai.tracker.utils.DeviceEncryption.encryptDeviceData(context)
-                    Log.d("SettingsViewModel", "Encrypted device data: ${encryptedDeviceData?.take(50)}... (length: ${encryptedDeviceData?.length})")
+                    diagnosticLogger.d("SettingsViewModel", "Encrypted device data: ${encryptedDeviceData?.take(50)}... (length: ${encryptedDeviceData?.length})")
                     
                     val encodedDeviceData = if (encryptedDeviceData != null) {
                         URLEncoder.encode(encryptedDeviceData, "UTF-8")
                     } else {
                         ""
                     }
-                    Log.d("SettingsViewModel", "Encoded device data: ${encodedDeviceData.take(50)}... (length: ${encodedDeviceData.length})")
+                    diagnosticLogger.d("SettingsViewModel", "Encoded device data: ${encodedDeviceData.take(50)}... (length: ${encodedDeviceData.length})")
                     
                     // Reporting to original service disabled in this fork.
                     // Direct users to the fork's GitHub issues instead.
                     val url = "${Constants.Links.GITHUB_URL}/issues/new"
-                    Log.d("SettingsViewModel", "Opening fork issues instead of original parser")
+                    diagnosticLogger.d("SettingsViewModel", "Opening fork issues instead of original parser")
                     
                     // Open in browser
                     val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
@@ -1009,12 +1173,12 @@ class SettingsViewModel @Inject constructor(
                     // Mark as reported
                     unrecognizedSmsRepository.markAsReported(listOf(firstUnreported.id))
                     
-                    Log.d("SettingsViewModel", "Opened report for unrecognized SMS from: ${firstUnreported.sender}")
+                    diagnosticLogger.d("SettingsViewModel", "Opened report for unrecognized SMS from: ${firstUnreported.sender}")
                 } else {
-                    Log.d("SettingsViewModel", "No unreported SMS messages found")
+                    diagnosticLogger.d("SettingsViewModel", "No unreported SMS messages found")
                 }
             } catch (e: Exception) {
-                Log.e("SettingsViewModel", "Error opening unrecognized SMS report", e)
+                diagnosticLogger.e("SettingsViewModel", "Error opening unrecognized SMS report", e)
             }
         }
     }
@@ -1031,13 +1195,13 @@ class SettingsViewModel @Inject constructor(
                     }
                     is ExportResult.Error -> {
                         _importExportMessage.value = "Export failed: ${result.message}"
-                        Log.e("SettingsViewModel", "Export failed: ${result.message}")
+                        diagnosticLogger.e("SettingsViewModel", "Export failed: ${result.message}")
                     }
                     else -> {}
                 }
             } catch (e: Exception) {
                 _importExportMessage.value = "Export error: ${e.message}"
-                Log.e("SettingsViewModel", "Export error", e)
+                diagnosticLogger.e("SettingsViewModel", "Export error", e)
             }
         }
     }
@@ -1056,7 +1220,7 @@ class SettingsViewModel @Inject constructor(
                 }
             } catch (e: Exception) {
                 _importExportMessage.value = "Failed to save backup: ${e.message}"
-                Log.e("SettingsViewModel", "Error saving backup", e)
+                diagnosticLogger.e("SettingsViewModel", "Error saving backup", e)
             }
         }
     }
@@ -1087,7 +1251,7 @@ class SettingsViewModel @Inject constructor(
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             })
         } catch (e: Exception) {
-            Log.e("SettingsViewModel", "Error sharing backup file", e)
+            diagnosticLogger.e("SettingsViewModel", "Error sharing backup file", e)
         }
     }
     
@@ -1103,12 +1267,12 @@ class SettingsViewModel @Inject constructor(
                     }
                     is ImportResult.Error -> {
                         _importExportMessage.value = "Import failed: ${result.message}"
-                        Log.e("SettingsViewModel", "Import failed: ${result.message}")
+                        diagnosticLogger.e("SettingsViewModel", "Import failed: ${result.message}")
                     }
                 }
             } catch (e: Exception) {
                 _importExportMessage.value = "Import error: ${e.message}"
-                Log.e("SettingsViewModel", "Import error", e)
+                diagnosticLogger.e("SettingsViewModel", "Import error", e)
             }
         }
     }

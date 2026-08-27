@@ -29,8 +29,45 @@ class TransactionRepository @Inject constructor(
     suspend fun getTransactionById(id: Long): TransactionEntity? = 
         transactionDao.getTransactionById(id)
 
-    suspend fun markFireflySynced(transactionId: Long, externalId: String?) =
-        transactionDao.markFireflySynced(transactionId, externalId)
+    suspend fun markFireflySynced(
+        transactionId: Long,
+        externalId: String?,
+        fireflyTransactionId: String? = null,
+        fireflyUpdatedAt: LocalDateTime? = null
+    ) = transactionDao.markFireflySynced(
+        transactionId = transactionId,
+        externalId = externalId,
+        transactionIdRemote = fireflyTransactionId,
+        fireflyUpdatedAt = fireflyUpdatedAt
+    )
+
+    suspend fun updateTransactionFromFirefly(
+        transactionId: Long,
+        amount: BigDecimal,
+        merchantName: String,
+        category: String,
+        description: String?,
+        dateTime: LocalDateTime,
+        transactionType: com.pennywiseai.tracker.data.database.entity.TransactionType,
+        fireflyTransactionId: String?,
+        fireflySourceName: String?,
+        fireflyDestinationName: String?,
+        fireflyUpdatedAt: LocalDateTime?,
+        syncedAt: LocalDateTime?
+    ) = transactionDao.updateTransactionFromFirefly(
+        transactionId = transactionId,
+        amount = amount,
+        merchantName = merchantName,
+        category = category,
+        description = description,
+        dateTime = dateTime,
+        transactionType = transactionType.name,
+        fireflyTransactionId = fireflyTransactionId,
+        fireflySourceName = fireflySourceName,
+        fireflyDestinationName = fireflyDestinationName,
+        fireflyUpdatedAt = fireflyUpdatedAt,
+        syncedAt = syncedAt
+    )
 
     suspend fun markFireflyError(transactionId: Long, error: String) =
         transactionDao.markFireflyError(transactionId, error)

@@ -46,7 +46,8 @@ private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(
 
 @Singleton
 class UserPreferencesRepository @Inject constructor(
-    @ApplicationContext private val context: Context
+    @ApplicationContext private val context: Context,
+    private val fireflyTokenManager: com.pennywiseai.tracker.data.firefly.FireflyTokenManager
 ) {
     private object PreferencesKeys {
         val DARK_THEME_ENABLED = booleanPreferencesKey("dark_theme_enabled")
@@ -146,6 +147,9 @@ class UserPreferencesRepository @Inject constructor(
 
         // Flag to track if legacy Firefly external ID migration/reconcile has run
         val FIREFLY_MIGRATION_RAN = booleanPreferencesKey("firefly_migration_ran")
+
+        // Flag to track if the plain-text DataStore token has been migrated to secure storage
+        val FIREFLY_TOKEN_MIGRATED_TO_SECURE = booleanPreferencesKey("firefly_token_migrated_to_secure")
     }
 
     val userPreferences: Flow<UserPreferences> = context.dataStore.data
@@ -188,7 +192,7 @@ class UserPreferencesRepository @Inject constructor(
                 baseCurrencyUserSet = preferences[PreferencesKeys.BASE_CURRENCY_USER_SET] ?: false,
                 fireflySyncEnabled = preferences[PreferencesKeys.FIREFLY_SYNC_ENABLED] ?: false,
                 fireflyBaseUrl = preferences[PreferencesKeys.FIREFLY_BASE_URL],
-                fireflyAccessToken = preferences[PreferencesKeys.FIREFLY_ACCESS_TOKEN],
+                fireflyAccessToken = fireflyTokenManager.getAccessToken(),
                 fireflyDefaultAssetAccount = preferences[PreferencesKeys.FIREFLY_DEFAULT_ASSET_ACCOUNT],
                 fireflyLastSyncTimestamp = preferences[PreferencesKeys.FIREFLY_LAST_SYNC_TIMESTAMP],
                 fireflyLastSyncError = preferences[PreferencesKeys.FIREFLY_LAST_SYNC_ERROR],
@@ -720,8 +724,9 @@ class UserPreferencesRepository @Inject constructor(
     val fireflyBaseUrlFlow: Flow<String?> = context.dataStore.data
         .map { preferences -> preferences[PreferencesKeys.FIREFLY_BASE_URL] }
 
-    val fireflyAccessTokenFlow: Flow<String?> = context.dataStore.data
-        .map { preferences -> preferences[PreferencesKeys.FIREFLY_ACCESS_TOKEN] }
+    // Token is stored in encrypted prefs, not DataStore, to avoid leaking the
+    // Personal Access Token to plain-text backups.
+    val fireflyAccessTokenFlow: Flow<String?> = fireflyTokenManager.accessTokenFlow
 
     val fireflyDefaultAssetAccountFlow: Flow<String?> = context.dataStore.data
         .map { preferences -> preferences[PreferencesKeys.FIREFLY_DEFAULT_ASSET_ACCOUNT] }
@@ -738,10 +743,10 @@ class UserPreferencesRepository @Inject constructor(
     suspend fun setFireflySyncEnabled(enabled: Boolean) {
         context.dataStore.edit { preferences ->
             preferences[PreferencesKeys.FIREFLY_SYNC_ENABLED] = enabled
-            if (!enabled) {
-                // Clear sensitive data when disabling
-                preferences.remove(PreferencesKeys.FIREFLY_ACCESS_TOKEN)
-            }
+        }
+        if (!enabled) {
+            // Clear sensitive credentials from encrypted storage when disabling.
+            fireflyTokenManager.clearCredentials()
         }
     }
 
@@ -751,16 +756,6 @@ class UserPreferencesRepository @Inject constructor(
                 preferences.remove(PreferencesKeys.FIREFLY_BASE_URL)
             } else {
                 preferences[PreferencesKeys.FIREFLY_BASE_URL] = url.trim().trimEnd('/')
-            }
-        }
-    }
-
-    suspend fun setFireflyAccessToken(token: String?) {
-        context.dataStore.edit { preferences ->
-            if (token.isNullOrBlank()) {
-                preferences.remove(PreferencesKeys.FIREFLY_ACCESS_TOKEN)
-            } else {
-                preferences[PreferencesKeys.FIREFLY_ACCESS_TOKEN] = token.trim()
             }
         }
     }
@@ -906,6 +901,24 @@ class UserPreferencesRepository @Inject constructor(
     suspend fun setFireflyMigrationRan(ran: Boolean) {
         context.dataStore.edit { preferences ->
             preferences[PreferencesKeys.FIREFLY_MIGRATION_RAN] = ran
+        }
+    }
+
+    /**
+     * One-time migration: copy the legacy plain-text Firefly token from DataStore into
+     * EncryptedSharedPreferences, then remove the DataStore copy. Safe to call repeatedly.
+     */
+    suspend fun migrateTokenToSecureIfNeeded() {
+        context.dataStore.edit { preferences ->
+            if (preferences[PreferencesKeys.FIREFLY_TOKEN_MIGRATED_TO_SECURE] == true) return@edit
+
+            val legacyToken = preferences[PreferencesKeys.FIREFLY_ACCESS_TOKEN]
+            val legacyUrl = preferences[PreferencesKeys.FIREFLY_BASE_URL]
+            if (fireflyTokenManager.getAccessToken().isNullOrBlank() && !legacyToken.isNullOrBlank()) {
+                fireflyTokenManager.saveCredentials(legacyUrl, legacyToken)
+            }
+            preferences.remove(PreferencesKeys.FIREFLY_ACCESS_TOKEN)
+            preferences[PreferencesKeys.FIREFLY_TOKEN_MIGRATED_TO_SECURE] = true
         }
     }
 

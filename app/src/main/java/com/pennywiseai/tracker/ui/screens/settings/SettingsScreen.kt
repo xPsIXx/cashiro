@@ -100,6 +100,7 @@ fun SettingsScreen(
     onNavigateToImportStatement: () -> Unit = {},
     onNavigateToFireflyFailedSyncs: () -> Unit = {},
     onNavigateToFireflySettings: () -> Unit = {},
+    onNavigateToDiagnostics: () -> Unit = {},
     settingsViewModel: SettingsViewModel = hiltViewModel(),
     appLockViewModel: com.pennywiseai.tracker.ui.viewmodel.AppLockViewModel = hiltViewModel(),
     permissionViewModel: com.pennywiseai.tracker.ui.viewmodel.PermissionViewModel = hiltViewModel()
@@ -441,6 +442,15 @@ fun SettingsScreen(
                     title = "Firefly III Sync",
                     subtitle = if (fireflySyncEnabled) "Auto-push transactions enabled" else "Connect your self-hosted Firefly",
                     onClick = { onNavigateToFireflySettings() },
+                    position = ItemPosition.MIDDLE
+                )
+                SettingsNavItem(
+                    icon = Icons.Default.BugReport,
+                    iconBgColor = MaterialTheme.colorScheme.errorContainer,
+                    iconTint = MaterialTheme.colorScheme.onErrorContainer,
+                    title = "Diagnostics",
+                    subtitle = "View and share diagnostic logs",
+                    onClick = onNavigateToDiagnostics,
                     position = ItemPosition.MIDDLE
                 )
                 SettingsNavItem(

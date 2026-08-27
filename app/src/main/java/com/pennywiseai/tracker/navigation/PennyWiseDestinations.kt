@@ -64,6 +64,9 @@ object FireflyFailedSyncs
 object FireflySettings
 
 @Serializable
+object Diagnostics
+
+@Serializable
 data class BudgetGroupEdit(val groupId: Long = -1L)
 
 @Serializable

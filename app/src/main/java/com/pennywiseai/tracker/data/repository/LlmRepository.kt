@@ -263,7 +263,65 @@ class LlmRepository @Inject constructor(
         """.trimIndent()
     }
 
+    /**
+     * Summarizes a snippet of diagnostic logs using the on-device LLM.
+     * This temporarily replaces any active chat conversation.
+     *
+     * @param logText newline-separated diagnostic entries (secrets should already be scrubbed)
+     */
+    suspend fun summarizeDiagnostics(logText: String): Result<String> {
+        return try {
+            val truncated = logText.takeLast(DIAGNOSTIC_LOG_MAX_CHARS)
+            val prompt = """
+                You are reviewing a snippet of an Android app's diagnostic log.
+                Summarize the log. Identify the most important errors or patterns, what component they relate to (for example Firefly sync, SMS parsing, or background workers), and suggest one concrete next step for debugging.
+                Keep your response concise, factual, and plain text. Do not use markdown.
+
+                Diagnostic log:
+                $truncated
+            """.trimIndent()
+
+            // Temporarily close any active user chat conversation so we can create a
+            // dedicated diagnostic one. The chat will be recreated from Room history later.
+            if (llmService.hasActiveConversation()) {
+                llmService.closeConversation()
+            }
+
+            if (!llmService.isInitialized()) {
+                val modelFile = modelRepository.getModelFile()
+                if (!modelFile.exists()) {
+                    return Result.failure(Exception("Model not downloaded. Please download from Settings."))
+                }
+                val initResult = llmService.initialize(modelFile.absolutePath)
+                if (initResult.isFailure) {
+                    return Result.failure(initResult.exceptionOrNull() ?: Exception("Failed to initialize LLM"))
+                }
+            }
+
+            val createResult = llmService.createConversation(
+                systemPrompt = "You summarize Android diagnostic logs concisely. Be factual and suggest a concrete debugging step.",
+                history = emptyList()
+            )
+            if (createResult.isFailure) {
+                return Result.failure(createResult.exceptionOrNull() ?: Exception("Failed to create conversation"))
+            }
+
+            val responseBuilder = StringBuilder()
+            llmService.sendMessage(prompt).collect { partial ->
+                responseBuilder.append(partial)
+            }
+
+            // Clean up the temporary diagnostic conversation.
+            llmService.closeConversation()
+
+            Result.success(responseBuilder.toString())
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
     companion object {
         private const val TAG = "LlmRepository"
+        private const val DIAGNOSTIC_LOG_MAX_CHARS = 6000
     }
 }

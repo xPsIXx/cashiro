@@ -6,6 +6,7 @@ import com.pennywiseai.tracker.data.database.entity.SubscriptionState
 import kotlinx.coroutines.flow.Flow
 import java.math.BigDecimal
 import java.time.LocalDate
+import java.time.LocalDateTime
 
 @Dao
 interface SubscriptionDao {
@@ -68,6 +69,47 @@ interface SubscriptionDao {
     @Query("SELECT * FROM subscriptions WHERE state = :state ORDER BY next_payment_date ASC")
     suspend fun getSubscriptionsByStateList(state: SubscriptionState): List<SubscriptionEntity>
     
+    @Query("SELECT * FROM subscriptions WHERE firefly_recurring_id = :id LIMIT 1")
+    suspend fun getSubscriptionByFireflyRecurringId(id: String): SubscriptionEntity?
+
+    @Query("""
+        UPDATE subscriptions 
+        SET firefly_recurring_id = :recurringId,
+            firefly_recurring_synced_at = :syncedAt,
+            updated_at = datetime('now')
+        WHERE id = :subscriptionId
+    """)
+    suspend fun updateRecurringSyncInfo(
+        subscriptionId: Long,
+        recurringId: String?,
+        syncedAt: LocalDateTime?
+    )
+
+    @Query("""
+        UPDATE subscriptions 
+        SET merchant_name = :merchantName,
+            amount = :amount,
+            next_payment_date = :nextPaymentDate,
+            billing_cycle = :billingCycle,
+            currency = :currency,
+            direction = :direction,
+            firefly_recurring_id = :recurringId,
+            firefly_recurring_synced_at = :syncedAt,
+            updated_at = datetime('now')
+        WHERE id = :subscriptionId
+    """)
+    suspend fun updateSubscriptionFromSync(
+        subscriptionId: Long,
+        merchantName: String,
+        amount: BigDecimal,
+        nextPaymentDate: LocalDate?,
+        billingCycle: String,
+        currency: String,
+        direction: com.pennywiseai.tracker.data.database.entity.SubscriptionDirection,
+        recurringId: String?,
+        syncedAt: LocalDateTime?
+    )
+
     @Query("DELETE FROM subscriptions")
     suspend fun deleteAllSubscriptions()
 }

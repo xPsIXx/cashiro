@@ -5,12 +5,18 @@ import android.content.SharedPreferences
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
  * Secure storage for Firefly III Personal Access Token using EncryptedSharedPreferences.
  * This provides better protection than plain DataStore for sensitive credentials.
+ *
+ * A [StateFlow] is exposed so consumers that previously observed the DataStore token
+ * can now observe secure storage directly without needing a second source of truth.
  */
 @Singleton
 class FireflyTokenManager @Inject constructor(
@@ -43,12 +49,20 @@ class FireflyTokenManager @Inject constructor(
         }
     }
 
+    private val _accessTokenFlow = MutableStateFlow(getAccessToken())
+    val accessTokenFlow: StateFlow<String?> = _accessTokenFlow.asStateFlow()
+
+    private val _baseUrlFlow = MutableStateFlow(getBaseUrl())
+    val baseUrlFlow: StateFlow<String?> = _baseUrlFlow.asStateFlow()
+
     fun saveCredentials(baseUrl: String?, accessToken: String?) {
         encryptedPrefs.edit().apply {
             if (baseUrl != null) putString(KEY_BASE_URL, baseUrl) else remove(KEY_BASE_URL)
             if (accessToken != null) putString(KEY_ACCESS_TOKEN, accessToken) else remove(KEY_ACCESS_TOKEN)
             apply()
         }
+        _baseUrlFlow.value = getBaseUrl()
+        _accessTokenFlow.value = getAccessToken()
     }
 
     fun getBaseUrl(): String? = encryptedPrefs.getString(KEY_BASE_URL, null)
@@ -59,6 +73,8 @@ class FireflyTokenManager @Inject constructor(
             .remove(KEY_BASE_URL)
             .remove(KEY_ACCESS_TOKEN)
             .apply()
+        _baseUrlFlow.value = null
+        _accessTokenFlow.value = null
     }
 
     fun hasCredentials(): Boolean {

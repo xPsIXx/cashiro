@@ -139,6 +139,9 @@ fun PennyWiseNavHost(
                 },
                 onNavigateToFireflySettings = {
                     navController.navigate(FireflySettings) { launchSingleTop = true }
+                },
+                onNavigateToDiagnostics = {
+                    navController.navigate(Diagnostics) { launchSingleTop = true }
                 }
             )
         }
@@ -230,6 +233,19 @@ fun PennyWiseNavHost(
                 },
                 onNavigateToFailedSyncs = {
                     navController.navigate(FireflyFailedSyncs) { launchSingleTop = true }
+                }
+            )
+        }
+
+        composable<Diagnostics>(
+            enterTransition = { fadeIn(tween(300)) + slideInVertically { it / 4 } },
+            exitTransition = { fadeOut(tween(200)) },
+            popEnterTransition = { fadeIn(tween(300)) },
+            popExitTransition = { fadeOut(tween(200)) + slideOutVertically { it / 4 } }
+        ) {
+            com.pennywiseai.tracker.ui.screens.settings.DiagnosticScreen(
+                onNavigateBack = {
+                    navController.safePopBackStack()
                 }
             )
         }

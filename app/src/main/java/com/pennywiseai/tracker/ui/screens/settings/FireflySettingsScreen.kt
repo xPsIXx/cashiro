@@ -58,13 +58,17 @@ fun FireflySettingsScreen(
     // Local editing state
     val secureCreds = remember { viewModel.getFireflySecureCredentials() }
     var localUrl by remember { mutableStateOf(fireflyBaseUrl ?: secureCreds.first ?: "") }
-    var localToken by remember { mutableStateOf("") }
+    var localToken by remember { mutableStateOf(secureCreds.second ?: "") }
     var localDefaultAccount by remember { mutableStateOf(fireflyDefaultAsset ?: "") }
     var testResult by remember { mutableStateOf<String?>(null) }
     var isTesting by remember { mutableStateOf(false) }
     var isSyncing30d by remember { mutableStateOf(false) }
     var isSyncingAll by remember { mutableStateOf(false) }
     var isFullSyncing by remember { mutableStateOf(false) }
+    var isSyncingBudgets by remember { mutableStateOf(false) }
+    var isSyncingPiggy by remember { mutableStateOf(false) }
+    var isSyncingRecurring by remember { mutableStateOf(false) }
+    var isSyncingCategories by remember { mutableStateOf(false) }
     var isSendingTest by remember { mutableStateOf(false) }
     var isSavingSettings by remember { mutableStateOf(false) }
     var showSaved by remember { mutableStateOf(false) }
@@ -268,6 +272,70 @@ fun FireflySettingsScreen(
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Text("Reconcile (after reinstall)")
+            }
+
+            // Category sync
+            OutlinedButton(
+                onClick = {
+                    isSyncingCategories = true
+                    syncResult = "Syncing categories to Firefly..."
+                    viewModel.syncFireflyCategories { result ->
+                        syncResult = result
+                        isSyncingCategories = false
+                    }
+                },
+                enabled = !isSyncingCategories,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(if (isSyncingCategories) "Syncing categories..." else "Sync Categories to Firefly")
+            }
+
+            // Budget sync
+            OutlinedButton(
+                onClick = {
+                    isSyncingBudgets = true
+                    syncResult = "Syncing budgets to Firefly..."
+                    viewModel.syncFireflyBudgets { result ->
+                        syncResult = result
+                        isSyncingBudgets = false
+                    }
+                },
+                enabled = !isSyncingBudgets,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(if (isSyncingBudgets) "Syncing budgets..." else "Sync Budgets to Firefly")
+            }
+
+            // Piggy bank sync (TARGET budgets)
+            OutlinedButton(
+                onClick = {
+                    isSyncingPiggy = true
+                    syncResult = "Syncing target budgets to Firefly piggy banks..."
+                    viewModel.syncFireflyPiggyBanks { result ->
+                        syncResult = result
+                        isSyncingPiggy = false
+                    }
+                },
+                enabled = !isSyncingPiggy,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(if (isSyncingPiggy) "Syncing piggy banks..." else "Sync Target Budgets to Piggy Banks")
+            }
+
+            // Recurring transaction sync
+            OutlinedButton(
+                onClick = {
+                    isSyncingRecurring = true
+                    syncResult = "Syncing subscriptions with Firefly recurring transactions..."
+                    viewModel.syncFireflyRecurring { result ->
+                        syncResult = result
+                        isSyncingRecurring = false
+                    }
+                },
+                enabled = !isSyncingRecurring,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(if (isSyncingRecurring) "Syncing recurring..." else "Sync Subscriptions/Recurring")
             }
 
             // Last sync result / status

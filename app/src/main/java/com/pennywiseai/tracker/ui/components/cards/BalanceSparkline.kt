@@ -40,8 +40,8 @@ fun BalanceSparkline(
     val labelColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
     val labelStyle = TextStyle(fontSize = 9.sp, color = labelColor)
 
-    val startLabel = if (isBalanceHidden) "••••" else formatCompactBalance(data.first(), currency)
-    val endLabel = if (isBalanceHidden) "••••" else formatCompactBalance(data.last(), currency)
+    val startLabel = if (isBalanceHidden) "****" else formatCompactBalance(data.first(), currency)
+    val endLabel = if (isBalanceHidden) "****" else formatCompactBalance(data.last(), currency)
 
     val startResult = textMeasurer.measure(startLabel, labelStyle)
     val endResult = textMeasurer.measure(endLabel, labelStyle)
