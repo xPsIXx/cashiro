@@ -695,198 +695,18 @@ class FireflyClient @Inject constructor(
         }
     }
 
-    /**
-     * Two-way syncs PennyWise budgets with Firefly budgets + budget limits.
-     *
-     * Conflict resolution uses last-modified timestamps:
-     *  - If the local budget changed since the last sync and the remote did not, push local.
-     *  - If the remote changed since the last sync and the local did not, pull remote.
-     *  - If both changed, the newer timestamp wins (remote wins ties).
-     *  - Unmapped remote budgets are imported as new local budgets.
-     *  - Unmapped local budgets are created remotely.
-     */
     suspend fun syncBudgets(
         budgets: List<BudgetEntity>,
         baseUrl: String,
         accessToken: String
     ): BudgetSyncResult {
-        if (baseUrl.isBlank() || accessToken.isBlank()) {
-            return BudgetSyncResult(created = 0, updated = 0, failed = budgets.size, error = "Firefly not configured")
-        }
-
-        return withContext(Dispatchers.IO) {
-            try {
-                val remoteBudgets = getBudgets(baseUrl, accessToken)
-                val remoteLimits = getBudgetLimits(baseUrl, accessToken)
-                val remoteCombined = resolveCurrentLimits(remoteBudgets, remoteLimits)
-
-                var created = 0
-                var updated = 0
-                var failed = 0
-                val now = LocalDateTime.now()
-                val processedRemoteIds = mutableSetOf<String>()
-
-                // 1. Push / pull for every local budget
-                budgets.forEach { local ->
-                    try {
-                        val remote = local.fireflyBudgetId?.let { id ->
-                            remoteCombined.find { it.budgetId == id }
-                        } ?: remoteCombined.find { it.budgetName.equals(local.name, ignoreCase = true) }
-
-                        if (remote == null) {
-                            // No matching remote budget -> create it
-                            val newBudgetId = createBudget(
-                                baseUrl = baseUrl,
-                                accessToken = accessToken,
-                                name = local.name,
-                                active = local.isActive
-                            )
-                            if (newBudgetId.isNullOrBlank()) {
-                                failed++
-                                return@forEach
-                            }
-                            val newLimitId = createBudgetLimit(
-                                baseUrl = baseUrl,
-                                accessToken = accessToken,
-                                budgetId = newBudgetId,
-                                startDate = local.startDate.format(DATE_FORMATTER),
-                                endDate = local.endDate.format(DATE_FORMATTER),
-                                amount = local.limitAmount.toPlainString(),
-                                currencyCode = local.currency
-                            )
-                            if (newLimitId.isNullOrBlank()) {
-                                failed++
-                                return@forEach
-                            }
-                            budgetRepository.updateFireflySyncInfo(
-                                budgetId = local.id,
-                                fireflyBudgetId = newBudgetId,
-                                fireflyLimitId = newLimitId,
-                                syncedAt = now
-                            )
-                            created++
-                            return@forEach
-                        }
-
-                        processedRemoteIds.add(remote.budgetId)
-
-                        val localInstant = toInstant(local.updatedAt)
-                        val lastSyncInstant = local.fireflySyncedAt?.let { toInstant(it) }
-                        val remoteInstant = listOfNotNull(remote.budgetUpdatedAt, remote.limitUpdatedAt).maxOrNull()
-
-                        val localChanged = lastSyncInstant == null || localInstant.isAfter(lastSyncInstant)
-                        val remoteChanged = remoteInstant != null && (lastSyncInstant == null || remoteInstant.isAfter(lastSyncInstant))
-
-                        when {
-                            !localChanged && !remoteChanged -> {
-                                // Nothing changed, just refresh sync metadata
-                                budgetRepository.updateFireflySyncInfo(
-                                    budgetId = local.id,
-                                    fireflyBudgetId = remote.budgetId,
-                                    fireflyLimitId = remote.limitId,
-                                    syncedAt = now
-                                )
-                            }
-                            localChanged && !remoteChanged -> {
-                                // Push local to Firefly
-                                val budgetOk = updateBudget(
-                                    baseUrl = baseUrl,
-                                    accessToken = accessToken,
-                                    budgetId = remote.budgetId,
-                                    name = local.name,
-                                    active = local.isActive
-                                )
-                                val limitOk = if (remote.limitId.isNotBlank()) {
-                                    updateBudgetLimit(
-                                        baseUrl = baseUrl,
-                                        accessToken = accessToken,
-                                        budgetId = remote.budgetId,
-                                        limitId = remote.limitId,
-                                        startDate = local.startDate.format(DATE_FORMATTER),
-                                        endDate = local.endDate.format(DATE_FORMATTER),
-                                        amount = local.limitAmount.toPlainString(),
-                                        currencyCode = local.currency
-                                    )
-                                } else {
-                                    createBudgetLimit(
-                                        baseUrl = baseUrl,
-                                        accessToken = accessToken,
-                                        budgetId = remote.budgetId,
-                                        startDate = local.startDate.format(DATE_FORMATTER),
-                                        endDate = local.endDate.format(DATE_FORMATTER),
-                                        amount = local.limitAmount.toPlainString(),
-                                        currencyCode = local.currency
-                                    ) != null
-                                }
-                                if (budgetOk && limitOk) {
-                                    budgetRepository.updateFireflySyncInfo(
-                                        budgetId = local.id,
-                                        fireflyBudgetId = remote.budgetId,
-                                        fireflyLimitId = remote.limitId,
-                                        syncedAt = now
-                                    )
-                                    updated++
-                                } else {
-                                    failed++
-                                }
-                            }
-                            else -> {
-                                // Pull remote into local (remote wins, including tie)
-                                budgetRepository.updateBudgetFromSync(
-                                    budgetId = local.id,
-                                    name = remote.budgetName,
-                                    limitAmount = remote.amount,
-                                    startDate = remote.startDate,
-                                    endDate = remote.endDate,
-                                    currency = remote.currencyCode,
-                                    periodType = inferPeriodType(remote.startDate, remote.endDate),
-                                    isActive = remote.active,
-                                    fireflyBudgetId = remote.budgetId,
-                                    fireflyLimitId = remote.limitId,
-                                    syncedAt = now
-                                )
-                                updated++
-                            }
-                        }
-                    } catch (e: Exception) {
-                        diagnosticLogger.e(TAG, "Failed to sync budget ${local.name}", e)
-                        failed++
-                    }
-                }
-
-                // 2. Import remote budgets that have no local counterpart
-                remoteCombined.forEach { remote ->
-                    if (remote.budgetId in processedRemoteIds) return@forEach
-                    try {
-                        val localId = budgetRepository.createBudget(
-                            name = remote.budgetName,
-                            limitAmount = remote.amount,
-                            periodType = inferPeriodType(remote.startDate, remote.endDate),
-                            startDate = remote.startDate,
-                            endDate = remote.endDate,
-                            currency = remote.currencyCode,
-                            includeAllCategories = true,
-                            categories = emptyList(),
-                            color = "#1565C0"
-                        )
-                        budgetRepository.updateFireflySyncInfo(
-                            budgetId = localId,
-                            fireflyBudgetId = remote.budgetId,
-                            fireflyLimitId = remote.limitId,
-                            syncedAt = now
-                        )
-                        created++
-                    } catch (e: Exception) {
-                        diagnosticLogger.e(TAG, "Failed to import remote budget ${remote.budgetName}", e)
-                        failed++
-                    }
-                }
-
-                BudgetSyncResult(created = created, updated = updated, failed = failed)
-            } catch (e: Exception) {
-                BudgetSyncResult(created = 0, updated = 0, failed = budgets.size, error = e.message)
-            }
-        }
+        // Cashiro only pushes transactions one-way. Local budgets have no Firefly IDs.
+        return BudgetSyncResult(
+            created = 0,
+            updated = 0,
+            failed = 0,
+            error = "Budgets stay on the phone. Cashiro only pushes transactions."
+        )
     }
 
     data class BudgetSyncResult(
@@ -2361,114 +2181,13 @@ class FireflyClient @Inject constructor(
         accessToken: String,
         defaultAssetAccount: String?
     ): RecurringSyncResult {
-        if (baseUrl.isBlank() || accessToken.isBlank()) {
-            return RecurringSyncResult(created = 0, updated = 0, failed = subscriptions.size, error = "Firefly not configured")
-        }
-
-        return withContext(Dispatchers.IO) {
-            try {
-                val remoteRecurrings = getRecurringTransactions(baseUrl, accessToken)
-                var created = 0
-                var updated = 0
-                var failed = 0
-                val now = LocalDateTime.now()
-                val processedRemoteIds = mutableSetOf<String>()
-
-                subscriptions.forEach { local ->
-                    try {
-                        val remote = local.fireflyRecurringId?.let { id ->
-                            remoteRecurrings.find { it.id == id }
-                        } ?: remoteRecurrings.find { it.title.equals(local.merchantName, ignoreCase = true) }
-
-                        if (remote == null) {
-                            // Create remote recurring transaction
-                            val newId = createRecurringTransaction(local, baseUrl, accessToken, defaultAssetAccount)
-                            if (newId.isNullOrBlank()) {
-                                failed++
-                                return@forEach
-                            }
-                            subscriptionRepository.updateRecurringSyncInfo(local.id, newId, now)
-                            created++
-                            return@forEach
-                        }
-
-                        processedRemoteIds.add(remote.id)
-
-                        val localInstant = toInstant(local.updatedAt)
-                        val lastSyncInstant = local.fireflyRecurringSyncedAt?.let { toInstant(it) }
-                        val remoteInstant = remote.updatedAt
-
-                        val localChanged = lastSyncInstant == null || localInstant.isAfter(lastSyncInstant)
-                        val remoteChanged = remoteInstant != null && (lastSyncInstant == null || remoteInstant.isAfter(lastSyncInstant))
-
-                        when {
-                            !localChanged && !remoteChanged -> {
-                                subscriptionRepository.updateRecurringSyncInfo(local.id, remote.id, now)
-                            }
-                            localChanged && !remoteChanged -> {
-                                val ok = updateRecurringTransaction(
-                                    recurringId = remote.id,
-                                    subscription = local,
-                                    baseUrl = baseUrl,
-                                    accessToken = accessToken,
-                                    defaultAssetAccount = defaultAssetAccount
-                                )
-                                if (ok) {
-                                    subscriptionRepository.updateRecurringSyncInfo(local.id, remote.id, now)
-                                    updated++
-                                } else failed++
-                            }
-                            else -> {
-                                // Pull remote values into local subscription
-                                subscriptionRepository.updateSubscriptionFromSync(
-                                    subscriptionId = local.id,
-                                    merchantName = remote.title,
-                                    amount = remote.amount,
-                                    nextPaymentDate = remote.firstDate,
-                                    billingCycle = mapFireflyFrequencyToBillingCycle(remote.repeatFrequency),
-                                    currency = local.currency,
-                                    direction = if (remote.type == "deposit") SubscriptionDirection.INCOME else SubscriptionDirection.EXPENSE,
-                                    recurringId = remote.id,
-                                    syncedAt = now
-                                )
-                                updated++
-                            }
-                        }
-                    } catch (e: Exception) {
-                        diagnosticLogger.e(TAG, "Failed to sync recurring ${local.merchantName}", e)
-                        failed++
-                    }
-                }
-
-                // Import remote recurrences that have no local match as new subscriptions
-                remoteRecurrings.forEach { remote ->
-                    if (remote.id in processedRemoteIds) return@forEach
-                    try {
-                        val insertId = subscriptionRepository.insertSubscription(
-                            SubscriptionEntity(
-                                merchantName = remote.title,
-                                amount = remote.amount,
-                                nextPaymentDate = remote.firstDate,
-                                state = if (remote.active) SubscriptionState.ACTIVE else SubscriptionState.ENDED,
-                                category = null,
-                                currency = "INR", // Firefly recurring doesn't expose a currency directly; default to INR
-                                direction = if (remote.type == "deposit") SubscriptionDirection.INCOME else SubscriptionDirection.EXPENSE,
-                                billingCycle = mapFireflyFrequencyToBillingCycle(remote.repeatFrequency)
-                            )
-                        )
-                        subscriptionRepository.updateRecurringSyncInfo(insertId, remote.id, now)
-                        created++
-                    } catch (e: Exception) {
-                        diagnosticLogger.e(TAG, "Failed to import recurring ${remote.title}", e)
-                        failed++
-                    }
-                }
-
-                RecurringSyncResult(created = created, updated = updated, failed = failed)
-            } catch (e: Exception) {
-                RecurringSyncResult(created = 0, updated = 0, failed = subscriptions.size, error = e.message)
-            }
-        }
+        // Cashiro only pushes transactions one-way. Subscriptions have no Firefly IDs.
+        return RecurringSyncResult(
+            created = 0,
+            updated = 0,
+            failed = 0,
+            error = "Subscriptions stay on the phone. Cashiro only pushes transactions."
+        )
     }
 
     private suspend fun getRecurringTransactions(
