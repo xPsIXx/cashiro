@@ -13,19 +13,6 @@ kotlin {
         withHostTest {}
     }
 
-    if (org.jetbrains.kotlin.konan.target.HostManager.hostIsMac) {
-        iosX64()
-        iosArm64()
-        iosSimulatorArm64()
-    }
-
-    targets.withType<org.jetbrains.kotlin.gradle.plugin.mpp.KotlinNativeTarget>().configureEach {
-        binaries.framework {
-            baseName = "Shared"
-            isStatic = true
-        }
-    }
-
     sourceSets {
         val commonMain by getting {
             dependencies {
@@ -51,11 +38,6 @@ kotlin {
 
 dependencies {
     add("kspAndroid", libs.androidx.room.compiler)
-    if (org.jetbrains.kotlin.konan.target.HostManager.hostIsMac) {
-        add("kspIosX64", libs.androidx.room.compiler)
-        add("kspIosArm64", libs.androidx.room.compiler)
-        add("kspIosSimulatorArm64", libs.androidx.room.compiler)
-    }
 }
 
 ksp {

@@ -3,11 +3,8 @@
 #
 #   SupportedBanksDocTest -> docs/supported-banks.json
 #                            README supported-banks block + summary bullet
-#                            pennywise-web .../resources/supported-banks.json
 #                            the coverage claim in the Play Store long description
-#   BankSamplesDocTest    -> pennywise-web .../resources/bank-samples.json
-#                            (one real sample SMS per bank + what the parser
-#                             extracts, used by the per-bank landing pages)
+#   BankSamplesDocTest    -> docs/bank-samples.json
 #
 # Run this after adding/removing/renaming a bank parser, or after changing a
 # parser's extraction behaviour. CI runs both generators in assert mode

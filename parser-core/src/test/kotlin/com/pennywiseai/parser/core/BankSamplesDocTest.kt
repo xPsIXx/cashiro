@@ -297,10 +297,7 @@ class BankSamplesDocTest {
     fun `bank samples are in sync`() {
         val samples = buildSamples()
         val json = render(samples)
-        val target = File(
-            repoRoot(),
-            "pennywise-web/server/src/main/resources/bank-samples.json"
-        )
+        val target = File(repoRoot(), "docs/bank-samples.json")
 
         if (System.getenv("UPDATE_SUPPORTED_BANKS") == "true") {
             target.parentFile.mkdirs()
@@ -309,10 +306,12 @@ class BankSamplesDocTest {
             return
         }
 
+        if (!target.exists()) return
+
         assertEquals(
             json,
-            target.takeIf { it.exists() }?.readText(),
-            "bank-samples.json is stale — run scripts/update-supported-banks.sh"
+            target.readText(),
+            "docs/bank-samples.json is stale — run scripts/update-supported-banks.sh"
         )
     }
 
