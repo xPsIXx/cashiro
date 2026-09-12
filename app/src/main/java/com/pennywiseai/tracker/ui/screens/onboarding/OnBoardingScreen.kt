@@ -166,7 +166,7 @@ private fun WelcomeStep() {
     ) {
         Image(
             painter = painterResource(id = R.mipmap.ic_launcher_foreground),
-            contentDescription = "PennyWise",
+            contentDescription = "Cashiro",
             modifier = Modifier
                 .size(HERO_ICON_SIZE)
                 .clip(CircleShape),
@@ -176,7 +176,7 @@ private fun WelcomeStep() {
         Spacer(modifier = Modifier.height(Spacing.xl))
 
         Text(
-            text = "Welcome to PennyWise",
+            text = "Welcome to Cashiro",
             style = MaterialTheme.typography.headlineLarge,
             textAlign = TextAlign.Center,
             fontWeight = FontWeight.Bold
@@ -433,7 +433,7 @@ private fun PermissionsStep(
         Spacer(modifier = Modifier.height(Spacing.md))
 
         Text(
-            text = "PennyWise can automatically detect and categorize your bank transactions from SMS messages.",
+            text = "Cashiro can automatically detect and categorize your bank transactions from SMS messages.",
             style = MaterialTheme.typography.bodyLarge,
             textAlign = TextAlign.Center,
             color = MaterialTheme.colorScheme.onSurfaceVariant

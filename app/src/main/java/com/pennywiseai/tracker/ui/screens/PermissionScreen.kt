@@ -109,7 +109,7 @@ fun PermissionScreen(
             Spacer(modifier = Modifier.height(Spacing.md))
 
             Text(
-                text = "PennyWise can automatically detect and categorize your bank transactions from SMS messages, saving you time and effort.",
+                text = "Cashiro can automatically detect and categorize your bank transactions from SMS messages, saving you time and effort.",
                 style = MaterialTheme.typography.bodyLarge,
                 textAlign = TextAlign.Center,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -158,7 +158,7 @@ fun PermissionScreen(
                     )
                     Spacer(modifier = Modifier.height(Spacing.xs))
                     Text(
-                        text = "Allow PennyWise to read transaction notifications from supported banking apps. This helps capture purchases when SMS is delayed or unavailable.",
+                        text = "Allow Cashiro to read transaction notifications from supported banking apps. This helps capture purchases when SMS is delayed or unavailable.",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )

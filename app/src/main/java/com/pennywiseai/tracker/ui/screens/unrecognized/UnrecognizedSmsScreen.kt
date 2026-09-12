@@ -141,7 +141,7 @@ fun UnrecognizedSmsScreen(
 
                             Text(
                                 text = "These messages from potential banks couldn't be automatically parsed. " +
-                                        "Help improve PennyWise by reporting them so we can add support for more banks.",
+                                        "Help improve Cashiro by reporting them so we can add support for more banks.",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )

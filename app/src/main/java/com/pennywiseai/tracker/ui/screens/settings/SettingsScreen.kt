@@ -272,13 +272,13 @@ fun SettingsScreen(
                 // Row content adapts to entitlement state — paid users see
                 // "Active" so the row reads as status, free users see "Upgrade"
                 // so it reads as a call-to-action.
-                SectionHeaderV2(title = "PennyWise Pro")
+                SectionHeaderV2(title = "Cashiro Pro")
                 SettingsGroup {
                     SettingsNavItem(
                         icon = Icons.Default.AutoAwesome,
                         iconBgColor = yellow_light,
                         iconTint = yellow_dark,
-                        title = if (isProEntitled) "PennyWise Pro" else "Upgrade to PennyWise Pro",
+                        title = if (isProEntitled) "Cashiro Pro" else "Upgrade to Cashiro Pro",
                         subtitle = if (isProEntitled) {
                             "Active · all power features unlocked"
                         } else {
@@ -818,7 +818,7 @@ fun SettingsScreen(
             // App Version
             Spacer(modifier = Modifier.height(Spacing.sm))
             Text(
-                text = "PennyWise v${com.pennywiseai.tracker.BuildConfig.VERSION_NAME}",
+                text = "Cashiro v${com.pennywiseai.tracker.BuildConfig.VERSION_NAME}",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.fillMaxWidth(),

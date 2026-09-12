@@ -610,7 +610,7 @@ fun FireflySettingsScreen(
             Column(modifier = Modifier.padding(16.dp).verticalScroll(rememberScrollState())) {
                 Text("Account Mappings", style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.onSurface)
                 Text(
-                    "Map PennyWise accounts to specific Firefly asset accounts.",
+                    "Map Cashiro accounts to specific Firefly asset accounts.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -689,7 +689,7 @@ fun FireflySettingsScreen(
             Column(modifier = Modifier.padding(16.dp).verticalScroll(rememberScrollState())) {
                 Text("Category Mappings", style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.onSurface)
                 Text(
-                    "Map your PennyWise categories to categories that exist in Firefly.",
+                    "Map your Cashiro categories to categories that exist in Firefly.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -758,7 +758,7 @@ fun FireflySettingsScreen(
                 var customCategory by remember { mutableStateOf("") }
                 var customFireflyCategory by remember { mutableStateOf("") }
                 Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 8.dp)) {
-                    OutlinedTextField(value = customCategory, onValueChange = { customCategory = it }, placeholder = { Text("PennyWise cat") }, modifier = Modifier.weight(1f))
+                    OutlinedTextField(value = customCategory, onValueChange = { customCategory = it }, placeholder = { Text("Cashiro cat") }, modifier = Modifier.weight(1f))
                     Spacer(Modifier.width(8.dp))
                     OutlinedTextField(value = customFireflyCategory, onValueChange = { customFireflyCategory = it }, placeholder = { Text("Firefly cat") }, modifier = Modifier.weight(1f))
                     Spacer(Modifier.width(8.dp))

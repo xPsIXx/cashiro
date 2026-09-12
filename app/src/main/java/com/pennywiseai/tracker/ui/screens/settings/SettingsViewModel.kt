@@ -404,7 +404,7 @@ class SettingsViewModel @Inject constructor(
                 // Create download request
                 val request = DownloadManager.Request(Uri.parse(modelUrl))
                     .setTitle("AI Chat Model")
-                    .setDescription("Downloading AI chat assistant for PennyWise")
+                    .setDescription("Downloading AI chat assistant for Cashiro")
                     .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
                     .setDestinationInExternalFilesDir(context, Environment.DIRECTORY_DOWNLOADS, Constants.ModelDownload.MODEL_FILE_NAME)
                     .setAllowedOverMetered(true) // Allow mobile data downloads

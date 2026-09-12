@@ -467,7 +467,7 @@ class FireflySettingsViewModel @Inject constructor(
                 val testTx = TransactionEntity(
                     id = -1,
                     amount = java.math.BigDecimal("123.45"),
-                    merchantName = "Test Merchant (PennyWise)",
+                    merchantName = "Test Merchant (Cashiro)",
                     category = "Testing",
                     transactionType = com.pennywiseai.tracker.data.database.entity.TransactionType.EXPENSE,
                     dateTime = LocalDateTime.now(),

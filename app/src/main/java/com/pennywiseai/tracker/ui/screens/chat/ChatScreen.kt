@@ -88,7 +88,7 @@ fun ChatScreen(
             CustomTitleTopAppBar(
                 scrollBehaviorSmall = scrollBehaviorSmall,
                 scrollBehaviorLarge = scrollBehaviorLarge,
-                title = "PennyWise AI",
+                title = "Cashiro AI",
                 hazeState = hazeState
             )
         }
