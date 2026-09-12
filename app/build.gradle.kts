@@ -20,8 +20,8 @@ android {
         applicationId = "com.xpsixx.cashiro"
         minSdk = 26
         targetSdk = 36
-        versionCode = 104
-        versionName = "1.0.0"
+        versionCode = 105
+        versionName = "1.0.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         
@@ -179,7 +179,7 @@ ksp {
 val generatedAssetsDir = layout.buildDirectory.dir("generated/assets/changelog")
 
 tasks.register<Copy>("copyChangelog") {
-    val versionCode = android.defaultConfig.versionCode
+    val versionCode = 105
     val changelogDir = rootProject.file("fastlane/metadata/android/en-US/changelogs")
     val changelogFile = file("$changelogDir/$versionCode.txt")
     val defaultFile = file("$changelogDir/default.txt")
