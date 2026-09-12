@@ -51,14 +51,14 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
 
-            <!-- pennywise://add — the single quick-add entry point. Used by the
+            <!-- cashiro://add — the single quick-add entry point. Used by the
                  QS tile and the launcher shortcut, and open for the user to
                  wire up themselves (Tasker, an OEM gesture, Quick Tap). -->
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
-                <data android:scheme="pennywise" android:host="add" />
+                <data android:scheme="cashiro" android:host="add" />
             </intent-filter>
         </activity>
 

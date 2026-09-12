@@ -24,12 +24,12 @@ class MainActivity : FragmentActivity() {
         const val EXTRA_OPEN_ADD_TRANSACTION = "com.pennywiseai.tracker.OPEN_ADD_TRANSACTION"
 
         /**
-         * Deep link that jumps straight to Add Transaction: `pennywise://add`.
+         * Deep link that jumps straight to Add Transaction: `cashiro://add`.
          * The single entry point every quick-add surface routes through — the
          * QS tile, the launcher shortcut, and anything the user wires up
          * themselves (Tasker, an OEM gesture, a Pixel Quick Tap macro).
          */
-        const val DEEP_LINK_SCHEME = "pennywise"
+        const val DEEP_LINK_SCHEME = "cashiro"
         const val DEEP_LINK_HOST_ADD = "add"
 
         fun addDeepLink(): Uri = "$DEEP_LINK_SCHEME://$DEEP_LINK_HOST_ADD".toUri()
@@ -92,7 +92,7 @@ class MainActivity : FragmentActivity() {
      * Registered here rather than declared in res/xml so the intent names this
      * activity by component. A static shortcut would have to spell the package
      * out as a literal — which the debug applicationId suffix breaks — and a
-     * component-less pennywise:// intent would resolve against any app that
+     * component-less cashiro:// intent would resolve against any app that
      * claims the scheme.
      */
     private fun registerQuickAddShortcut() {

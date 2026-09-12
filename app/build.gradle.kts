@@ -17,7 +17,7 @@ android {
     }
 
     defaultConfig {
-        applicationId = "com.pennywiseai.tracker"
+        applicationId = "com.xpsixx.cashiro"
         minSdk = 26
         targetSdk = 36
         versionCode = 104
