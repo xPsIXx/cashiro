@@ -121,7 +121,7 @@ val ColorScheme.investment: Color
 fun PennyWiseTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
     dynamicColor: Boolean = true,
-    themeStyle: ThemeStyle = ThemeStyle.BRANDED,
+    themeStyle: ThemeStyle = ThemeStyle.DYNAMIC,
     accentColor: AccentColor = AccentColor.ROSE,
     isAmoledMode: Boolean = false,
     appFont: AppFont = AppFont.SYSTEM,

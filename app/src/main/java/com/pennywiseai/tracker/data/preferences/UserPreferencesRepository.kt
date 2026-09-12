@@ -193,10 +193,10 @@ open class UserPreferencesRepository @Inject constructor(
         .map { preferences ->
             UserPreferences(
                 isDarkThemeEnabled = preferences[PreferencesKeys.DARK_THEME_ENABLED],
-                isDynamicColorEnabled = preferences[PreferencesKeys.DYNAMIC_COLOR_ENABLED] ?: false,
+                isDynamicColorEnabled = preferences[PreferencesKeys.DYNAMIC_COLOR_ENABLED] ?: true,
                 themeStyle = preferences[PreferencesKeys.THEME_STYLE]?.let {
-                    try { ThemeStyle.valueOf(it) } catch (_: Exception) { ThemeStyle.BRANDED }
-                } ?: ThemeStyle.BRANDED,
+                    try { ThemeStyle.valueOf(it) } catch (_: Exception) { ThemeStyle.DYNAMIC }
+                } ?: ThemeStyle.DYNAMIC,
                 accentColor = preferences[PreferencesKeys.ACCENT_COLOR]?.let {
                     try { AccentColor.valueOf(it) } catch (_: Exception) { AccentColor.ROSE }
                 } ?: AccentColor.ROSE,
@@ -218,8 +218,8 @@ open class UserPreferencesRepository @Inject constructor(
                     try { NavBarStyle.valueOf(it) } catch (_: Exception) { NavBarStyle.FLOATING }
                 } ?: NavBarStyle.FLOATING,
                 coverStyle = preferences[PreferencesKeys.COVER_STYLE]?.let {
-                    try { CoverStyle.valueOf(it) } catch (_: Exception) { CoverStyle.SUNSET }
-                } ?: CoverStyle.SUNSET,
+                    try { CoverStyle.valueOf(it) } catch (_: Exception) { CoverStyle.NONE }
+                } ?: CoverStyle.NONE,
                 userName = preferences[PreferencesKeys.USER_NAME] ?: "User",
                 profileImageUri = preferences[PreferencesKeys.PROFILE_IMAGE_URI]
                     ?: if (preferences[PreferencesKeys.HAS_COMPLETED_ONBOARDING] == true) "avatar://0" else null,
@@ -1151,8 +1151,8 @@ open class UserPreferencesRepository @Inject constructor(
 
 data class UserPreferences(
     val isDarkThemeEnabled: Boolean? = null, // null means follow system
-    val isDynamicColorEnabled: Boolean = false, // Default to custom brand colors
-    val themeStyle: ThemeStyle = ThemeStyle.BRANDED,
+    val isDynamicColorEnabled: Boolean = true, // Follow Android Material You
+    val themeStyle: ThemeStyle = ThemeStyle.DYNAMIC,
     val accentColor: AccentColor = AccentColor.ROSE,
     val isAmoledMode: Boolean = false,
     val appFont: AppFont = AppFont.SYSTEM,
@@ -1166,7 +1166,7 @@ data class UserPreferences(
     val displayCurrency: String = "AED",
     val blurEffectsEnabled: Boolean = true,
     val navBarStyle: NavBarStyle = NavBarStyle.FLOATING,
-    val coverStyle: CoverStyle = CoverStyle.SUNSET,
+    val coverStyle: CoverStyle = CoverStyle.NONE,
     val userName: String = "User",
     val profileImageUri: String? = null,
     val profileBackgroundColor: Int = 0,

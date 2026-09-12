@@ -111,15 +111,15 @@ class ThemeViewModel @Inject constructor(
 data class ThemeUiState(
     val isLoading: Boolean = true,
     val isDarkTheme: Boolean? = null, // null = follow system
-    val isDynamicColorEnabled: Boolean = false,
-    val themeStyle: ThemeStyle = ThemeStyle.BRANDED,
+    val isDynamicColorEnabled: Boolean = true,
+    val themeStyle: ThemeStyle = ThemeStyle.DYNAMIC,
     val accentColor: AccentColor = AccentColor.ROSE,
     val isAmoledMode: Boolean = false,
     val appFont: AppFont = AppFont.SYSTEM,
     val hasSkippedSmsPermission: Boolean = false,
     val blurEffectsEnabled: Boolean = true,
     val navBarStyle: NavBarStyle = NavBarStyle.FLOATING,
-    val coverStyle: CoverStyle = CoverStyle.SUNSET,
+    val coverStyle: CoverStyle = CoverStyle.NONE,
     val hasCompletedOnboarding: Boolean = false,
     val userName: String = "User",
     val profileImageUri: String? = null,
