@@ -201,7 +201,12 @@ jobs:
           done
           ls -la "$DIR"
           test -f "$DIR/Cashiro-v${VERSION}-universal.apk"
-          apksigner verify --verbose "$DIR/Cashiro-v${VERSION}-universal.apk"
+          BUILD_TOOLS="$(ls -d "${ANDROID_HOME:-$ANDROID_SDK_ROOT}"/build-tools/* 2>/dev/null | sort -V | tail -1 || true)"
+          if [ -z "$BUILD_TOOLS" ] || [ ! -x "$BUILD_TOOLS/apksigner" ]; then
+            yes | sdkmanager "build-tools;35.0.0"
+            BUILD_TOOLS="$(ls -d "${ANDROID_HOME:-$ANDROID_SDK_ROOT}"/build-tools/* | sort -V | tail -1)"
+          fi
+          "$BUILD_TOOLS/apksigner" verify --verbose "$DIR/Cashiro-v${VERSION}-universal.apk"
 
       - name: SHA256
         if: ${{ !inputs.dry_run }}
