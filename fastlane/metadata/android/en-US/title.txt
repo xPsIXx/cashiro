@@ -1,1 +1,1 @@
-PennyWise: SMS Expense Tracker
+Cashiro: SMS Expense Tracker

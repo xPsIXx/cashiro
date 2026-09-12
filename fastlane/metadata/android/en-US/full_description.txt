@@ -1,30 +1,15 @@
-Your bank already texts you every transaction. PennyWise reads those SMS on your phone and turns them into an automatic expense tracker — no manual entry, no sign-up, nothing uploaded.
+Your UAE bank already texts you every transaction. Cashiro reads those SMS on the phone and turns them into a private expense tracker — FAB, ENBD, Liv, ADCB, Mashreq, Emirates Islamic — in English AED.
 
-★ Why PennyWise asks for SMS permission
-Reading bank SMS is how the app works — it is the entire product. Everything happens on your device: no server ever receives a message, there is no account to create, and the complete source code is public (AGPL-3.0) so anyone can verify exactly what it does. Would rather not grant it? You can still add transactions by hand or import a PDF statement.
+★ SMS permission
+Reading bank SMS is how the app works. Parsing and storage stay on the device. No account, no messages sent. You can still add transactions by hand.
 
-★ Automatic expense tracking
-• Every UPI payment, card swipe, ATM withdrawal and bank transfer becomes a categorized transaction
-• 153 banks and payment services across 23 countries, with multi-currency support
-• Works with any UPI app — it reads your bank's SMS, not the app
-• A clean, searchable spending timeline that stays up to date on its own
+★ Firefly III (optional)
+One-way PAT push. Cashiro creates and updates only journals it owns (external_id pennywise-{hash}). Firefly-native transactions are never imported or overwritten. Map local accounts and categories to Firefly dropdowns.
 
-★ Budgets and insights
-• Set monthly budgets per category and watch progress as you spend
-• Spending trends, category breakdowns and month-on-month comparisons
-• Automatic subscription detection — finds the recurring payments you forgot about
-• Smart rules to auto-categorize transactions your way
-
-★ On-device AI assistant
-Ask "what did I spend on food last month?" and get a real answer. The AI model (Qwen 2.5) runs locally on your phone — no API calls, no cloud, works offline.
+★ AI (bring your own key)
+Paste an OpenAI, Anthropic, Gemini, Groq, OpenRouter, or xAI key. No built-in model is required.
 
 ★ Private by design
-• No account, no login, no email required
-• No ads, no trackers, no analytics on your financial data
-• Nothing leaves your device
-• Open source (AGPL-3.0) — read the code yourself
+No ads, no trackers, no Cashiro server. Open source (AGPL-3.0).
 
-★ Free, with an optional Pro upgrade
-PennyWise is free to use. Where in-app purchases are available, an optional Pro upgrade adds unlimited custom rules, PDF statement imports, CSV export and duplicate-account merge — and directly supports a solo developer building PennyWise independently. Builds distributed without in-app purchases have all of it unlocked from the start.
-
-A money manager, budget planner and spending tracker in one — for people who hate typing in expenses.
+Based on PennyWise AI, with Cashiro visuals and Firefly sync.

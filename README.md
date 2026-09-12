@@ -1,149 +1,95 @@
 # Cashiro
 
-SMS-first expense tracker for Android (UAE banks, AED), based on [PennyWise AI](https://github.com/sarim2000/pennywiseai-tracker), with Cashiro visuals and **one-way Firefly III** sync.
+SMS-first expense tracker for Android, tuned for **UAE banks and AED**.
 
-It reads bank SMS on the device and can push parsed transactions to your self-hosted Firefly III instance. AI chat is bring-your-own-key (OpenAI, Anthropic, Gemini, Groq, OpenRouter, xAI) — nothing is downloaded onto the phone.
+It reads bank SMS on the phone, builds a local ledger, and can **push** those transactions one-way to your self-hosted [Firefly III](https://www.firefly-iii.org/) instance. English uses Latin `AED 42,180.42` — not `د.إ` or Eastern Arabic digits. AI is **bring-your-own-key**.
 
-## Firefly III
+[![Cashiro](banner.png)](https://github.com/xPsIXx/cashiro)
 
-Opt-in, off by default. Settings → **Firefly III**.
-
-1. Grant SMS permission (same as stock PennyWise).
-2. Enter your Firefly URL and a Personal Access Token.
-3. Map Cashiro accounts/categories to Firefly assets/categories (pulled from your instance).
-4. New SMS (and manual adds) are pushed automatically when sync is enabled.
-5. Failed pushes sit in a retry queue. Transaction detail has Sync / Retry.
-
-`external_id` is `pennywise-{transactionHash}` so reinstalls can reconcile. Resync all creates missing journals and updates only Cashiro-owned ones. Firefly-native transactions are never imported or overwritten.
-
-PAT is stored in EncryptedSharedPreferences, not backups.
-
-Default look: branded Cashiro peach/cream (Rose accent `#E25C0E`, cream surfaces `#F4EBE3`, sunset cover).
-Default currency is AED. Dynamic Material You color is off on first run.
-
----
-
-<a name="top"></a>
-[![PennyWise AI Banner](banner.png)](https://github.com/sarim2000/pennywiseai-tracker)
-[![GitHub stars](https://img.shields.io/github/stars/sarim2000/pennywiseai-tracker?style=social)](https://github.com/sarim2000/pennywiseai-tracker)
+[![GitHub release](https://img.shields.io/github/v/release/xPsIXx/cashiro)](https://github.com/xPsIXx/cashiro/releases)
+[![GitHub last commit](https://img.shields.io/github/last-commit/xPsIXx/cashiro)](https://github.com/xPsIXx/cashiro/commits)
 [![License](https://img.shields.io/badge/license-AGPL%20v3-blue)](LICENSE)
 [![Android](https://img.shields.io/badge/Android-8.0%2B-3DDC84)](https://developer.android.com/about/versions/oreo/android-8.0)
 [![Kotlin](https://img.shields.io/badge/Kotlin-2.3.21-7F52FF)](https://kotlinlang.org/)
-[![Privacy](https://img.shields.io/badge/AI-100%25_On--Device-FF6B6B)](https://ai.google.dev/edge)
-[![Downloads](https://img.shields.io/badge/Downloads-100+-green)](https://play.google.com/store/apps/details?id=com.pennywiseai.tracker)
-[![F-Droid](https://img.shields.io/f-droid/v/com.pennywiseai.tracker?color=1976d2)](https://f-droid.org/packages/com.pennywiseai.tracker/)
-[![GitHub release](https://img.shields.io/github/v/release/sarim2000/pennywiseai-tracker)](https://github.com/sarim2000/pennywiseai-tracker/releases)
-[![GitHub last commit](https://img.shields.io/github/last-commit/sarim2000/pennywiseai-tracker)](https://github.com/sarim2000/pennywiseai-tracker/commits)
-[![Discord](https://img.shields.io/badge/Discord-Join_Community-5865F2)](https://discord.gg/H3xWeMWjKQ)
-[![Greptile: The War on Bugs](https://www.greptile.com/badge.svg)](https://www.greptile.com/?utm_source=oss_badge&utm_medium=readme&utm_campaign=greptile_for_open_source)
 
-## PennyWise AI — Free & Open‑Source, private SMS‑powered expense tracker
+Built on [PennyWise AI](https://github.com/sarim2000/pennywiseai-tracker) with Firefly work from [Pennywiseai-Firefly](https://github.com/xPsIXx/Pennywiseai-Firefly). Default look is Cashiro peach/cream (rose `#E25C0E`, cream `#F4EBE3`). Default currency is **AED**.
 
-Turn bank SMS into a clean, searchable money timeline with on-device AI assistance. Parsing, storage, and AI all run on your phone.
+## Screenshots
 
+<p align="center">
+  <img src="fastlane/metadata/android/en-US/images/phoneScreenshots/1.png" width="150" alt="Home"/>
+  <img src="fastlane/metadata/android/en-US/images/phoneScreenshots/2.png" width="150" alt="Analytics"/>
+  <img src="fastlane/metadata/android/en-US/images/phoneScreenshots/3.png" width="150" alt="Firefly III"/>
+  <img src="fastlane/metadata/android/en-US/images/phoneScreenshots/4.png" width="150" alt="BYOK AI"/>
+  <img src="fastlane/metadata/android/en-US/images/phoneScreenshots/5.png" width="150" alt="Transaction"/>
+  <img src="fastlane/metadata/android/en-US/images/phoneScreenshots/6.png" width="150" alt="Home dark"/>
+</p>
 
-⭐ **Star us on GitHub — join 300+ supporters!**
+<table>
+<tr>
+<td align="center"><img src="screenshots/home-light.png" width="160"/><br/>Home</td>
+<td align="center"><img src="screenshots/analytics-light.png" width="160"/><br/>Analytics</td>
+<td align="center"><img src="screenshots/firefly-light.png" width="160"/><br/>Firefly III</td>
+<td align="center"><img src="screenshots/chat-light.png" width="160"/><br/>BYOK AI</td>
+<td align="center"><img src="screenshots/transaction-detail-light.png" width="160"/><br/>Transaction</td>
+</tr>
+</table>
 
-[![Share](https://img.shields.io/badge/share-000000?logo=x&logoColor=white)](https://x.com/intent/tweet?text=Check%20out%20PennyWise%20AI%20-%20Privacy-first%20expense%20tracker%20with%20on-device%20AI:%20https://github.com/sarim2000/pennywiseai-tracker%20%23Android%20%23PrivacyFirst%20%23OnDeviceAI)
-[![Share](https://img.shields.io/badge/share-0A66C2?logo=linkedin&logoColor=white)](https://www.linkedin.com/sharing/share-offsite/?url=https://github.com/sarim2000/pennywiseai-tracker)
-[![Share](https://img.shields.io/badge/share-FF4500?logo=reddit&logoColor=white)](https://www.reddit.com/submit?title=PennyWise%20AI%20-%20Privacy-first%20expense%20tracker&url=https://github.com/sarim2000/pennywiseai-tracker)
-[![Share](https://img.shields.io/badge/share-0088CC?logo=telegram&logoColor=white)](https://t.me/share/url?url=https://github.com/sarim2000/pennywiseai-tracker&text=Check%20out%20PennyWise%20AI)
+## How it works
 
-## Overview
+1. Grant SMS permission (read-only). No account, no inbox changes, nothing sent.
+2. Cashiro parses FAB, ENBD, Liv and other bank SMS into amount, merchant, category, and date.
+3. Optionally connect Firefly III with a Personal Access Token and map accounts/categories.
+4. Ask the AI about spending using **your** OpenAI, Anthropic, Gemini, Groq, OpenRouter, or xAI key.
 
-Your bank already texts you every transaction — PennyWise turns those SMS into a private, zero-setup expense tracker with on-device AI. No accounts, no sign-ups, no effort.
+## Firefly III
 
-<a href="https://play.google.com/store/apps/details?id=com.pennywiseai.tracker">
-  <img src="https://img.shields.io/badge/GET_IT_ON-Google_Play-00875F?style=for-the-badge&logo=google-play&logoColor=white" alt="Get it on Google Play" />
-</a>
-<a href="https://apps.apple.com/app/id6793073167">
-  <img src="https://img.shields.io/badge/Download_on_the-App_Store-0D96F6?style=for-the-badge&logo=apple&logoColor=white" alt="Download on the App Store" />
-</a>
-<a href="https://f-droid.org/packages/com.pennywiseai.tracker">
-  <img src="https://fdroid.gitlab.io/artwork/badge/get-it-on.png" alt="Get it on F-Droid" height="80">
-</a>
+Opt-in, off by default. **Settings → Firefly III**.
 
-### How it works
+| What | Behaviour |
+| --- | --- |
+| Direction | Phone → Firefly only |
+| Lookup | `external_id_is:pennywise-{transactionHash}` |
+| Missing | `POST` create (Cashiro-owned) |
+| Already ours | `PUT` update that journal only |
+| Firefly-native | skipped — never imported, never overwritten |
+| Resync all | walk every local row; same rules; no duplicates |
+| Mapping | GET `/accounts?type=asset` and `/categories` for dropdowns only |
 
-1. **Grant SMS permission** (read-only) — no account creation, no inbox changes, no messages sent.
-2. **PennyWise parses your transactions instantly** — extracts amount, merchant, category, and date. New SMS are detected in real-time.
-3. **Get insights** — analytics, budgets, subscriptions, and an on-device AI assistant you can ask anything.
+PAT is stored in EncryptedSharedPreferences and is not included in backups.
 
-## Why PennyWise
+## AI
 
-**Key Differentiators**
+No built-in model is required. Paste a provider key in Settings. On-device download remains optional.
 
-- **🔒 Private by Design** — All AI processing and transaction storage happen on your phone; no accounts, no analytics, no servers collecting your data
-- **⚡ Zero Setup** — Just grant SMS permission, no accounts to create, works instantly
-- **🆓 Free & Open Source** — AGPL v3 licensed, no ads, no trackers; an optional **PennyWise Pro** upgrade (unlimited rules, PDF statement imports, CSV export, account merge) supports the solo developer
+## Features
 
-**Core Features**
+- SMS parsing for UAE banks first (FAB, ENBD, Liv, ADCB, Mashreq, Emirates Islamic), plus the inherited parser set below
+- English profile uses `AED` with Latin digits
+- Budgets, analytics, subscriptions, smart rules, widgets, biometric lock
+- Manual transactions, CSV export, local backup
+- Light / dark / system theme; Material You optional (off on first run)
 
-- **🤖 Smart SMS Parsing** — <!-- BANKS_SUMMARY -->153 banks across 23 countries<!-- /BANKS_SUMMARY --> with real-time detection of incoming SMS
-- **🌍 Multi-Currency** — Native support for INR, USD, AED, THB, NPR, ETB, and more with exchange rate management
-- **💬 On-Device AI Assistant** — Ask "What did I spend on food?" — powered by Qwen 2.5, runs entirely on your phone
-- **🏷️ Auto-Categorization & Smart Rules** — Pattern-based rules that auto-categorize transactions
-- **💰 Budget Tracking** — Multiple budget groups (Limit/Target/Expected types), daily allowance, category-level budgets
-- **📊 Analytics & Charts** — Bar charts, line trends, heatmaps, category breakdowns, top merchants, custom date ranges
-- **🏦 Multi-Account & Balance Tracking** — Track multiple bank accounts with live balance from SMS and balance history
-- **🔄 Subscription Detection** — Automatic recurring payment detection with due date alerts
-- **🎨 Custom Categories** — Create your own with custom colors and icons
+## Install
 
-**More Features**
+Debug APKs are published as artifacts on each green [Tests](https://github.com/xPsIXx/cashiro/actions/workflows/test.yml) run (`standard-debug-apk`).
 
-- **🔐 Biometric App Lock** — Fingerprint/face unlock with configurable timeout
-- **📱 Home Screen Widgets** — Budget progress and recent transactions at a glance
-- **📤 Data Export & Backup** — CSV export for taxes, full backup/restore (.pennywisebackup)
-- **🎭 Material You Theming** — Dynamic colors, multiple cover styles (Aurora, Gradient, Wave), light/dark/system themes
-- **✏️ Manual Transactions** — Add and edit transactions manually
-- **🔍 Search & Filters** — Filter by category, merchant, period, currency, transaction type
-- **🎯 Guided Onboarding** — Spotlight tutorial for first-time users
+Signed releases (when you run the **Release** workflow): [Releases](https://github.com/xPsIXx/cashiro/releases).
 
-### Smart Rules Engine
-
-Rules let you auto-categorize, modify, or block transactions based on configurable **conditions**. A rule consists of one or more "When" conditions and a "Then" action.
-
-**Available condition fields:**
-
-| Field | Description | Example value | Supported operators |
-|---|---|---|---|
-| `AMOUNT` | Transaction amount | `200` | `<`, `>`, `=` |
-| `TYPE` | Income/Expense/Transfer | `INCOME` | `contains`, `equals`, `starts with` |
-| `CATEGORY` | Assigned category | `Food & Dining` | `contains`, `equals`, `starts with` |
-| `MERCHANT` | Merchant/vendor name | `Amazon` | `contains`, `equals`, `starts with` |
-| `NARRATION` | Transaction description | `Monthly rent` | `contains`, `equals`, `starts with` |
-| `SMS_TEXT` | Raw SMS body | `OTP` | `contains`, `equals`, `starts with` |
-| `BANK_NAME` | Bank name from SMS | `HDFC Bank` | `contains`, `equals`, `starts with` |
-| `TIME` / `HOUR` | Transaction time | `09:00` / `9` | `before`, `after`, `at or after`, `at or before` |
-| `DAY_OF_WEEK` | Day (1=Mon .. 7=Sun) | `1` | `is`, `is any of`, `is not` |
-| `DAY_OF_MONTH` | Day of month (1-31) | `15` | `is`, `is any of`, `before`, `after` |
-| `DATE` | Transaction date | `2026-03-21` | `is`, `before`, `after` |
-| **`ACCOUNT`** | **Bank account composite** | Select from picker | `is`, `is not` |
-
-**Account condition (ACCOUNT)** — Restricts the rule to transactions from a specific bank account. The value is stored as a `BankName||Last4` composite key (e.g. `HDFC Bank||1234`). When selected, the UI shows an account picker populated from your tracked accounts. Only `EQUALS` and `NOT_EQUALS` operators are available.
-
-Conditions can be combined with **AND** / **OR** logic, and multiple conditions per rule are supported.
-
-**Available actions:**
-- **Set** — Override a field (category, merchant, type, description)
-- **Append / Prepend** — Add text to a field (merchant, description)
-- **Clear** — Remove a field value
-- **Block** — Prevent the transaction from being saved
-
-**JSON representation** (stored locally, not exposed via API):
-```json
-{
-  "conditions": [
-    {"field": "ACCOUNT", "operator": "EQUALS", "value": "HDFC Bank||1234"},
-    {"field": "AMOUNT", "operator": "GREATER_THAN", "value": "500"}
-  ],
-  "actions": [
-    {"field": "CATEGORY", "actionType": "SET", "value": "Food & Dining"}
-  ]
-}
+```bash
+git clone https://github.com/xPsIXx/cashiro.git
+cd cashiro
+./gradlew assembleStandardDebug
+adb install app/build/outputs/apk/standard/debug/*.apk
 ```
 
-## Supported Banks & Countries
+Android 8.0+ · JDK 21 · Android Studio.
+
+## Supported banks
+
+Primary for this fork: **First Abu Dhabi Bank, Emirates NBD, Liv, ADCB, Mashreq, Emirates Islamic** (AED).
+
+The parser still covers the upstream set:
 
 <!-- SUPPORTED_BANKS:START (generated by scripts/update-supported-banks.sh — do not edit by hand) -->
 Supporting **153 banks & services** across **23 countries** with **multi-currency** capabilities:
@@ -175,7 +121,7 @@ Supporting **153 banks & services** across **23 countries** with **multi-currenc
 ### 🇮🇷 Iran — IRR ﷼ (6)
 **Bankino**, **Mellat Bank**, **Melli Bank**, **Parsian Bank**, **Pasargad Bank**, **blu Bank**
 
-### 🇦🇪 UAE — AED د.إ (6)
+### 🇦🇪 UAE — AED (6)
 **Abu Dhabi Commercial Bank**, **Emirates Islamic**, **Emirates NBD**, **First Abu Dhabi Bank**, **Liv Bank**, **Mashreq Bank**
 
 ### 🇲🇿 Mozambique — MZN MT (4)
@@ -205,7 +151,7 @@ Supporting **153 banks & services** across **23 countries** with **multi-currenc
 ### 🇰🇪 Kenya — KES Ksh (1)
 **M-PESA**
 
-### 🇴🇲 Oman — OMR ر.ع. (1)
+### 🇴🇲 Oman — OMR (1)
 **Bank Muscat**
 
 ### 🇵🇰 Pakistan — PKR ₨ (1)
@@ -218,193 +164,23 @@ Supporting **153 banks & services** across **23 countries** with **multi-currenc
 **Enpara**
 <!-- SUPPORTED_BANKS:END -->
 
-More banks being added regularly! [Request your bank →](https://github.com/sarim2000/pennywiseai-tracker/issues/new?template=bank_support_request.md)
+[Request a bank →](https://github.com/xPsIXx/cashiro/issues/new)
 
-## Privacy First
+## Privacy
 
-All AI processing happens on your device, powered by Google AI Edge LiteRT-LM running Qwen 2.5. Your SMS and transactions are parsed, stored, and analyzed **locally** — there are no accounts, **no analytics, crash-reporting, or telemetry SDKs** (no Firebase / Crashlytics / Sentry / Google Analytics — verify in `app/build.gradle.kts`), and no PennyWise server ever receives your financial data. The whole codebase is open source (AGPL v3) so every claim below is checkable.
+- SMS, transactions, and budgets stay on the device.
+- Firefly is the only optional push, and only after you paste a PAT.
+- BYOK chat sends the prompt you type to **your** provider. No Cashiro server.
+- No Firebase / Crashlytics / Sentry / Google Analytics.
 
-### Network access — every outbound call the app can make
+Exchange rates still hit `open.er-api.com` when you hold more than one currency.
 
-1. **Google Play services** *(Play Store build only)* — Google Play Billing (optional Pro subscription), In-App Updates, and In-App Review. These are Google's SDKs (declared `standardImplementation`), and they do their own background connectivity to Google — this is the most likely source of any "background data" you notice, especially on a single-currency setup. **The [F-Droid](https://f-droid.org/) build strips all three and is fully Google-free.**
-2. **Exchange rates** — fetched from `open.er-api.com`. Automatic currency conversion runs **only when you hold more than one currency** (same-currency conversions make no call), but opening the currency picker also fetches the current rate list. Either way the request carries just a 3-letter currency code and a static `User-Agent` — no SMS, transactions, or device identifier — and results are cached locally. (`ExchangeRateProvider.kt`)
-3. **On-device AI model** — a one-time ~1.5 GB download from Cloudflare R2, **only if you open the AI chat and choose to download it**. The bytes are SHA-256 pinned; after that the AI runs 100% offline. (`Constants.MODEL_URL`)
-4. **Report a parsing problem** — when you use this flow it opens `pennywise.zynth.dev` with the SMS text, its sender, and an RSA-encrypted device identifier (your Android ID plus a timestamp) pre-filled, and parses them server-side to show a preview. Nothing is sent unless you start this yourself. (`SmsReportUrlBuilder.kt`, `DeviceEncryption.kt`)
-5. **Links** (Discord, GitHub, Play Store, backup docs) open your browser — no background data.
+## Credits
 
-Everything else stays on your phone.
-
-## Screenshots
-
-<p align="center">
-  <img src="fastlane/metadata/android/en-US/images/phoneScreenshots/1.png" width="150"/>
-  <img src="fastlane/metadata/android/en-US/images/phoneScreenshots/2.png" width="150"/>
-  <img src="fastlane/metadata/android/en-US/images/phoneScreenshots/3.png" width="150"/>
-  <img src="fastlane/metadata/android/en-US/images/phoneScreenshots/4.png" width="150"/>
-  <img src="fastlane/metadata/android/en-US/images/phoneScreenshots/5.png" width="150"/>
-  <img src="fastlane/metadata/android/en-US/images/phoneScreenshots/6.png" width="150"/>
-</p>
-
-<details>
-<summary>In-app screenshots (light &amp; dark themes)</summary>
-
-<br/>
-
-**Light Theme**
-
-<table>
-<tr>
-<td><img src="screenshots/home-light.png" width="160"/></td>
-<td><img src="screenshots/analytics-light.png" width="160"/></td>
-<td><img src="screenshots/analytics-scroll-light.png" width="160"/></td>
-<td><img src="screenshots/transaction-detail-light.png" width="160"/></td>
-<td><img src="screenshots/chat-light.png" width="160"/></td>
-</tr>
-<tr>
-<td align="center">Home</td>
-<td align="center">Analytics</td>
-<td align="center">Categories</td>
-<td align="center">Details</td>
-<td align="center">AI Chat</td>
-</tr>
-</table>
-
-**Dark Theme**
-
-<table>
-<tr>
-<td><img src="screenshots/home-dark.png" width="160"/></td>
-<td><img src="screenshots/analytics-dark.png" width="160"/></td>
-<td><img src="screenshots/account-detail-dark.png" width="160"/></td>
-<td><img src="screenshots/accounts-dark.png" width="160"/></td>
-<td><img src="screenshots/chat-dark.png" width="160"/></td>
-</tr>
-<tr>
-<td align="center">Home</td>
-<td align="center">Analytics</td>
-<td align="center">Account Detail</td>
-<td align="center">Accounts</td>
-<td align="center">AI Chat</td>
-</tr>
-</table>
-
-</details>
-
-## Quick Start
-
-```bash
-# Clone repository
-git clone https://github.com/sarim2000/pennywiseai-tracker.git
-cd pennywiseai-tracker
-
-# Environment check + fast test gate (same compile/test tasks CI runs)
-./init.sh
-
-# Build APK
-./gradlew assembleDebug
-
-# Install
-adb install app/build/outputs/apk/standard/debug/app-standard-universal-debug.apk
-```
-
-### Requirements
-
-- Android 8.0+ (API 26)
-- Android Studio Ladybug or newer
-- JDK 21
-
-## Tech Stack
-
-<p align="center">
-  <img src="https://skillicons.dev/icons?i=kotlin,androidstudio,materialui" /><br>
-  <img src="https://skillicons.dev/icons?i=hilt,room,coroutines" />
-</p>
-
-**Architecture**: MVVM • Jetpack Compose • Room • Coroutines • Hilt • Google AI Edge (on-device LLM) • Material Design 3
-
-## Community & Support
-
-- **Discord**: Join the community, share feedback, and get help — [Join Discord](https://discord.gg/H3xWeMWjKQ)
-- **Issues**: Report bugs or request features — [Open an issue](https://github.com/sarim2000/pennywiseai-tracker/issues)
-
-## Contributing
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
-
-Please read our [Code of Conduct](CODE_OF_CONDUCT.md) before participating.
-
-```bash
-./gradlew test          # Run tests
-./gradlew lint   # Check style
-```
-
-## Security
-
-Please review our [Security Policy](SECURITY.md) for how to report vulnerabilities.
-
-## Contributors ✨
-
-Thanks goes to these wonderful people ([emoji key](https://allcontributors.org/docs/en/emoji-key)):
-
-<!-- ALL-CONTRIBUTORS-LIST:START - Do not remove or modify this section -->
-<!-- prettier-ignore-start -->
-<!-- markdownlint-disable -->
-<table>
-  <tbody>
-    <tr>
-      <td align="center" valign="top" width="14.28%"><a href="https://github.com/Lucifer1590"><img src="https://avatars.githubusercontent.com/Lucifer1590?v=4&s=100" width="100px;" alt="Lucifer1590"/><br /><sub><b>Lucifer1590</b></sub></a><br /><a href="#community-Lucifer1590" title="Community Management">👥</a> <a href="https://github.com/sarim2000/pennywiseai-tracker/issues?q=author%3ALucifer1590" title="Bug reports">🐛</a> <a href="#userTesting-Lucifer1590" title="User Testing">📓</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="https://github.com/akshaynexus"><img src="https://avatars.githubusercontent.com/akshaynexus?v=4&s=100" width="100px;" alt="akshaynexus"/><br /><sub><b>akshaynexus</b></sub></a><br /><a href="https://github.com/sarim2000/pennywiseai-tracker/commits?author=akshaynexus" title="Code">💻</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="https://github.com/WINDY-WINDWARD"><img src="https://avatars.githubusercontent.com/WINDY-WINDWARD?v=4&s=100" width="100px;" alt="WINDY-WINDWARD"/><br /><sub><b>WINDY-WINDWARD</b></sub></a><br /><a href="https://github.com/sarim2000/pennywiseai-tracker/commits?author=WINDY-WINDWARD" title="Code">💻</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="https://github.com/brukberhane"><img src="https://avatars.githubusercontent.com/brukberhane?v=4&s=100" width="100px;" alt="brukberhane"/><br /><sub><b>brukberhane</b></sub></a><br /><a href="https://github.com/sarim2000/pennywiseai-tracker/commits?author=brukberhane" title="Code">💻</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="https://github.com/KaushalJyanni"><img src="https://avatars.githubusercontent.com/KaushalJyanni?v=4&s=100" width="100px;" alt="KaushalJyanni"/><br /><sub><b>KaushalJyanni</b></sub></a><br /><a href="https://github.com/sarim2000/pennywiseai-tracker/commits?author=KaushalJyanni" title="Code">💻</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="https://github.com/cmazwar"><img src="https://avatars.githubusercontent.com/cmazwar?v=4&s=100" width="100px;" alt="cmazwar"/><br /><sub><b>cmazwar</b></sub></a><br /><a href="https://github.com/sarim2000/pennywiseai-tracker/commits?author=cmazwar" title="Code">💻</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="https://github.com/AyonPal"><img src="https://avatars.githubusercontent.com/AyonPal?v=4&s=100" width="100px;" alt="AyonPal"/><br /><sub><b>AyonPal</b></sub></a><br /><a href="https://github.com/sarim2000/pennywiseai-tracker/commits?author=AyonPal" title="Code">💻</a></td>
-    </tr>
-    <tr>
-      <td align="center" valign="top" width="14.28%"><a href="https://github.com/rafi-ghanbari"><img src="https://avatars.githubusercontent.com/rafi-ghanbari?v=4&s=100" width="100px;" alt="rafi-ghanbari"/><br /><sub><b>rafi-ghanbari</b></sub></a><br /><a href="https://github.com/sarim2000/pennywiseai-tracker/commits?author=rafi-ghanbari" title="Code">💻</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="https://github.com/Chevindu"><img src="https://avatars.githubusercontent.com/Chevindu?v=4&s=100" width="100px;" alt="Chevindu"/><br /><sub><b>Chevindu</b></sub></a><br /><a href="https://github.com/sarim2000/pennywiseai-tracker/commits?author=Chevindu" title="Code">💻</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="https://github.com/arunpdl"><img src="https://avatars.githubusercontent.com/arunpdl?v=4&s=100" width="100px;" alt="arunpdl"/><br /><sub><b>arunpdl</b></sub></a><br /><a href="https://github.com/sarim2000/pennywiseai-tracker/commits?author=arunpdl" title="Code">💻</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="https://github.com/hegdenischay"><img src="https://avatars.githubusercontent.com/hegdenischay?v=4&s=100" width="100px;" alt="hegdenischay"/><br /><sub><b>hegdenischay</b></sub></a><br /><a href="https://github.com/sarim2000/pennywiseai-tracker/commits?author=hegdenischay" title="Code">💻</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="https://github.com/shreyes-shalgar"><img src="https://avatars.githubusercontent.com/shreyes-shalgar?v=4&s=100" width="100px;" alt="shreyes-shalgar"/><br /><sub><b>shreyes-shalgar</b></sub></a><br /><a href="https://github.com/sarim2000/pennywiseai-tracker/issues?q=author%3Ashreyes-shalgar" title="Bug reports">🐛</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="https://github.com/test2a"><img src="https://avatars.githubusercontent.com/test2a?v=4&s=100" width="100px;" alt="test2a"/><br /><sub><b>test2a</b></sub></a><br /><a href="https://github.com/sarim2000/pennywiseai-tracker/issues?q=author%3Atest2a" title="Bug reports">🐛</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="https://github.com/AlphaXyph"><img src="https://avatars.githubusercontent.com/AlphaXyph?v=4&s=100" width="100px;" alt="AlphaXyph"/><br /><sub><b>AlphaXyph</b></sub></a><br /><a href="https://github.com/sarim2000/pennywiseai-tracker/issues?q=author%3AAlphaXyph" title="Bug reports">🐛</a></td>
-    </tr>
-    <tr>
-      <td align="center" valign="top" width="14.28%"><a href="https://github.com/kamranbahrami261-beep"><img src="https://avatars.githubusercontent.com/kamranbahrami261-beep?v=4&s=100" width="100px;" alt="kamranbahrami261-beep"/><br /><sub><b>kamranbahrami261-beep</b></sub></a><br /><a href="https://github.com/sarim2000/pennywiseai-tracker/issues?q=author%3Akamranbahrami261-beep" title="Bug reports">🐛</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="https://github.com/jerryn70"><img src="https://avatars.githubusercontent.com/jerryn70?v=4&s=100" width="100px;" alt="jerryn70"/><br /><sub><b>jerryn70</b></sub></a><br /><a href="https://github.com/sarim2000/pennywiseai-tracker/issues?q=author%3Ajerryn70" title="Bug reports">🐛</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="https://github.com/albert-godinho"><img src="https://avatars.githubusercontent.com/albert-godinho?v=4&s=100" width="100px;" alt="albert-godinho"/><br /><sub><b>albert-godinho</b></sub></a><br /><a href="https://github.com/sarim2000/pennywiseai-tracker/issues?q=author%3Aalbert-godinho" title="Bug reports">🐛</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="https://github.com/Mikcharls311"><img src="https://avatars.githubusercontent.com/Mikcharls311?v=4&s=100" width="100px;" alt="Mikcharls311"/><br /><sub><b>Mikcharls311</b></sub></a><br /><a href="https://github.com/sarim2000/pennywiseai-tracker/issues?q=author%3AMikcharls311" title="Bug reports">🐛</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="https://github.com/rhsjudb"><img src="https://avatars.githubusercontent.com/rhsjudb?v=4&s=100" width="100px;" alt="rhsjudb"/><br /><sub><b>rhsjudb</b></sub></a><br /><a href="https://github.com/sarim2000/pennywiseai-tracker/issues?q=author%3Arhsjudb" title="Bug reports">🐛</a></td>
-    </tr>
-  </tbody>
-</table>
-
-<!-- markdownlint-restore -->
-<!-- prettier-ignore-end -->
-
-<!-- ALL-CONTRIBUTORS-LIST:END -->
-
-This project follows the [all-contributors](https://github.com/all-contributors/all-contributors) specification. Contributions of any kind welcome!
-
-## Star History
-
-[![Star History Chart](https://star-history.dera.page/svg?repos=sarim2000/pennywiseai-tracker&type=Date)](https://star-history.dera.page/#sarim2000/pennywiseai-tracker&type=date)
+- [PennyWise AI](https://github.com/sarim2000/pennywiseai-tracker) by [sarim2000](https://github.com/sarim2000) — parsers, Room ledger, Compose UI
+- [Pennywiseai-Firefly](https://github.com/xPsIXx/Pennywiseai-Firefly) — hash `external_id`, mapping, one-way sync
+- [Firefly III](https://www.firefly-iii.org/)
 
 ## License
 
-GNU Affero General Public License v3.0 - see [LICENSE](LICENSE)
-
-This project is licensed under AGPL v3, which means:
-- ✅ You can use, modify, and distribute this software
-- ✅ You must share your modifications under the same license
-- ✅ If you run a modified version on a server, you must make the source code available to users
-- ✅ Patent rights are explicitly granted and protected
-
----
-
-<p align="center">
-<a href="https://github.com/sarim2000/pennywiseai-tracker/releases">Download</a> •
-<a href="https://apps.apple.com/app/id6793073167">iOS App</a> •
-<a href="https://github.com/sarim2000/pennywiseai-tracker/issues">Report Bug</a> •
-<a href="https://github.com/sarim2000/pennywiseai-tracker/issues">Request Feature</a>
-</p>
+[AGPL v3](LICENSE) — same as PennyWise AI.
