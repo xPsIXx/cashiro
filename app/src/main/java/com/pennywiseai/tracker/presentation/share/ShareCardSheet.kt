@@ -170,7 +170,7 @@ fun ShareCardSheet(
                     }
                     if (!hasSubscriptions) {
                         Text(
-                            text = "No subscriptions detected yet — PennyWise finds these " +
+                            text = "No subscriptions detected yet — Cashiro finds these " +
                                 "from recurring payments in your SMS.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,

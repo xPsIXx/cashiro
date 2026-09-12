@@ -164,7 +164,7 @@ fun launchUpiPayment(
         .appendQueryParameter("pa", vpa)
         .appendQueryParameter("pn", payeeName)
         .appendQueryParameter("cu", "INR")
-        .appendQueryParameter("tn", "PennyWise support")
+        .appendQueryParameter("tn", "Cashiro support")
         .build()
     val intent = Intent(Intent.ACTION_VIEW, uri)
     return try {

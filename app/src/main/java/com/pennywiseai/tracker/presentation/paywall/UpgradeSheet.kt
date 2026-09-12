@@ -197,7 +197,7 @@ private fun BrandHeader(isMember: Boolean) {
         Spacer(Modifier.width(Spacing.md))
         Column(modifier = Modifier.weight(1f)) {
             Text(
-                text = "PennyWise Pro",
+                text = "Cashiro",
                 style = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.Bold,
                 color = MaterialTheme.colorScheme.onSurface,
@@ -753,7 +753,7 @@ private fun CelebrationContent(onContinue: () -> Unit) {
             )
             Spacer(Modifier.height(Spacing.xs))
             Text(
-                text = "Thank you for backing PennyWise — every feature on the list is now yours.",
+                text = "Thank you for using Cashiro — every feature on the list is now yours.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center,

@@ -115,16 +115,14 @@ fun GreetingCard(
                 .clip(CircleShape)
                 .drawBehind {
                     val stroke = 2.dp.toPx()
-                    val dash = if (!isProEntitled) {
-                        PathEffect.dashPathEffect(floatArrayOf(stroke * 2.5f, stroke * 2f), 0f)
-                    } else null
+                    val dash = null
                     drawCircle(
                         color = ringColor,
                         radius = (size.minDimension - stroke) / 2f,
                         style = Stroke(width = stroke, pathEffect = dash)
                     )
                 }
-                .clickable(onClick = if (isProEntitled) onAvatarClick else onUpgradeClick),
+                .clickable(onClick = onAvatarClick),
             contentAlignment = Alignment.Center
         ) {
         Box(

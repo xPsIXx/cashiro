@@ -77,7 +77,7 @@ fun ShareMonthBanner(
                     style = MaterialTheme.typography.titleSmall,
                 )
                 Text(
-                    text = "See what PennyWise tracked for you",
+                    text = "See what Cashiro tracked for you",
                     style = MaterialTheme.typography.bodySmall,
                 )
             }

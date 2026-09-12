@@ -79,9 +79,9 @@ object ShareCardExporter {
             config.hero == ShareHero.SUBSCRIPTIONS && subscriptions > 0
         val lead = if (heroIsSubscriptions) {
             val subs = if (subscriptions == 1) "1 subscription" else "$subscriptions subscriptions"
-            "PennyWise found $subs I'd forgotten I was paying for."
+            "Cashiro found $subs I'd forgotten I was paying for."
         } else {
-            "PennyWise tracked $transactions transactions for me without me typing in a single one."
+            "Cashiro tracked $transactions transactions for me without me typing in a single one."
         }
         return "$lead It reads bank SMS on your phone — nothing gets uploaded. " +
             "https://$SHARE_CARD_URL"

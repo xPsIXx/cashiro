@@ -33,7 +33,6 @@ import android.content.Intent
 import android.net.Uri
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.CalendarToday
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
@@ -143,9 +142,7 @@ fun HomeScreen(
     onFabPositioned: (Rect) -> Unit = {}
 ) {
     val uiState by viewModel.uiState.collectAsState()
-    val isProEntitled by viewModel.isProEntitled.collectAsState()
     val currentCycleWindow by viewModel.currentCycleWindow.collectAsState()
-    var showUpgradeSheet by rememberSaveable { mutableStateOf(false) }
     val deletedTransaction by viewModel.deletedTransaction.collectAsState()
     val smsScanWorkInfo by viewModel.smsScanWorkInfo.collectAsState()
     val groupSummaries by viewModel.groupSummaries.collectAsState()
@@ -268,7 +265,7 @@ fun HomeScreen(
             CustomTitleTopAppBar(
                 scrollBehaviorSmall = scrollBehaviorSmall,
                 scrollBehaviorLarge = scrollBehaviorLarge,
-                title = "PennyWise",
+                title = "Cashiro",
                 isHomeScreen = true,
                 userName = uiState.userName,
                 profileImageUri = uiState.profileImageUri,
@@ -282,35 +279,6 @@ fun HomeScreen(
                         modifier = Modifier.padding(end = Dimensions.Padding.content),
                         horizontalArrangement = Arrangement.spacedBy(Spacing.sm)
                     ) {
-                        // Subtle Pro discovery chip — yellow sparkle that ties
-                        // back to the Settings → PennyWise Pro entry. Hidden
-                        // for already-entitled users so it's never pushy.
-                        // Tap → opens the same UpgradeSheet as Settings.
-                        if (!isProEntitled) {
-                            Box(
-                                modifier = Modifier
-                                    .size(Dimensions.Component.iconButton)
-                                    .clip(CircleShape)
-                                    .background(
-                                        color = com.pennywiseai.tracker.ui.theme.yellow_light,
-                                        shape = CircleShape,
-                                    )
-                                    .clickable(
-                                        onClick = { showUpgradeSheet = true },
-                                        interactionSource = remember { MutableInteractionSource() },
-                                        indication = null,
-                                    ),
-                                contentAlignment = Alignment.Center,
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.AutoAwesome,
-                                    contentDescription = "Upgrade to PennyWise Pro",
-                                    tint = com.pennywiseai.tracker.ui.theme.yellow_dark,
-                                    modifier = Modifier.size(Dimensions.Icon.inline),
-                                )
-                            }
-                        }
-
                         // Business/Personal filter dropdown
                         Box {
                             Box(
@@ -378,8 +346,6 @@ fun HomeScreen(
                         profiles = uiState.profiles,
                         selectedProfileId = uiState.selectedProfileId,
                         onProfileSelected = { viewModel.updateSelectedProfile(it) },
-                        isProEntitled = isProEntitled,
-                        onUpgradeClick = { showUpgradeSheet = true },
                         cycleEnd = currentCycleWindow.second
                     )
                 }
@@ -1199,14 +1165,6 @@ fun HomeScreen(
             }
         }
     }
-    }
-
-    // Pro upgrade sheet — triggered from the subtle ✨ chip in the top bar
-    // for free users; reuses the same composable Settings uses.
-    if (showUpgradeSheet) {
-        com.pennywiseai.tracker.presentation.paywall.UpgradeSheet(
-            onDismiss = { showUpgradeSheet = false },
-        )
     }
 }
 

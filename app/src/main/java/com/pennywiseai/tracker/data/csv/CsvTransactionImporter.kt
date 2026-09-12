@@ -97,7 +97,7 @@ class CsvTransactionImporter @Inject constructor() {
                     transactions = emptyList(),
                     failedCount = 0,
                     failureReasons = listOf(
-                        "This doesn't look like a PennyWise CSV export — missing column(s): $missing"
+                        "This doesn't look like a Cashiro CSV export — missing column(s): $missing"
                     )
                 )
             }
