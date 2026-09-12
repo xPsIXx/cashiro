@@ -161,6 +161,7 @@ fun ChatScreen(
                                     TextButton(onClick = { viewModel.startModelDownload() }) {
                                         Text("Optional: download on-device (${totalMB} MB)")
                                     }
+                                }
                             }
                         }
                     } else {
