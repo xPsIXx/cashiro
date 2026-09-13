@@ -9,11 +9,12 @@ import java.io.File
  * Generates the supported-banks catalogue from the live [BankParserFactory] registry,
  * so the docs/website listing can never drift from the actual parsers.
  *
- * - Normal run (CI): asserts the committed `docs/supported-banks.json` and the README
- *   marker block are up to date. If a parser was added/removed without regenerating,
- *   this fails with a clear "run scripts/update-supported-banks.sh" message.
+ * - Normal run (CI): asserts the committed `docs/supported-banks.json` is up to date.
+ *   If a parser was added/removed without regenerating, this fails with a clear
+ *   "run scripts/update-supported-banks.sh" message. The GitHub README is not
+ *   generated — Cashiro keeps that file short.
  * - Update mode (env `UPDATE_SUPPORTED_BANKS=true`, what the script passes): (re)writes
- *   `docs/supported-banks.json` and the README block between the markers.
+ *   `docs/supported-banks.json` only.
  *
  * Country/flag/symbol are derived from each parser's base currency (a parser's
  * `getCurrency()`), which maps 1:1 to a country for every bank we support. Multi-currency
@@ -190,21 +191,16 @@ class SupportedBanksDocTest {
     fun `supported-banks catalogue is in sync`() {
         val groups = buildGroups()
         val json = renderJson(groups)
-        val block = renderReadmeBlock(groups)
-        val summary = summaryText(groups)
 
         val root = repoRoot()
         val jsonFile = File(root, "docs/supported-banks.json")
-        val readmeFile = File(root, "README.md")
         val listingFile = File(root, "fastlane/metadata/android/en-US/full_description.txt")
         val claim = listingText(groups)
 
         if (System.getenv("UPDATE_SUPPORTED_BANKS") == "true") {
             jsonFile.parentFile.mkdirs()
             jsonFile.writeText(json)
-            val updated = replaceSummary(replaceMarkers(readmeFile.readText(), block), summary)
-            readmeFile.writeText(updated)
-            if (listingFile.exists()) {
+            if (listingFile.exists() && listingClaim.containsMatchIn(listingFile.readText())) {
                 listingFile.writeText(listingFile.readText().replace(listingClaim, claim))
             }
             return
@@ -215,22 +211,16 @@ class SupportedBanksDocTest {
             jsonFile.takeIf { it.exists() }?.readText(),
             "docs/supported-banks.json is stale — run scripts/update-supported-banks.sh"
         )
-        assertEquals(
-            claim,
-            listingFile.takeIf { it.exists() }?.readText()?.let { listingClaim.find(it)?.value },
-            "The Play listing coverage claim (fastlane/.../full_description.txt) is stale — " +
-                "run scripts/update-supported-banks.sh"
-        )
-        val readme = readmeFile.readText()
-        assertEquals(
-            block,
-            extractBlock(readme),
-            "README supported-banks block is stale — run scripts/update-supported-banks.sh"
-        )
-        assertEquals(
-            summary,
-            currentSummary(readme),
-            "README banks-summary bullet is stale — run scripts/update-supported-banks.sh"
-        )
+        if (listingFile.exists()) {
+            val found = listingClaim.find(listingFile.readText())?.value
+            if (found != null) {
+                assertEquals(
+                    claim,
+                    found,
+                    "The Play listing coverage claim (fastlane/.../full_description.txt) is stale — " +
+                        "run scripts/update-supported-banks.sh"
+                )
+            }
+        }
     }
 }

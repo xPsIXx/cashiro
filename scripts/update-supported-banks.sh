@@ -2,8 +2,8 @@
 # Regenerates everything derived from the live BankParserFactory registry:
 #
 #   SupportedBanksDocTest -> docs/supported-banks.json
-#                            README supported-banks block + summary bullet
 #                            the coverage claim in the Play Store long description
+#                            (README is not generated)
 #   BankSamplesDocTest    -> docs/bank-samples.json
 #
 # Run this after adding/removing/renaming a bank parser, or after changing a
@@ -20,5 +20,4 @@ UPDATE_SUPPORTED_BANKS=true ./gradlew :parser-core:jvmTest \
   --tests "com.pennywiseai.parser.core.BankSamplesDocTest" \
   --rerun-tasks
 
-echo "Updated the supported-banks catalogue, the README block, the Play listing"
-echo "coverage claim, and the per-bank parse samples."
+echo "Updated docs/supported-banks.json and the Play listing coverage claim."
