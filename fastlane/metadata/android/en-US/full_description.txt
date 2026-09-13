@@ -1,4 +1,4 @@
-Your UAE bank already texts you every transaction. Cashiro reads those SMS on the phone and turns them into a private expense tracker — FAB, ENBD, Liv, ADCB, Mashreq, Emirates Islamic — in English AED.
+Your UAE bank already texts you every transaction. Cashiro reads those SMS on the phone and turns them into a private expense tracker — FAB, ENBD, Liv, ADCB, Mashreq, Emirates Islamic — in English AED. 153 banks and payment services across 23 countries.
 
 ★ SMS permission
 Reading bank SMS is how the app works. Parsing and storage stay on the device. No account, no messages sent. You can still add transactions by hand.

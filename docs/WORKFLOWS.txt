@@ -1,0 +1,443 @@
+CASHIRO ANDROID — WORKFLOW INVENTORY, TEST PLAN, AND SMOKE RESULTS
+=================================================================
+Date: 2026-09-13
+Package: com.xpsixx.cashiro  (debug: com.xpsixx.cashiro.debug)
+Launcher name: Cashiro
+Min SDK 26 (Android 8) · Target SDK 36 · Compose + Room + Hilt + WorkManager
+
+This file lists every user-facing workflow, how it is supposed to work,
+what was checked, and what the UI should look like on a phone.
+
+How testing was done
+--------------------
+- No physical phone or emulator in this sandbox. UI is reviewed from Compose
+  sources, themes, navigation, and Dimensions tokens — not screenshots of a
+  live device.
+- GitHub Actions run e98073d (Android-only tree):
+    Parser Tests  FAIL  (README was missing generated bank markers — fixed below)
+    App Compile   PASS  (debug APK built and uploaded)
+    App Unit Tests PASS
+- Existing JVM unit tests cover currency, SMS dedupe, rules, backup schema,
+  CSV import, statements, widgets, notifications, budgets.
+- Live Firefly / live SMS / biometric cannot run here.
+
+
+0. APP START
+============
+Entry: MainActivity → splash (Theme.PennyWise.SplashScreen, cream #F4EBE3,
+Cashiro C icon) → PennyWiseApp.
+
+Start destination:
+  prefs still loading        → blank (wait)
+  onboarding not complete    → OnBoarding
+  already onboarded          → Home
+  app lock on + timed out    → AppLock (except while user is in Settings)
+
+Deep links:
+  cashiro://add              → Add Transaction (QS tile, launcher shortcut, widget)
+  ACTION_EDIT_TRANSACTION    → Transaction detail from a parse notification
+
+Expected UI: edge-to-edge, system bars transparent, Material You colors
+(Android 12+) matching wallpaper; light/dark follows system. Splash is
+still cream branded — a small mismatch with Material You home, not a crash.
+
+Test: compile PASS. Icon + app_name strings set to Cashiro.
+Issue: splash color is cream even when the rest of the app is Material You.
+
+
+1. ONBOARDING
+=============
+Steps (OnBoardingStep): WELCOME → PROFILE → PERMISSIONS → SMS_SCAN → ACCOUNT_SETUP
+
+WELCOME     "Welcome to Cashiro" + launcher icon + SMS value prop
+PROFILE     name, avatar (10 built-in), background color
+PERMISSIONS READ_SMS + RECEIVE_SMS (can skip)
+SMS_SCAN    WorkManager OptimizedSmsReaderWorker over inbox for chosen period
+ACCOUNT_SETUP pick main account / currency (default AED)
+
+If SMS was already granted (upgrade path), onboarding auto-completes.
+
+Expected UI: full-screen steps, Material3 buttons, bottom nav hidden,
+progress along the top, system theme.
+
+Test: strings say Cashiro. Scan worker is the same PennyWise pipeline.
+Cannot run permission dialogs without a device.
+
+
+2. APP LOCK
+===========
+Settings → Security → App Lock (biometric). Timeout 0 / 1 / 5 / 15 / 30 min.
+On resume, AppLockViewModel.refreshLockState(). If locked, AppLock screen
+("Cashiro is Locked") with biometric prompt. Back cannot skip it.
+
+Test: timeout dialog and flag wiring present. Biometric needs a device.
+
+
+3. SMS INGEST (CORE)
+====================
+3a Live SMS
+  SmsBroadcastReceiver (priority 999, BROADCAST_SMS)
+  → combine multi-part bodies
+  → SmsTransactionProcessor.processAndSaveTransaction(sender, body, ts)
+  → BankParserFactory.getParsers(sender) → first parser that parses
+  → hash dedupe, skip if user previously deleted
+  → merchant mapping → RuleEngine (block / recategorize)
+  → subscription match → Room insert + balance update
+  → optional Firefly auto-sync worker
+  → notification with Confirm / Delete / category chips
+
+3b Inbox scan
+  Settings → SMS Scan Period (3 months / all / custom date)
+  OptimizedSmsReaderWorker: channel of inbox rows, same processor.
+
+3c Bank app notifications
+  BankNotificationListenerService for allowed packages (FAB, ENBD, etc.)
+  Same processor. Retry via BankNotificationRetryWorker.
+
+UAE parsers (same as PennyWise):
+  FABParser, EmiratesNBDParser, LivBankParser, ADCBParser,
+  MashreqBankParser, EmiratesIslamicParser.
+
+Duplicates: transactionHash unique. Rescan does not re-insert.
+Deleted hashes stay skipped.
+
+Expected UI: toast/notification on parse; Home recent list updates;
+progress dialog during scan (SmsParsingProgressDialog).
+
+Test: TransactionDeduplicationTest, SmsScanParamsCalculatorTest,
+SmsBroadcastReceiverRequestCodeTest, BankNotificationDedupHashTest PASS
+in App Unit Tests. Parser-core has TestFABParser, TestLivBankParser,
+EmiratesNBDParserTest.
+
+
+4. HOME
+=======
+Bottom tab 1. CustomTitleTopAppBar title "Cashiro".
+GreetingCard (avatar, name, cycle days left).
+BalanceCard: total, month income/spend, sparkline, hide-balance, tap
+currency to cycle if several.
+CashFlowCard (hidden on dormant months).
+AccountCarousel → AccountDetail.
+BudgetCarousel → BudgetGroups.
+Recent transactions (grouped) → TransactionDetail.
+ShareMonthBanner after a finished month with enough data.
+FAB add (cashiro://add).
+Filter: All / Personal / Business profile.
+
+Expected UI (phone ~1080×2400):
+  - Top collapsing bar, floating bottom nav (Home / Transactions /
+    Analytics / Chat), haze blur if enabled.
+  - Cards 16dp gutters, 16dp inner padding, 0 elevation (tonal surfaces).
+  - Amounts: "AED 1,234.56" Latin digits for AED (explicit symbol map).
+  - Empty: PennyWiseEmptyState copy, not a crash.
+
+Test: HomeScreen compiles. Title Cashiro. Pro sparkle chip removed.
+Cannot render Compose here.
+
+
+5. TRANSACTIONS
+===============
+Bottom tab 2. Filter by period (budget-cycle aware), category, type,
+currency, search. Totals card. Tap row → TransactionDetail.
+
+TransactionDetail:
+  edit amount/merchant/category/notes/tags/splits
+  attach receipt
+  delete (soft) + undo
+  link loan
+  Firefly status if enabled
+
+Export CSV from overflow (unlimited; Pro gate removed).
+
+Expected UI: list rows with brand icon, category chip, amount in account
+currency. Detail is a full screen with save in top bar.
+
+Test: ComputeSelfTransferPairsTest, Delete/Restore use case tests PASS.
+
+
+6. ANALYTICS
+============
+Bottom tab 3. Period selector, income vs spend, category pie, bar trends,
+top merchants, tag breakdown. Tap category → TransactionsWithFilter.
+
+Expected UI: charts use PennyWiseText.chartLabel, Material You onSurface.
+Empty state when no spend in period.
+
+Test: compile PASS. Tag breakdown was Pro-locked; EntitlementGate always
+true so it is unlocked.
+
+
+7. CHAT / AI
+============
+Bottom tab 4. Title "Cashiro AI".
+
+If BYOK key saved → chat immediately (OpenAI / Anthropic / Gemini / Groq /
+OpenRouter / xAI / custom OpenAI-compatible URL).
+Else if no on-device model → download prompt (optional).
+Else on-device LiteRT-LM.
+
+LlmRepository.sendMessageStream: BYOK path calls ByokClient.complete;
+on-device path uses LlmService. System prompt includes spending context.
+Key stored in EncryptedSharedPreferences (ByokTokenManager).
+
+Expected UI: message bubbles, suggestion chips, composer above IME.
+Empty chat shows "Try one of these prompts".
+
+Test: ChatScreen braces close correctly. BYOK routing present.
+No live LLM call in CI.
+
+
+8. ADD TRANSACTION / SUBSCRIPTION
+=================================
+AddScreen tabs: Transaction | Subscription.
+Manual amount, account, category, date, notes.
+Subscriptions: merchant, amount, cycle, next date.
+
+Quick add: QS tile, home-screen shortcut, widget, cashiro://add.
+
+Expected UI: scaffold, numeric keypad / fields, save FAB.
+
+Test: compile PASS. Deep link scheme is cashiro, not pennywise.
+
+
+9. ACCOUNTS
+===========
+Settings → Manage Accounts.
+List SMS-derived + manual. Merge duplicates. Add cash/manual.
+AccountDetail: balance history, linked cards, tx list.
+Currency for SMS accounts comes from the bank parser (Liv/FAB → AED),
+not a stored INR default.
+
+Expected UI: carousel on Home, list in Manage Accounts.
+
+Test: CurrencyFormatterTest `sms-tracked non-INR account … AED` PASS.
+
+
+10. CATEGORIES
+==============
+Settings → Categories. Default set from shared DefaultCategoryData.
+Add / rename / hide. Used by rules, budgets, Firefly mapping.
+
+
+11. SMART RULES
+===============
+Settings → Smart Rules. Conditions on merchant/SMS/amount/type.
+Actions: set category, block, set account. Apply to past.
+Templates initialized on first launch.
+Unlimited (Pro gate removed).
+
+Test: RuleEngineTest, RuleConditionTest, RuleSharingCodecTest PASS.
+
+
+12. BUDGETS
+===========
+Settings → Budgets (BudgetGroups).
+Group + categories, amount, cycle (monthly start day from Settings,
+weekly, one-time). History screen Live vs Frozen snapshots.
+Home carousel + budget widget.
+
+Firefly: budgets are NOT pushed (stub returns "stay on the phone").
+
+Test: BudgetWindowTest, BudgetCycleTest, BudgetGroupsIncomeFoldTest PASS.
+
+
+13. RECURRING / SUBSCRIPTIONS / LOANS
+=====================================
+RecurringTransactions: scheduled auto-add (RecurringTransactionWorker).
+SubscriptionsScreen: detected from SMS, mark paid.
+Loans: lent/borrowed, detail, link tx.
+
+Firefly: subscriptions not pushed (stub).
+
+Test: RecurringTransactionEntityTest PASS.
+
+
+14. TRANSACTION GROUPS
+======================
+Topic folders for related txs (trip, project). Detail screen.
+
+
+15. FIREFLY III (OPTIONAL, ONE-WAY)
+===================================
+Settings → Firefly III. Off by default.
+
+Connect: base URL + Personal Access Token (EncryptedSharedPreferences,
+not in backups). Test connection GET /api/v1/about.
+
+Mapping dropdowns only:
+  GET /api/v1/accounts?type=asset
+  GET /api/v1/categories
+  User maps Cashiro account/category → Firefly name.
+
+Push (syncTransaction / syncTransactionsBatch / resync all):
+  external_id = pennywise-{transactionHash}
+  search: GET /api/v1/search/transactions?query=external_id_is:"…"
+  miss        → POST create, original_source=cashiro,
+                error_if_duplicate_hash=true
+  found+owned → PUT that journal only (isOwnedByCashiro: remote
+                external_id equals ours)
+  found+other → SKIP "Firefly-native entry — left untouched"
+  never pulls Firefly rows into Cashiro
+  failed rows → FireflyFailedSyncs + FireflyRetryWorker
+  auto        → FireflyAutoSyncWorker on interval
+
+Resync all walks every local row with the same rules — no second create
+if the hash already exists on Firefly.
+
+Expected UI: URL + PAT fields, test button, mapping lists, sync now,
+failed-syncs screen.
+
+Test: ownership logic reviewed in FireflyClient.kt (lines ~832–860,
+1088–1092, 1275–1280). No live Firefly in CI. Compile PASS.
+
+
+16. CURRENCY
+============
+Default base/display currency AED.
+Unified mode converts via ExchangeRateProvider (open.er-api.com).
+Number format: AUTO / Indian / International.
+AED uses explicit symbol "AED" + en-AE grouping (Latin digits), not د.إ.
+
+Test: CurrencyFormatterTest PASS (AED from Liv Bank parser).
+
+
+17. APPEARANCE
+==============
+Settings → Appearance
+  Mode: System / Light / Dark
+  Style: Dynamic (Material You, default) / Branded (accent picker)
+  AMOLED, font, blur, nav bar (floating/default), cover (default NONE)
+
+Expected UI: segmented mode chips, Dynamic selected on first run,
+accent row only when Branded.
+
+Test: ThemeStyle.DYNAMIC and isDynamicColorEnabled=true are DataStore
+defaults. Theme.kt uses dynamicLight/DarkColorScheme on API 31+.
+
+
+18. BACKUP / IMPORT / EXPORT
+============================
+Export: Cashiro_Backup_<ts>.cashirobackup (JSON, format still
+"PennyWise Backup v1.x" so old files import).
+Import backup, CSV (Cashiro/PennyWise column set), PDF statements
+(GPay, PhonePe, Paytm, Slice).
+Automatic folder backup 02:00 (SAF tree URI). Unlocked for everyone.
+
+Test: BackupModelsTest, BackupSchemaGuardTest, CsvTransactionImporterTest,
+GPay/Paytm/Slice parser tests, ScheduledFolderBackupSchedulerTest PASS.
+
+
+19. UNRECOGNIZED SMS
+====================
+Inbox rows no parser matched. Report URL builder. Helps add banks.
+
+
+20. WIDGETS / TILE / SHORTCUT
+=============================
+Budget, category pie, recent txs, add-transaction widgets.
+Quick Settings tile → cashiro://add.
+Launcher long-press shortcut registered in MainActivity.
+
+Test: RecentTransactionsWidgetUpdateWorkerTest PASS.
+
+
+21. CONTACTS
+============
+Optional READ_CONTACTS. Replace UPI VPA with contact name at display
+time only (LocalMerchantDisplay). Off by default.
+
+
+22. SETTINGS FOOTER
+===================
+"Cashiro v{VERSION_NAME}". FAQ, GitHub issue. No Pro / no tip jar.
+
+
+ANDROID UI RENDER NOTES
+=======================
+Phone layout (typical):
+  Status bar
+  Collapsing title bar (haze)
+  Scrollable content, 16dp horizontal inset
+  Floating bottom nav (4 destinations), IME padding
+  FAB on Home / Add
+
+Theme:
+  First run = system dark + Material You (API 31+), else Light/DarkColorScheme
+  Cover gradient off (CoverStyle.NONE)
+  Cards: surfaceContainer, 16dp corners, 0dp elevation
+  Amounts: SN Pro / system font, PennyWiseText.amount* styles
+  Touch targets ≥ 48dp (Dimensions)
+
+Colors the user will see on an English / UAE phone:
+  Wallpaper-derived primary (not forced rose)
+  AED 12,345.67 not د.إ ١٢٣٤٥
+
+Known UI leftover (not user-visible names):
+  Kotlin types still called PennyWiseTheme, PennyWiseCardV2, etc.
+  Backup JSON _format still "PennyWise Backup v1.2" (needed for import).
+  Firefly external_id prefix still pennywise-{hash} (stable IDs; changing
+  it would duplicate journals).
+
+
+SMOKE CHECKLIST (code + CI)
+===========================
+[PASS] applicationId com.xpsixx.cashiro (sits beside PennyWise)
+[PASS] app_name Cashiro / Cashiro Debug
+[PASS] Launcher adaptive icon cream + rose C
+[PASS] Deep link cashiro://add
+[PASS] SMS receiver + processor + UAE parsers present
+[PASS] Dedup / rules / backup / CSV / currency unit tests
+[PASS] Firefly search-first + ownership skip
+[PASS] BYOK client + chat empty-state
+[PASS] Pro paywall hidden, EntitlementGate always true
+[PASS] App compile + debug APK (Actions e98073d)
+[PASS] App unit tests (Actions e98073d)
+[FAIL→FIX] Parser SupportedBanksDocTest (README markers + Play listing
+            claim restored in this change)
+[N/A]  Device SMS / biometric / live Firefly / live BYOK
+[N/A]  Pixel-perfect Compose screenshot (no emulator here)
+
+
+DEVICE SMOKE (do this on the phone after installing the new APK)
+================================================================
+1. Install next green Tests artifact over the previous Cashiro (same
+   package). PennyWise original stays installed.
+2. Open: splash C icon, then Material You home titled Cashiro.
+3. Onboarding → grant SMS → scan. FAB/ENBD/Liv rows should match PennyWise.
+4. Open a transaction: AED Latin amount, category, edit/save.
+5. Settings → Appearance: Dynamic selected; Branded still available.
+6. Settings → Firefly: paste URL+PAT, Test, map one account, Sync.
+   Confirm one journal on Firefly with external_id pennywise-…
+   Sync again: no duplicate.
+7. Settings → BYOK: paste a key, Chat a "what did I spend?".
+8. Add manual tx from FAB and from QS tile.
+9. Export backup, re-import on a debug build if you want a restore check.
+10. Lock the app, background 1 min, reopen → biometric.
+
+
+ONE-BY-ONE WORKFLOW STATUS
+==========================
+01 Start / splash              OK (cream splash vs Material You noted)
+02 Onboarding                  OK in code
+03 App lock                    OK in code
+04 Live SMS parse              OK in code + parser tests
+05 Inbox scan                  OK in code + unit tests
+06 Bank notifications          OK in code + hash test
+07 Home                        OK in code, Pro chrome gone
+08 Transactions list/detail    OK in code
+09 Analytics                   OK in code, unlocked
+10 Chat BYOK                   OK in code
+11 Add tx / subscription       OK in code
+12 Accounts / AED resolve      OK + unit test
+13 Categories                  OK in code
+14 Rules                       OK + unit tests
+15 Budgets                     OK + unit tests; not synced to Firefly
+16 Recurring / loans           OK in code; not synced to Firefly
+17 Groups                      OK in code
+18 Firefly one-way             OK in code review
+19 Currency / unified          OK + unit tests
+20 Appearance Material You     OK defaults
+21 Backup/CSV/PDF              OK + unit tests
+22 Unrecognized SMS            OK in code
+23 Widgets / tile              OK + widget unit test
+24 Contacts VPA                OK in code (opt-in)
