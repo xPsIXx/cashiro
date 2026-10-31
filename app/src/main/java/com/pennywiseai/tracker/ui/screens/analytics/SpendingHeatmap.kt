@@ -1,5 +1,7 @@
 package com.pennywiseai.tracker.ui.screens.analytics
 
+import java.time.format.TextStyle
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
@@ -15,7 +17,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.pennywiseai.tracker.ui.components.BalancePoint
 import com.pennywiseai.tracker.ui.components.buildHeatmapMonthLabels
 import java.time.DayOfWeek
@@ -28,7 +29,7 @@ fun SpendingHeatmap(
 ) {
     if (data.isEmpty()) return
 
-    val maxAmount = remember(data) { data.maxOfOrNull { it.balance.toDouble() } ?: 1.0 }
+    val maxAmount = remember(data) { data.map { it.balance.toDouble() }.maxOrNull() ?: 1.0 }
     val groupedData = remember(data) {
         data.associate { it.timestamp.toLocalDate() to it.balance.toDouble() }
     }
@@ -45,7 +46,10 @@ fun SpendingHeatmap(
 
     val scrollState = rememberScrollState()
 
-    val dayLabels = listOf("M", "T", "W", "T", "F", "S", "S")
+    val locale = LocalConfiguration.current.locales[0]
+    val dayLabels = remember(locale) {
+        DayOfWeek.entries.map { it.getDisplayName(TextStyle.NARROW, locale) }
+    }
     val gapSize = 4.dp
     val dayLabelColumnWidth = 24.dp
     val minCellSize = 20.dp
@@ -86,8 +90,7 @@ fun SpendingHeatmap(
                                 Text(
                                     text = label,
                                     style = MaterialTheme.typography.labelSmall,
-                                    fontSize = 11.sp,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
                         }
@@ -143,8 +146,7 @@ fun SpendingHeatmap(
                         Text(
                             text = label,
                             style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
-                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.offset(x = xOffset)
                         )
                     }

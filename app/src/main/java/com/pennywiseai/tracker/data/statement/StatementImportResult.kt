@@ -10,6 +10,4 @@ sealed class StatementImportResult {
         val totalParsed: Int,
         val enriched: Int = 0
     ) : StatementImportResult()
-
-    data class Error(val message: String) : StatementImportResult()
 }

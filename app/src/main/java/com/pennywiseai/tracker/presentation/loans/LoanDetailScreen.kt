@@ -1,5 +1,9 @@
 package com.pennywiseai.tracker.presentation.loans
 
+import com.pennywiseai.tracker.utils.AppDates
+
+import com.pennywiseai.tracker.R
+import androidx.compose.ui.res.stringResource
 import androidx.compose.foundation.background
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
@@ -22,6 +26,7 @@ import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -29,12 +34,14 @@ import com.pennywiseai.tracker.data.database.entity.LoanDirection
 import com.pennywiseai.tracker.data.database.entity.LoanStatus
 import com.pennywiseai.tracker.data.database.entity.TransactionEntity
 import com.pennywiseai.tracker.data.database.entity.TransactionType
+import com.pennywiseai.tracker.domain.loan.LoanMath
 import com.pennywiseai.tracker.ui.components.CustomTitleTopAppBar
 import com.pennywiseai.tracker.ui.components.cards.PennyWiseCardV2
 import com.pennywiseai.tracker.ui.effects.overScrollVertical
 import com.pennywiseai.tracker.ui.effects.rememberOverscrollFlingBehavior
 import com.pennywiseai.tracker.ui.theme.*
 import com.pennywiseai.tracker.utils.CurrencyFormatter
+import com.pennywiseai.tracker.ui.theme.Dimensions
 import dev.chrisbanes.haze.HazeState
 import dev.chrisbanes.haze.hazeSource
 import java.math.BigDecimal
@@ -65,41 +72,40 @@ fun LoanDetailScreen(
             CustomTitleTopAppBar(
                 scrollBehaviorSmall = scrollBehaviorSmall,
                 scrollBehaviorLarge = scrollBehaviorLarge,
-                title = loan?.personName ?: "Loan",
+                title = loan?.personName ?: stringResource(R.string.loan_detail_title_fallback),
                 hasBackButton = true,
-                hasActionButton = true,
                 navigationContent = {
                     IconButton(onClick = onNavigateBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(R.string.accounts_back))
                     }
                 },
                 actionContent = {
                     if (loan != null) {
                         var showMenu by remember { mutableStateOf(false) }
                         IconButton(onClick = { showMenu = true }) {
-                            Icon(Icons.Default.MoreVert, contentDescription = "More")
+                            Icon(Icons.Default.MoreVert, contentDescription = stringResource(R.string.loan_detail_more))
                         }
                         DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
                             if (loan.status == LoanStatus.ACTIVE) {
                                 DropdownMenuItem(
-                                    text = { Text("Set expected return") },
+                                    text = { Text(stringResource(R.string.loan_detail_menu_set_expected_return)) },
                                     onClick = { showMenu = false; viewModel.showEditAmountDialog() },
                                     leadingIcon = { Icon(Icons.Default.Edit, null) }
                                 )
                                 DropdownMenuItem(
-                                    text = { Text("Settle") },
+                                    text = { Text(stringResource(R.string.loan_detail_settle)) },
                                     onClick = { showMenu = false; viewModel.showSettleDialog() },
                                     leadingIcon = { Icon(Icons.Default.CheckCircle, null) }
                                 )
                             } else {
                                 DropdownMenuItem(
-                                    text = { Text("Reopen") },
+                                    text = { Text(stringResource(R.string.loan_detail_menu_reopen)) },
                                     onClick = { showMenu = false; viewModel.reopenLoan() },
                                     leadingIcon = { Icon(Icons.Default.Refresh, null) }
                                 )
                             }
                             DropdownMenuItem(
-                                text = { Text("Delete", color = MaterialTheme.colorScheme.error) },
+                                text = { Text(stringResource(R.string.accounts_action_delete), color = MaterialTheme.colorScheme.error) },
                                 onClick = { showMenu = false; viewModel.showDeleteDialog() },
                                 leadingIcon = { Icon(Icons.Default.Delete, null, tint = MaterialTheme.colorScheme.error) }
                             )
@@ -115,7 +121,7 @@ fun LoanDetailScreen(
                     onClick = { viewModel.showRecordPayment() },
                     containerColor = if (isSystemInDarkTheme()) loan_dark else loan_light
                 ) {
-                    Icon(Icons.Default.Add, contentDescription = "Record Payment")
+                    Icon(Icons.Default.Add, contentDescription = stringResource(R.string.loan_detail_record_payment))
                 }
             }
         }
@@ -160,7 +166,7 @@ fun LoanDetailScreen(
             verticalArrangement = Arrangement.spacedBy(Spacing.md),
             flingBehavior = rememberOverscrollFlingBehavior { lazyListState }
         ) {
-            // Hero card ÔÇö compact layout
+            // Hero card — compact layout
             item {
                 PennyWiseCardV2(modifier = Modifier.fillMaxWidth()) {
                     Column(
@@ -193,7 +199,7 @@ fun LoanDetailScreen(
                                     fontWeight = FontWeight.SemiBold
                                 )
                                 Text(
-                                    if (loan.direction == LoanDirection.LENT) "Lent" else "Borrowed",
+                                    if (loan.direction == LoanDirection.LENT) stringResource(R.string.loans_direction_lent) else stringResource(R.string.loans_direction_borrowed),
                                     style = MaterialTheme.typography.labelMedium,
                                     color = directionColor
                                 )
@@ -209,11 +215,23 @@ fun LoanDetailScreen(
                                 MaterialTheme.colorScheme.onSurfaceVariant else directionColor
                         )
                         Text(
-                            text = if (loan.status == LoanStatus.SETTLED) "Settled"
-                            else "remaining of ${CurrencyFormatter.formatCurrency(loan.originalAmount, loan.currency)}",
+                            text = if (loan.status == LoanStatus.SETTLED) stringResource(R.string.loans_status_settled)
+                            else stringResource(R.string.loan_detail_remaining_of, CurrencyFormatter.formatCurrency(loan.originalAmount, loan.currency)),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
+
+                        // The note captured in "mark as loan" had no home until now
+                        // (#754) — it is the only place the user says what the loan
+                        // was for, so it sits with the amount rather than below the
+                        // transaction history.
+                        loan.note?.takeIf { it.isNotBlank() }?.let { note ->
+                            Text(
+                                text = note,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
 
                         // Progress bar
                         if (loan.status == LoanStatus.ACTIVE) {
@@ -221,13 +239,13 @@ fun LoanDetailScreen(
                                 progress = { progress },
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .height(6.dp)
-                                    .clip(RoundedCornerShape(3.dp)),
+                                    .height(Dimensions.Component.progressBarHeight)
+                                    .clip(CircleShape),
                                 color = progressColor,
                                 trackColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
                             )
                             Text(
-                                "${(progress * 100).toInt()}% repaid",
+                                stringResource(R.string.loan_detail_percent_repaid, (progress * 100).toInt()),
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -240,17 +258,15 @@ fun LoanDetailScreen(
             if (uiState.linkedTransactions.isNotEmpty()) {
                 item {
                     Text(
-                        "History",
+                        stringResource(R.string.loan_detail_history),
                         style = MaterialTheme.typography.titleSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
 
                 items(uiState.linkedTransactions, key = { it.id }) { txn ->
-                    // Original transaction type matches loan direction (LENTÔåÆEXPENSE, BORROWEDÔåÆINCOME)
-                    val isOriginal = if (loan.direction == LoanDirection.LENT)
-                        txn.transactionType == TransactionType.EXPENSE
-                    else txn.transactionType == TransactionType.INCOME
+                    // Principal flows the loan's way (LENT→money out, BORROWED→money in).
+                    val isOriginal = LoanMath.isPrincipal(loan.direction, txn.transactionType)
                     LoanTransactionItem(
                         transaction = txn,
                         isOriginal = isOriginal,
@@ -266,16 +282,16 @@ fun LoanDetailScreen(
     if (uiState.showSettleDialog) {
         AlertDialog(
             onDismissRequest = { viewModel.hideSettleDialog() },
-            title = { Text("Settle Loan") },
-            text = { Text("Mark this loan as settled? Any remaining balance will be forgiven.") },
+            title = { Text(stringResource(R.string.loan_detail_settle_title)) },
+            text = { Text(stringResource(R.string.loan_detail_settle_message)) },
             confirmButton = {
                 TextButton(onClick = { viewModel.settleLoan() }) {
-                    Text("Settle")
+                    Text(stringResource(R.string.loan_detail_settle))
                 }
             },
             dismissButton = {
                 TextButton(onClick = { viewModel.hideSettleDialog() }) {
-                    Text("Cancel")
+                    Text(stringResource(R.string.accounts_action_cancel))
                 }
             }
         )
@@ -286,7 +302,7 @@ fun LoanDetailScreen(
         var editAmount by remember { mutableStateOf(loan.originalAmount.toPlainString()) }
         AlertDialog(
             onDismissRequest = { viewModel.hideEditAmountDialog() },
-            title = { Text("Expected Return") },
+            title = { Text(stringResource(R.string.loan_detail_expected_return_title)) },
             text = {
                 TextField(
                     value = editAmount,
@@ -295,7 +311,7 @@ fun LoanDetailScreen(
                             editAmount = value
                         }
                     },
-                    label = { Text("Amount expected back") },
+                    label = { Text(stringResource(R.string.loan_detail_expected_return_label)) },
                     prefix = { Text(CurrencyFormatter.getCurrencySymbol(loan.currency)) },
                     singleLine = true,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
@@ -315,12 +331,12 @@ fun LoanDetailScreen(
                     },
                     enabled = editAmount.toBigDecimalOrNull()?.let { it > java.math.BigDecimal.ZERO } == true
                 ) {
-                    Text("Save")
+                    Text(stringResource(R.string.accounts_action_save))
                 }
             },
             dismissButton = {
                 TextButton(onClick = { viewModel.hideEditAmountDialog() }) {
-                    Text("Cancel")
+                    Text(stringResource(R.string.accounts_action_cancel))
                 }
             }
         )
@@ -330,16 +346,16 @@ fun LoanDetailScreen(
     if (uiState.showDeleteDialog) {
         AlertDialog(
             onDismissRequest = { viewModel.hideDeleteDialog() },
-            title = { Text("Delete Loan") },
-            text = { Text("Delete this loan? Linked transactions will be unlinked but not deleted.") },
+            title = { Text(stringResource(R.string.loan_detail_delete_title)) },
+            text = { Text(stringResource(R.string.loan_detail_delete_message)) },
             confirmButton = {
                 TextButton(onClick = { viewModel.deleteLoan() }) {
-                    Text("Delete", color = MaterialTheme.colorScheme.error)
+                    Text(stringResource(R.string.accounts_action_delete), color = MaterialTheme.colorScheme.error)
                 }
             },
             dismissButton = {
                 TextButton(onClick = { viewModel.hideDeleteDialog() }) {
-                    Text("Cancel")
+                    Text(stringResource(R.string.accounts_action_cancel))
                 }
             }
         )
@@ -367,17 +383,15 @@ private fun LoanTransactionItem(
     onClick: () -> Unit
 ) {
     val isDark = isSystemInDarkTheme()
-    // Color reflects the actual money flow: red = money out, green = money in
-    val color = when (transaction.transactionType) {
-        TransactionType.EXPENSE -> if (isDark) expense_dark else expense_light
-        TransactionType.INCOME -> if (isDark) income_dark else income_light
-        else -> MaterialTheme.colorScheme.onSurface
+    // Color reflects the actual money flow: red = money out, green = money in.
+    // Every type but INCOME is money out, as in the loan's own math (#876).
+    val moneyIn = transaction.transactionType == TransactionType.INCOME
+    val color = if (moneyIn) {
+        if (isDark) income_dark else income_light
+    } else {
+        if (isDark) expense_dark else expense_light
     }
-    val sign = when (transaction.transactionType) {
-        TransactionType.EXPENSE -> "-"
-        TransactionType.INCOME -> "+"
-        else -> ""
-    }
+    val sign = if (moneyIn) "+" else "-"
 
     PennyWiseCardV2(
         modifier = Modifier.fillMaxWidth(),
@@ -401,7 +415,7 @@ private fun LoanTransactionItem(
                     if (isOriginal) {
                         SuggestionChip(
                             onClick = {},
-                            label = { Text("Original", style = MaterialTheme.typography.labelSmall) },
+                            label = { Text(stringResource(R.string.loan_detail_original_chip), style = MaterialTheme.typography.labelSmall) },
                             modifier = Modifier.height(24.dp),
                             border = null as androidx.compose.foundation.BorderStroke?,
                             colors = SuggestionChipDefaults.suggestionChipColors(
@@ -411,13 +425,25 @@ private fun LoanTransactionItem(
                     }
                 }
                 Text(
-                    transaction.dateTime.format(DateTimeFormatter.ofPattern("d MMM yyyy")),
+                    transaction.dateTime.format(AppDates.dateFormatter()),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+                // This transaction's own note, not the loan's (#876).
+                transaction.description?.takeIf { it.isNotBlank() }?.let { note ->
+                    Text(
+                        note,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
             }
             Text(
-                text = "${sign}${CurrencyFormatter.formatCurrency(transaction.amount, transaction.currency)}",
+                // Show the portion assigned to this loan, not the full transaction
+                // amount — matches how the loan total is computed (#681).
+                text = CurrencyFormatter.signed(sign, CurrencyFormatter.formatCurrency(transaction.loanContribution ?: transaction.amount, transaction.currency)),
                 style = MaterialTheme.typography.bodyMedium,
                 fontWeight = FontWeight.SemiBold,
                 color = color
@@ -457,12 +483,12 @@ private fun RecordPaymentBottomSheet(
             verticalArrangement = Arrangement.spacedBy(Spacing.md)
         ) {
             Text(
-                "Record payment from $personName",
+                stringResource(R.string.loan_detail_record_payment_from, personName),
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.SemiBold
             )
             Text(
-                "${CurrencyFormatter.formatCurrency(remainingAmount, currency)} remaining",
+                stringResource(R.string.loan_detail_amount_remaining, CurrencyFormatter.formatCurrency(remainingAmount, currency)),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -470,7 +496,7 @@ private fun RecordPaymentBottomSheet(
             // Link existing transactions
             if (recentUnlinkedTransactions.isNotEmpty()) {
                 Text(
-                    "Link existing transaction",
+                    stringResource(R.string.loan_detail_link_existing),
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -487,7 +513,7 @@ private fun RecordPaymentBottomSheet(
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(txn.merchantName, style = MaterialTheme.typography.bodyMedium)
                                 Text(
-                                    txn.dateTime.format(DateTimeFormatter.ofPattern("d MMM")),
+                                    txn.dateTime.format(AppDates.dayMonthFormatter()),
                                     style = MaterialTheme.typography.labelSmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -506,7 +532,7 @@ private fun RecordPaymentBottomSheet(
 
             // Manual entry
             Text(
-                if (recentUnlinkedTransactions.isNotEmpty()) "Or enter manually" else "Enter amount",
+                if (recentUnlinkedTransactions.isNotEmpty()) stringResource(R.string.loan_detail_or_enter_manually) else stringResource(R.string.loan_detail_enter_amount),
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -522,7 +548,7 @@ private fun RecordPaymentBottomSheet(
                             manualAmount = value
                         }
                     },
-                    label = { Text("Amount") },
+                    label = { Text(stringResource(R.string.loan_detail_amount_label)) },
                     prefix = { Text(CurrencyFormatter.getCurrencySymbol(currency)) },
                     singleLine = true,
                     modifier = Modifier.weight(1f),
@@ -543,7 +569,7 @@ private fun RecordPaymentBottomSheet(
                     shape = RoundedCornerShape(Dimensions.CornerRadius.medium),
                     colors = ButtonDefaults.buttonColors(containerColor = loanColor)
                 ) {
-                    Text("Add")
+                    Text(stringResource(R.string.loan_detail_add))
                 }
             }
         }

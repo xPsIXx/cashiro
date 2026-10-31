@@ -1,5 +1,6 @@
 package com.pennywiseai.tracker.ui.screens
 
+import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
@@ -9,13 +10,14 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.pluralStringResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.fragment.app.FragmentActivity
-import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
+import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.pennywiseai.tracker.domain.security.BiometricAuthManager
-import com.pennywiseai.tracker.domain.security.BiometricCapability
+import com.pennywiseai.tracker.R
 import com.pennywiseai.tracker.ui.components.PennyWiseScaffold
 import com.pennywiseai.tracker.ui.theme.Spacing
 import com.pennywiseai.tracker.ui.viewmodel.AppLockViewModel
@@ -38,8 +40,9 @@ fun AppLockScreen(
     }
 
     // Auto-trigger authentication when screen is shown
+    // (With no screen lock at all, authenticate lets the user straight in.)
     LaunchedEffect(Unit) {
-        if (uiState.canUseBiometric && context is FragmentActivity) {
+        if (context is FragmentActivity) {
             triggerAuthentication(context, viewModel)
         }
     }
@@ -71,7 +74,7 @@ fun AppLockScreen(
                 // Lock icon
                 Icon(
                     imageVector = Icons.Filled.Lock,
-                    contentDescription = "App Locked",
+                    contentDescription = stringResource(R.string.applock_icon_cd),
                     modifier = Modifier.size(120.dp),
                     tint = MaterialTheme.colorScheme.primary
                 )
@@ -80,7 +83,7 @@ fun AppLockScreen(
 
                 // Title
                 Text(
-                    text = "PennyWise is Locked",
+                    text = stringResource(R.string.applock_title),
                     style = MaterialTheme.typography.headlineMedium,
                     textAlign = TextAlign.Center
                 )
@@ -89,7 +92,7 @@ fun AppLockScreen(
 
                 // Description
                 Text(
-                    text = "Authenticate to access your expense data",
+                    text = stringResource(R.string.applock_subtitle),
                     style = MaterialTheme.typography.bodyLarge,
                     textAlign = TextAlign.Center,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -106,7 +109,7 @@ fun AppLockScreen(
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Text(
-                            text = uiState.authenticationError!!,
+                            text = uiState.authenticationError!!.asString(),
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onErrorContainer,
                             modifier = Modifier.padding(Spacing.md),
@@ -116,66 +119,32 @@ fun AppLockScreen(
                     Spacer(modifier = Modifier.height(Spacing.md))
                 }
 
-                // Show capability-specific message
-                when (uiState.biometricCapability) {
-                    BiometricCapability.Available -> {
-                        // Unlock button
-                        Button(
-                            onClick = {
-                                if (context is FragmentActivity) {
-                                    viewModel.clearAuthError()
-                                    triggerAuthentication(context, viewModel)
-                                }
-                            },
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Text("Unlock")
+                // Always offered: the prompt falls back to the device PIN, and a
+                // device with no screen lock is let straight in.
+                Button(
+                    onClick = {
+                        if (context is FragmentActivity) {
+                            viewModel.clearAuthError()
+                            triggerAuthentication(context, viewModel)
                         }
-                    }
-                    else -> {
-                        // Show error for unavailable biometric
-                        Card(
-                            colors = CardDefaults.cardColors(
-                                containerColor = MaterialTheme.colorScheme.errorContainer
-                            ),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Column(
-                                modifier = Modifier.padding(Spacing.md)
-                            ) {
-                                Text(
-                                    text = "Biometric authentication unavailable",
-                                    style = MaterialTheme.typography.titleSmall,
-                                    color = MaterialTheme.colorScheme.onErrorContainer
-                                )
-                                Spacer(modifier = Modifier.height(Spacing.sm))
-                                Text(
-                                    text = uiState.biometricCapability.getErrorMessage(),
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = MaterialTheme.colorScheme.onErrorContainer
-                                )
-                                Spacer(modifier = Modifier.height(Spacing.sm))
-                                Text(
-                                    text = "Please disable app lock in device settings or set up biometric authentication.",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onErrorContainer
-                                )
-                            }
-                        }
-                    }
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(stringResource(R.string.applock_unlock))
                 }
 
                 Spacer(modifier = Modifier.height(Spacing.md))
 
                 // Privacy note
                 Text(
-                    text = "Your data is protected with ${
-                        when (uiState.timeoutMinutes) {
-                            0 -> "immediate locking"
-                            1 -> "1 minute timeout"
-                            else -> "${uiState.timeoutMinutes} minute timeout"
-                        }
-                    }",
+                    text = when (uiState.timeoutMinutes) {
+                        0 -> stringResource(R.string.applock_protected_immediate)
+                        else -> pluralStringResource(
+                            R.plurals.applock_protected_timeout,
+                            uiState.timeoutMinutes,
+                            uiState.timeoutMinutes
+                        )
+                    },
                     style = MaterialTheme.typography.bodySmall,
                     textAlign = TextAlign.Center,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -189,6 +158,9 @@ private fun triggerAuthentication(
     activity: FragmentActivity,
     viewModel: AppLockViewModel
 ) {
-    // Trigger authentication through the ViewModel
-    viewModel.triggerAuthentication(activity)
+    // Application context: the notice can land after the lock screen has gone.
+    val appContext = activity.applicationContext
+    viewModel.triggerAuthentication(activity) {
+        Toast.makeText(appContext, R.string.applock_no_screen_lock_notice, Toast.LENGTH_LONG).show()
+    }
 }

@@ -14,7 +14,7 @@ import java.math.BigDecimal
  * Desc:<description>
  * Date:09/06/2026
  * Avail Bal:NGN224,408.56
- * Total:NGN2          (may be truncated ÔÇö ignored)
+ * Total:NGN2          (may be truncated — ignored)
  * ```
  * First line is "Debit" (EXPENSE) or "Credit" (INCOME).
  *
@@ -75,7 +75,7 @@ class AccessBankParser : BankParser() {
     }
 
     override fun extractAccountLast4(message: String): String? {
-        // Account is masked, e.g. "146******325" ÔÇö use the trailing digit group.
+        // Account is masked, e.g. "146******325" — use the trailing digit group.
         val match = Regex("""(?i)Acc:\s*[0-9]*\*+([0-9]+)""").find(message)
         if (match != null) {
             return extractLast4Digits(match.groupValues[1])

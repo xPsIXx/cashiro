@@ -1,5 +1,12 @@
 package com.pennywiseai.tracker.worker
 
+import androidx.room.withTransaction
+import com.pennywiseai.parser.core.bank.BankParserFactory
+import com.pennywiseai.tracker.data.preferences.BankAccountMergeStore
+import kotlinx.coroutines.sync.withLock
+
+import com.pennywiseai.tracker.receiver.BankNotificationConfig
+import com.pennywiseai.tracker.R
 import android.content.Context
 import android.os.Process
 import android.os.Trace
@@ -16,11 +23,19 @@ import com.pennywiseai.tracker.data.database.entity.CardType
 import com.pennywiseai.tracker.data.database.entity.TransactionType
 import com.pennywiseai.tracker.data.database.entity.UnrecognizedSmsEntity
 import com.pennywiseai.tracker.data.manager.TransactionDeduplication
+import com.pennywiseai.tracker.data.mapper.atEnqueuedAccount
+import com.pennywiseai.tracker.data.mapper.DeferredBalanceInput
 import com.pennywiseai.tracker.data.mapper.toEntity
 import com.pennywiseai.tracker.data.mapper.toEntityType
+import com.pennywiseai.tracker.utils.BalanceCalculator
+import com.pennywiseai.tracker.core.TimeConstants
+import com.pennywiseai.tracker.data.manager.SmsScanParamsCalculator
+import com.pennywiseai.tracker.data.manager.SmsScanParamsInput
+import com.pennywiseai.tracker.data.preferences.IgnoredAccountsStore
 import com.pennywiseai.tracker.data.preferences.UserPreferencesRepository
 import com.pennywiseai.tracker.data.repository.*
 import com.pennywiseai.tracker.domain.model.rule.TransactionRule
+import com.pennywiseai.tracker.domain.model.rule.tagChanges
 import com.pennywiseai.tracker.domain.repository.RuleRepository
 import com.pennywiseai.tracker.domain.service.RuleEngine
 import com.pennywiseai.tracker.utils.CurrencyFormatter
@@ -28,12 +43,14 @@ import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.channels.SendChannel
 import kotlinx.coroutines.flow.first
 import kotlinx.datetime.toJavaLocalDateTime
 import java.math.BigDecimal
 import java.time.Instant
 import java.time.LocalDateTime
 import java.time.ZoneId
+import java.util.Currency
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.system.measureTimeMillis
 
@@ -66,17 +83,33 @@ class OptimizedSmsReaderWorker @AssistedInject constructor(
     private val userPreferencesRepository: UserPreferencesRepository,
     private val unrecognizedSmsRepository: UnrecognizedSmsRepository,
     private val ruleRepository: RuleRepository,
-    private val ruleEngine: RuleEngine
+    private val database: com.pennywiseai.tracker.data.database.PennyWiseDatabase,
+    private val ignoredAccountsStore: IgnoredAccountsStore,
+    private val ruleEngine: RuleEngine,
+    private val tagRepository: TagRepository,
+    private val generateIncomeAutopayUseCase: com.pennywiseai.tracker.domain.usecase.GenerateIncomeAutopayUseCase
 ) : CoroutineWorker(appContext, workerParams) {
+    private val bankAccountMerges = BankAccountMergeStore(appContext)
 
     companion object {
         const val TAG                               = "OptimizedSmsReaderWorker"
         const val WORK_NAME                         = "optimized_sms_reader_work"
         const val INPUT_FORCE_RESYNC                = "input_force_resync"
+        // Re-read the whole scan window without deleting anything: adds what an
+        // earlier scan missed and keeps every edit (the gentle "scan again").
+        const val INPUT_RESCAN_ALL                  = "input_rescan_all"
         const val PROGRESS_TOTAL                    = "progress_total"
         const val PROGRESS_PROCESSED                = "progress_processed"
         const val PROGRESS_PARSED                   = "progress_parsed"
         const val PROGRESS_SAVED                    = "progress_saved"
+
+        /** The final counts handed back on success — `progress` is gone by then. */
+        fun completionData(total: Int, processed: Int, parsed: Int, saved: Int): Data = workDataOf(
+            PROGRESS_TOTAL     to total,
+            PROGRESS_PROCESSED to processed,
+            PROGRESS_PARSED    to parsed,
+            PROGRESS_SAVED     to saved
+        )
         const val PROGRESS_BLOCKED                  = "progress_blocked"
         const val PROGRESS_TIME_ELAPSED             = "progress_time_elapsed"
         const val PROGRESS_ESTIMATED_TIME_REMAINING = "progress_estimated_time_remaining"
@@ -88,10 +121,35 @@ class OptimizedSmsReaderWorker @AssistedInject constructor(
         private const val NOTIFICATION_ID           = 9001
         private const val PARSE_CHANNEL_CAPACITY    = 512
         private const val RESULT_CHANNEL_CAPACITY   = 512
-        private const val PROGRESS_REPORT_INTERVAL  = 10
-        private const val PROGRESS_MONITOR_INTERVAL = 50L
         private const val UNRECOGNIZED_BATCH_SIZE   = 50
         private const val ETA_WINDOW_MS             = 2000L
+
+        // GPay P2P is parsed by SBIBankParser and attributed to this partner bank; it is
+        // the one dedup collapses and the only one that leaves a phantom account (#456).
+        // Matches SBIBankParser.getBankName() and the literal in TransactionDeduplication.
+        private const val GPAY_PARTNER_BANK         = "State Bank of India"
+
+        private val ISO_CURRENCY_CODES: Set<String> by lazy {
+            Currency.getAvailableCurrencies().mapTo(HashSet()) { it.currencyCode }
+        }
+        private val AMOUNT_NEAR_SYMBOL = Regex("""[€$£₹]\s?\.?\d|\d[\d.,]*\s?[€$£₹]""")
+        private val AMOUNT_NEAR_CODE = Regex("""\b([A-Z]{3})\s?\.?\d|\d[\d.,]*\s?([A-Z]{3})\b""")
+
+        /**
+         * Whether an SMS no parser claims belongs in Unrecognized SMS (the user's way to report a bank).
+         * Indian DLT senders (-T/-S) always do. Senders outside India have no DLT suffix, so for those
+         * keep alphanumeric senders whose body shows an amount in a currency ("12,50 EUR", "€12.50", "EUR .93");
+         * phone-number senders (people) and amount-less SMS (OTPs, promos) stay out.
+         */
+        internal fun isUnrecognizedCandidate(sender: String, body: String): Boolean {
+            val upper = sender.uppercase()
+            if (upper.endsWith("-T") || upper.endsWith("-S")) return true
+            if (upper.none { it.isLetter() }) return false
+            return AMOUNT_NEAR_SYMBOL.containsMatchIn(body) ||
+                AMOUNT_NEAR_CODE.findAll(body).any { m ->
+                    m.groupValues[1].ifEmpty { m.groupValues[2] } in ISO_CURRENCY_CODES
+                }
+        }
 
         private val SMS_PROJECTION = arrayOf(
             Telephony.Sms._ID,
@@ -107,13 +165,13 @@ class OptimizedSmsReaderWorker @AssistedInject constructor(
             val nm = context.getSystemService(android.app.NotificationManager::class.java)
             if (nm.getNotificationChannel(channelId) == null) {
                 nm.createNotificationChannel(
-                    android.app.NotificationChannel(channelId, "SMS Scan", android.app.NotificationManager.IMPORTANCE_LOW)
+                    android.app.NotificationChannel(channelId, context.getString(R.string.notif_sms_scan_channel_name), android.app.NotificationManager.IMPORTANCE_LOW)
                 )
             }
             return androidx.core.app.NotificationCompat.Builder(context, channelId)
                 .setSmallIcon(android.R.drawable.ic_popup_sync)
-                .setContentTitle("Scanning transactions…")
-                .setContentText(if (total > 0) "Processed $processed / $total" else "Reading SMS…")
+                .setContentTitle(context.getString(R.string.notif_sms_scan_title))
+                .setContentText(if (total > 0) context.getString(R.string.notif_sms_scan_progress, processed, total) else context.getString(R.string.notif_sms_scan_reading))
                 .setProgress(total, processed, total == 0)
                 .setOngoing(true)
                 .setSilent(true)
@@ -127,13 +185,13 @@ class OptimizedSmsReaderWorker @AssistedInject constructor(
     private val systemZone: ZoneId = ZoneId.systemDefault()
 
     /** Set once at the start of doWork to avoid calling LocalDateTime.now() per SMS. */
-    private lateinit var thirtyDaysAgo: LocalDateTime
+    private var thirtyDaysAgoMillis: Long = 0L
 
     /** O(1) sender-to-parser lookup. Factory is only called once per unique sender string. */
-    private class ParserHolder(val parser: BankParser?)
+    private class ParserHolder(val parsers: List<BankParser>)
     private val parserCache = java.util.concurrent.ConcurrentHashMap<String, ParserHolder>(256)
-    private fun cachedParser(sender: String): BankParser? =
-        parserCache.computeIfAbsent(sender) { ParserHolder(BankParserFactory.getParser(sender)) }.parser
+    private fun cachedParsers(sender: String): List<BankParser> =
+        parserCache.computeIfAbsent(sender) { ParserHolder(BankParserFactory.getParsers(sender)) }.parsers
 
     /**
      * Merchant-name to custom category, preloaded once at scan start.
@@ -141,12 +199,30 @@ class OptimizedSmsReaderWorker @AssistedInject constructor(
      */
     private var merchantMappingCache: Map<String, String> = emptyMap()
 
+    /** Category name to its income flag, for [mappingFits]; preloaded with the mappings. */
+    private var categoryIsIncome: Map<String, Boolean> = emptyMap()
+
     /**
      * Rules preloaded by transaction type at scan start.
      * Previously: getActiveRulesByType DB call per transaction.
      * Now: one call per TransactionType (4 total), zero DB calls per transaction.
      */
     private var ruleCache: Map<TransactionType, List<TransactionRule>> = emptyMap()
+
+    /**
+     * Typed accounts as they were before a force resync wiped their rebuildable
+     * balance rows, keyed by (bank, last4). A user-chosen type (#792) lives only on
+     * those rows, so the rebuild reads it from here and re-tags the account after.
+     * Empty unless this run is a force resync.
+     */
+    private var accountsBeforeRebuild: Map<Pair<String, String>, AccountBalanceEntity> = emptyMap()
+
+    /**
+     * When this run's force resync wiped the SMS balance rows, or null. Delta rows
+     * created before it survived the wipe already holding the SMS effects being put
+     * back; rows created after it (an expense added mid-rebuild) don't (#982).
+     */
+    private var rebuildStartedAt: LocalDateTime? = null
 
     // ─── Extension: DRYs up repeated timestamp conversions ───────────────────
 
@@ -221,39 +297,37 @@ class OptimizedSmsReaderWorker @AssistedInject constructor(
         val blocked   = AtomicInteger(0)
         val startTime = System.currentTimeMillis()
 
-        // Must be a power of 2 (for bitmask) and large enough that the ring never
-        // wraps within ETA_WINDOW_MS at peak throughput. 8192 / 3 ≈ 2730 msg/s max.
         private val RING_SIZE          = 8192
         private val MIN_SAMPLES        = 10
-        private val ring               = java.util.concurrent.atomic.AtomicLongArray(RING_SIZE)   // zeros = epoch 1970, never in window
+        private val ring               = java.util.concurrent.atomic.AtomicLongArray(RING_SIZE)
         private val head               = AtomicInteger(0)
+        private val writtenCount       = AtomicInteger(0)
 
         fun recordCompletion() {
-            // Bitmask modulo: (RING_SIZE - 1) works because RING_SIZE is power of 2
             val pos = head.getAndIncrement() and (RING_SIZE - 1)
             ring.lazySet(pos, System.currentTimeMillis())
+            if (writtenCount.get() < RING_SIZE) writtenCount.incrementAndGet()
         }
 
         fun elapsedMs() = System.currentTimeMillis() - startTime
 
-        /**
-         * Instantaneous msg/s over the last [ETA_WINDOW_MS].
-         * Falls back to overall average during warmup so ETA is always meaningful.
-         */
         fun msgPerSec(): Float {
             val now      = System.currentTimeMillis()
             val cutoff   = now - ETA_WINDOW_MS
             var count    = 0
-            for (i in 0 until RING_SIZE) {
-                val ts = ring.get(i)
-                if (ts in (cutoff + 1)..now) count++   // bounds-check: exclude zeros AND future timestamps
+            val mask     = RING_SIZE - 1
+            val limit    = writtenCount.get()
+            val currentHead = head.get()
+            for (i in 0 until limit) {
+                val pos = (currentHead - 1 - i) and mask
+                val ts  = ring.get(pos)
+                if (ts in (cutoff + 1)..now) count++
             }
             return when {
                 count >= MIN_SAMPLES ->
-                    count / (ETA_WINDOW_MS / 1000f)     // accurate window rate
+                    count / (ETA_WINDOW_MS / 1000f)
 
                 else -> {
-                    // Warmup or very slow: fall back to overall elapsed average
                     val elapsedSec = elapsedMs() / 1000f
                     val done       = processed.get()
                     if (elapsedSec > 0.1f && done > 0) done / elapsedSec else 0f
@@ -275,6 +349,12 @@ class OptimizedSmsReaderWorker @AssistedInject constructor(
         SKIPPED
     }
 
+    private data class DeferredBalanceUpdate(
+        // Capture the rule-selected account, then check it again at consumption.
+        val input: DeferredBalanceInput,
+        val transactionId: Long
+    )
+
     // ─── Expedited work ───────────────────────────────────────────────────────
 
     override suspend fun getForegroundInfo(): ForegroundInfo =
@@ -284,55 +364,101 @@ class OptimizedSmsReaderWorker @AssistedInject constructor(
 
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
         Process.setThreadPriority(Process.THREAD_PRIORITY_FOREGROUND)
-        thirtyDaysAgo = LocalDateTime.now(systemZone).minusDays(30)
+        thirtyDaysAgoMillis = System.currentTimeMillis() - 30L * 24 * 60 * 60 * 1000
 
         Trace.beginSection("SmsWorker.doWork")
         try {
             val forceResync = inputData.getBoolean(INPUT_FORCE_RESYNC, false)
-            Log.i(TAG, "Starting SMS worker (forceResync=$forceResync)")
+            val rescanAll = inputData.getBoolean(INPUT_RESCAN_ALL, false)
+            Log.i(TAG, "Starting SMS worker (forceResync=$forceResync, rescanAll=$rescanAll)")
+
+            // The window is computed before any delete: a rebuild may only drop
+            // rows it will re-read.
+            val (scanStartTime, needsFullScan) = computeScanParams(forceResync || rescanAll)
 
             if (forceResync) {
-                // try/finally ensures endSection even if the suspend calls throw
+                rebuildStartedAt = LocalDateTime.now()
                 Trace.beginSection("clearDatabase")
                 try {
-                    transactionRepository.deleteAllTransactions()
-                    accountBalanceRepository.deleteAllBalances()
+                    // Delete only what the inbox can rebuild (active SMS rows
+                    // outside loans/groups); manual, imported, notification and
+                    // deleted rows survive — nothing would bring them back. Re-parse uses
+                    // transaction_hash UNIQUE + OnConflictStrategy.IGNORE, so
+                    // surviving rows are not duplicated. Fixes #401.
+                    //
+                    // Order matters: drop the transactions FIRST, then run the
+                    // companion balance-cleanup which decides orphan-status
+                    // against the now-current transactions table. Without the
+                    // companion, deleteAllBalances() would wipe balance entries
+                    // for the preserved transactions and the re-parse would
+                    // never regenerate them (hash collision short-circuits
+                    // processBalanceUpdate), leaving gaps in the balance
+                    // time-series.
+                    accountsBeforeRebuild = accountBalanceRepository.getAllLatestBalancesOnce()
+                        .filter { it.accountType != null }
+                        .associateBy { it.bankName to it.accountLast4 }
+                    transactionRepository.deleteRebuildableSmsTransactions(
+                        java.time.LocalDateTime.ofInstant(
+                            java.time.Instant.ofEpochMilli(scanStartTime), java.time.ZoneId.systemDefault()
+                        )
+                    )
+                    accountBalanceRepository.deleteRebuildableBalances()
                 } finally {
                     Trace.endSection()
                 }
-                Log.i(TAG, "Force resync: database cleared")
+                Log.i(TAG, "Force resync: SMS rows cleared (loans, groups, deleted and non-SMS rows kept)")
             }
 
-            Trace.beginSection("readSmsMessages")
-            val messages = try {
-                readSmsMessages(forceResync)
-            } finally {
-                Trace.endSection()
-            }
+            val now = System.currentTimeMillis()
 
             Trace.beginSection("preloadCaches")
             try {
                 merchantMappingCache = merchantMappingRepository.getAllMappingsAsMap()
+                categoryIsIncome = database.categoryDao().getAllCategoriesList().associate { it.name to it.isIncome }
                 ruleCache = TransactionType.entries.associateWith { type ->
                     ruleRepository.getActiveRulesByType(type)
                 }
             } finally {
                 Trace.endSection()
             }
-            Log.i(TAG, "Caches: ${merchantMappingCache.size} merchant mappings, ${ruleCache.values.sumOf { it.size }} rules")
+            Log.i(TAG, "Caches: ${merchantMappingCache.size} merchant mappings, ${ruleCache.values.map { it.size }.sum()} rules")
 
+            // Fast COUNT queries — avoids loading all messages before the pipeline
+            val smsCount = countSmsMessages(scanStartTime)
+            val rcsCount = countRcsMessages(scanStartTime / 1000)
+            val total = smsCount + rcsCount
             val parserConcurrency = maxOf(1, Runtime.getRuntime().availableProcessors() - 1)
-            Log.i(TAG, "Pipeline: $parserConcurrency parsers | 1 saver | ${messages.size} messages")
+            Log.i(TAG, "Pipeline: $parserConcurrency parsers | 1 saver | $total messages")
 
-            val stats = ProcessingStats(total = messages.size)
+            val stats = ProcessingStats(total = total)
             reportProgress(stats)
 
-            val totalTime = measureTimeMillis { runPipeline(messages, stats, parserConcurrency) }
+            val totalTime = measureTimeMillis {
+                streamPipeline(scanStartTime, needsFullScan, now, stats, parserConcurrency)
+            }
 
             Log.i(TAG, buildSummary(stats, totalTime))
+            // Rows rebuilt from balance-only SMS don't pass through processBalanceUpdate,
+            // so put each typed account's type back on the rows that lost it (#792).
+            for (row in accountsBeforeRebuild.values) accountBalanceRepository.restoreAccountType(row)
             cleanUpAndFinalize(stats)
+            // Materialise any due income-autopay phantoms (#371). Runs after
+            // SMS processing so a real INCOME SMS that landed for the same
+            // amount + merchant in this scan can dedupe via the autopay hash
+            // check if the user manually re-uses the same hash format later.
+            try {
+                generateIncomeAutopayUseCase.execute()
+            } catch (e: Exception) {
+                Log.e(TAG, "Income autopay phantom creator failed: ${e.message}", e)
+            }
             reportProgress(stats)
-            Result.success()
+            // WorkManager clears `progress` once work finishes, so a caller
+            // reading the result on SUCCEEDED saw every count as 0 — onboarding
+            // said "No transactions found" after importing a whole inbox. Hand
+            // the final counts back as output data.
+            Result.success(
+                completionData(stats.total, stats.processed.get(), stats.parsed.get(), stats.saved.get())
+            )
 
         } catch (e: Exception) {
             Log.e(TAG, "Fatal error in SMS worker", e)
@@ -344,19 +470,24 @@ class OptimizedSmsReaderWorker @AssistedInject constructor(
 
     // ─── Pipeline ─────────────────────────────────────────────────────────────
 
-    private suspend fun runPipeline(
-        messages: List<SmsMessage>,
+    private suspend fun streamPipeline(
+        scanStartTime: Long,
+        needsFullScan: Boolean,
+        now: Long,
         stats: ProcessingStats,
         parserConcurrency: Int
     ) = coroutineScope {
-        // Explicit local vals — captured by the launch lambdas below
         val feed    = Channel<SmsMessage>(PARSE_CHANNEL_CAPACITY)
         val results = Channel<ParseResult>(RESULT_CHANNEL_CAPACITY)
 
-        // Stage 1 – Feed
+        // Stage 1 – Feed (streams SMS cursor + RCS directly into the channel)
         launch(Dispatchers.IO) {
-            try { messages.forEach { sms -> feed.send(sms) } }
-            finally { feed.close() }
+            try {
+                streamSmsToChannel(feed, scanStartTime)
+                streamRcsToChannel(feed, scanStartTime / 1000)
+            } finally {
+                feed.close()
+            }
         }
 
         // Stage 2 – Parse (all available CPU cores)
@@ -369,6 +500,7 @@ class OptimizedSmsReaderWorker @AssistedInject constructor(
                         try {
                             results.send(parseSms(sms))
                         } catch (e: Exception) {
+                            if (e is CancellationException) throw e
                             Log.e(TAG, "Error parsing SMS from ${sms.sender}: ${e.message}")
                             results.send(ParseResult.Discard(sms))
                         }
@@ -386,10 +518,25 @@ class OptimizedSmsReaderWorker @AssistedInject constructor(
         }
 
         // Stage 3 – Save (single sequential coroutine — no balance race conditions)
+        // Balance updates run concurrently via a dedicated consumer so they never block the saver.
+        val balanceUpdates = Channel<DeferredBalanceUpdate>(Channel.BUFFERED)
+        val balanceUpdater = launch(Dispatchers.IO) {
+            for (update in balanceUpdates) {
+                try { BankAccountMergeStore.mutationMutex.withLock {
+                    processBalanceUpdate(update.input, update.transactionId)
+                } }
+                catch (e: Exception) {
+                    if (e is CancellationException) throw e
+                    Log.e(TAG, "Balance update failed: ${e.message}")
+                }
+            }
+        }
+
         val saver = launch(Dispatchers.IO) {
             Process.setThreadPriority(Process.THREAD_PRIORITY_FOREGROUND)
             val unrecognizedBatch = ArrayList<SmsMessage>(UNRECOGNIZED_BATCH_SIZE)
             var widgetNeedsUpdate = false
+            var lastReportTime = 0L
 
             Trace.beginSection("save")
             try {
@@ -412,7 +559,7 @@ class OptimizedSmsReaderWorker @AssistedInject constructor(
                             stats.parsed.incrementAndGet()
                             Trace.beginSection("saveTransaction")
                             try {
-                                when (saveTransaction(result.parsed, result.sms, stats)) {
+                                when (saveTransaction(result.parsed, result.sms, stats, balanceUpdates)) {
                                     SaveOutcome.SAVED -> {
                                         stats.saved.incrementAndGet()
                                         widgetNeedsUpdate = true
@@ -431,28 +578,43 @@ class OptimizedSmsReaderWorker @AssistedInject constructor(
                             }
                         }
                     }
-                    if (p % PROGRESS_REPORT_INTERVAL == 0 || p == stats.total) reportProgress(stats)
+
+                    val nowMs = System.currentTimeMillis()
+                    if (nowMs - lastReportTime >= 250L || p == 1 || p == stats.total) {
+                        reportProgress(stats)
+                        lastReportTime = nowMs
+                    }
                 }
             } finally {
                 Trace.endSection()
             }
 
             if (unrecognizedBatch.isNotEmpty()) flushUnrecognizedBatch(unrecognizedBatch)
-            if (widgetNeedsUpdate)
-                com.pennywiseai.tracker.widget.RecentTransactionsWidgetUpdateWorker.enqueueOneShot(applicationContext)
-        }
-
-        // Real-time UI refresh every 50ms
-        val progressMonitor = launch(Dispatchers.IO) {
-            while (stats.processed.get() < stats.total) {
-                delay(PROGRESS_MONITOR_INTERVAL)
-                reportProgress(stats)
+            if (widgetNeedsUpdate) {
+                com.pennywiseai.tracker.widget.WidgetRefresher.refreshTransactionWidgets(applicationContext)
             }
         }
 
         saver.join()
+        balanceUpdates.close()
+        balanceUpdater.join()
+
+        // Persist scan state after all stages (including saving) finish successfully
+        userPreferencesRepository.setLastScanTimestamp(now)
+        if (needsFullScan) {
+            val scanMonths = userPreferencesRepository.getSmsScanMonths()
+            val scanAllTime = userPreferencesRepository.getSmsScanAllTime()
+            val scanUseCustomDate = userPreferencesRepository.getSmsScanUseCustomDate()
+            userPreferencesRepository.setLastScanPeriod(
+                SmsScanParamsCalculator.resolveLastScanPeriod(
+                    scanAllTime = scanAllTime,
+                    scanUseCustomDate = scanUseCustomDate,
+                    scanMonths = scanMonths,
+                )
+            )
+        }
+
         reportProgress(stats)
-        progressMonitor.cancel()
     }
 
     // ─── Stage 2: Parse (plain fun — no suspend overhead on the hot path) ─────
@@ -463,17 +625,21 @@ class OptimizedSmsReaderWorker @AssistedInject constructor(
         if (upper.endsWith("-P") || upper.endsWith("-G"))
             return ParseResult.Discard(sms)
 
-        val parser = cachedParser(sms.sender)
-            ?: return if (upper.endsWith("-T") || upper.endsWith("-S"))
+        val parsers = cachedParsers(sms.sender)
+        val parser = parsers.firstOrNull()
+            ?: return if (isUnrecognizedCandidate(sms.sender, sms.body))
                 ParseResult.StoreUnrecognized(sms)
             else
                 ParseResult.Discard(sms)
 
-        val isRecent = sms.timestamp.toLocalDateTime().isAfter(thirtyDaysAgo)
+        val isRecent = sms.timestamp > thirtyDaysAgoMillis
 
+        // Subscription/balance special-cases are bank-type specific; the primary
+        // parser is enough (shared-sender M-Pesa parsers aren't special-cased).
         checkSubscriptionOrBalance(parser, sms, isRecent)?.let { return it }
 
-        val parsed = parser.parse(sms.body, sms.sender, sms.timestamp)
+        // Shared senders (M-Pesa KE/TZ/MZ): first candidate whose content parses.
+        val parsed = parsers.firstNotNullOfOrNull { it.parse(sms.body, sms.sender, sms.timestamp) }
             ?: return ParseResult.Discard(sms)
 
         return ParseResult.Transaction(sms, parsed)
@@ -542,15 +708,7 @@ class OptimizedSmsReaderWorker @AssistedInject constructor(
             val actions = mutableListOf<suspend () -> Unit>()
             if (parser.isBalanceUpdateNotification(sms.body)) {
                 parser.parseBalanceUpdate(sms.body)?.let { info ->
-                    actions += {
-                        accountBalanceRepository.insertBalanceUpdate(
-                            bankName     = info.bankName,
-                            accountLast4 = info.accountLast4 ?: "XXXX",
-                            balance      = info.balance,
-                            timestamp    = info.asOfDate?.toJavaLocalDateTime() ?: sms.timestamp.toLocalDateTime(),
-                            currency     = parser.getCurrency()
-                        )
-                    }
+                    actions += { saveBalanceNotification(info, parser.getCurrency(), sms) }
                 }
                 // If unparseable as balance update, fall through to check eMandate/futureDebit below
             }
@@ -584,13 +742,7 @@ class OptimizedSmsReaderWorker @AssistedInject constructor(
             if (!parser.isBalanceUpdateNotification(sms.body)) null
             else parser.parseBalanceUpdate(sms.body)?.let { info ->
                 ParseResult.SpecialNotification(sms) {
-                    accountBalanceRepository.insertBalanceUpdate(
-                        bankName     = info.bankName,
-                        accountLast4 = info.accountLast4 ?: "XXXX",
-                        balance      = info.balance,
-                        timestamp    = info.asOfDate?.toJavaLocalDateTime() ?: sms.timestamp.toLocalDateTime(),
-                        currency     = parser.getCurrency()
-                    )
+                    saveBalanceNotification(info, parser.getCurrency(), sms)
                 }
             }
         }
@@ -598,66 +750,156 @@ class OptimizedSmsReaderWorker @AssistedInject constructor(
         else -> null
     }
 
+    private suspend fun saveBalanceNotification(
+        info: BaseIndianBankParser.BaseBalanceUpdateInfo,
+        currency: String,
+        sms: SmsMessage
+    ) = BankAccountMergeStore.mutationMutex.withLock {
+        val suffix = info.accountLast4?.let { bankAccountMerges.resolveSuffix(info.bankName, currency, it) }
+        // Balance-only notifications bypass saveTransaction, so apply the same account gates here.
+        if (!ignoredAccountsStore.isIgnored(info.bankName, suffix)) {
+            accountBalanceRepository.insertBalanceUpdate(
+                bankName = info.bankName,
+                accountLast4 = suffix ?: "XXXX",
+                balance = info.balance,
+                timestamp = info.asOfDate?.toJavaLocalDateTime() ?: sms.timestamp.toLocalDateTime(),
+                currency = currency
+            )
+        }
+    }
+
     // ─── Stage 3b: Regular transactions ──────────────────────────────────────
 
-    private suspend fun saveTransaction(parsed: ParsedTransaction, sms: SmsMessage, stats: ProcessingStats): SaveOutcome {
-        return try {
-            val entity = parsed.toEntity()
+    private suspend fun saveTransaction(
+        parsedInput: ParsedTransaction,
+        sms: SmsMessage,
+        stats: ProcessingStats,
+        balanceUpdates: SendChannel<DeferredBalanceUpdate>
+    ): SaveOutcome = try {
+        var pendingBalance: DeferredBalanceUpdate? = null
+        val outcome = BankAccountMergeStore.mutationMutex.withLock {
+            coroutineScope {
+                val parsed = bankAccountMerges.resolve(parsedInput)
+                val entity = parsed.toEntity()
 
-            // getTransactionByHash returns rows where is_deleted=1 too, so
-            // soft-deleted transactions are never re-imported.
-            if (transactionRepository.getTransactionByHash(entity.transactionHash) != null) return SaveOutcome.SKIPPED
-
-            val customCategory = merchantMappingCache[entity.merchantName]
-            val mapped = if (customCategory != null) entity.copy(category = customCategory) else entity
-
-            val activeRules = ruleCache[mapped.transactionType] ?: emptyList()
-            if (ruleEngine.shouldBlockTransaction(mapped, sms.body, activeRules) != null) {
-                stats.blocked.incrementAndGet()
-                return SaveOutcome.SKIPPED
-            }
-
-            val (withRules, ruleApps) = ruleEngine.evaluateRules(mapped, sms.body, activeRules)
-
-            val matchedSub = subscriptionRepository.matchTransactionToSubscription(
-                withRules.merchantName, withRules.amount
-            )
-            val finalEntity = if (matchedSub != null) {
-                subscriptionRepository.updateNextPaymentDateAfterCharge(
-                    matchedSub.id, withRules.dateTime.toLocalDate()
-                )
-                withRules.copy(isRecurring = true)
-            } else withRules
-
-            val duplicate = transactionRepository.findPotentialDuplicates(finalEntity).firstOrNull()
-            if (duplicate != null) {
-                if (TransactionDeduplication.shouldReplaceWithIncoming(duplicate, finalEntity)) {
-                    val replacement = finalEntity.copy(
-                        id = duplicate.id,
-                        transactionHash = duplicate.transactionHash,
-                        isRecurring = duplicate.isRecurring || finalEntity.isRecurring,
-                        createdAt = duplicate.createdAt
+                // Same gate as the live receiver, including the linked account
+                // behind a debit card (#826), so a rescan can't re-import what the
+                // user excluded.
+                val linkedAccountLast4 = if (parsed.isFromCard) {
+                    parsed.accountLast4?.let {
+                        cardRepository.getCard(parsed.bankName, it)?.accountLast4
+                    }
+                } else null
+                if (ignoredAccountsStore.isIgnored(
+                        entity.bankName,
+                        entity.accountNumber,
+                        linkedAccountLast4
                     )
-                    transactionRepository.updateTransaction(replacement)
-                    accountBalanceRepository.deleteBalancesForTransaction(duplicate.id)
-                    replaceRuleApplications(duplicate.id, ruleApps)
-                    processBalanceUpdate(parsed, replacement, duplicate.id)
-                    return SaveOutcome.UPDATED_DUPLICATE
+                ) {
+                    return@coroutineScope SaveOutcome.SKIPPED
                 }
-                return SaveOutcome.SKIPPED_DUPLICATE
+
+                val hashDeferred = async { transactionRepository.getTransactionByHash(entity.transactionHash) }
+
+                val customCategory = merchantMappingCache[entity.merchantName]
+                    ?.takeIf { mappingFits(categoryIsIncome[it], entity.transactionType) }
+                val mapped = if (customCategory != null) entity.copy(category = customCategory) else entity
+
+                val activeRules = ruleCache[mapped.transactionType] ?: emptyList()
+                val isBlocked = ruleEngine.shouldBlockTransaction(mapped, sms.body, activeRules) != null
+
+                if (hashDeferred.await() != null) return@coroutineScope SaveOutcome.SKIPPED
+
+                // Same charge already booked from the bank's app notification. Only
+                // banks that can arrive by notification pay for the lookup.
+                if (entity.bankName in BankNotificationConfig.notificationBankNames) {
+                    // Deleted rows count too: a charge the user deleted after
+                    // its notification booked it must not return via the SMS.
+                    val nearby = transactionRepository.getTransactionByAmountAndDateIncludingDeleted(
+                        entity.amount,
+                        entity.dateTime.minusMinutes(2),
+                        entity.dateTime.plusMinutes(2)
+                    )
+                    if (TransactionDeduplication.isBookedByOtherChannel(
+                            entity, nearby, BankNotificationConfig.notificationAliases
+                        )
+                    ) {
+                        return@coroutineScope SaveOutcome.SKIPPED
+                    }
+                }
+
+                // The raw SMS is the stable identity: the hash includes the parsed
+                // amount, so it shifts whenever a parser fix changes that amount.
+                //  - a soft-deleted row means the user deleted it — don't resurrect (#703)
+                //  - an active row means it's already booked — don't insert it twice,
+                //    and repair an amount an older parser got wrong (#886)
+                entity.smsBody?.let { body ->
+                    transactionRepository.getAnyBySms(body, entity.smsSender)?.let { stored ->
+                        if (!stored.isDeleted && TransactionDeduplication.isParseArtifact(stored, entity)) {
+                            transactionRepository.correctParsedAmount(stored, entity)
+                        }
+                        return@coroutineScope SaveOutcome.SKIPPED
+                    }
+                }
+
+                if (isBlocked) {
+                    stats.blocked.incrementAndGet()
+                    return@coroutineScope SaveOutcome.SKIPPED
+                }
+
+                val (withRules, ruleApps) = ruleEngine.evaluateRules(mapped, sms.body, activeRules)
+
+                val matchedSub = subscriptionRepository.matchTransactionToSubscription(
+                    withRules.merchantName, withRules.amount
+                )
+                val finalEntity = if (matchedSub != null) {
+                    subscriptionRepository.updateNextPaymentDateAfterCharge(
+                        matchedSub.id, withRules.dateTime.toLocalDate()
+                    )
+                    withRules.copy(isRecurring = true)
+                } else withRules
+
+                val duplicate = transactionRepository.findPotentialDuplicates(finalEntity).firstOrNull()
+                if (duplicate != null) {
+                    if (TransactionDeduplication.shouldReplaceWithIncoming(duplicate, finalEntity)) {
+                        val replacement = finalEntity.copy(
+                            id = duplicate.id,
+                            transactionHash = duplicate.transactionHash,
+                            isRecurring = duplicate.isRecurring || finalEntity.isRecurring,
+                            createdAt = duplicate.createdAt,
+                            // Loan and split-bill (#346) links belong to the row, not the SMS.
+                            loanId = duplicate.loanId,
+                            loanContribution = duplicate.loanContribution,
+                            lentSharesTotal = duplicate.lentSharesTotal
+                        )
+                        transactionRepository.updateTransaction(replacement)
+                        accountBalanceRepository.removeSmsTransactionBalances(duplicate.id, rebuildStartedAt)
+                        replaceRuleApplications(duplicate.id, ruleApps)
+                        pendingBalance = parsedInput.atEnqueuedAccount(parsed, replacement)?.let {
+                            DeferredBalanceUpdate(it, duplicate.id)
+                        }
+                        return@coroutineScope SaveOutcome.UPDATED_DUPLICATE
+                    }
+                    return@coroutineScope SaveOutcome.SKIPPED_DUPLICATE
+                }
+
+                val rowId = transactionRepository.insertTransaction(finalEntity)
+                if (rowId == -1L) return@coroutineScope SaveOutcome.SKIPPED
+
+                saveRuleApplications(rowId, ruleApps)
+                pendingBalance = parsedInput.atEnqueuedAccount(parsed, finalEntity)?.let {
+                    DeferredBalanceUpdate(it, rowId)
+                }
+                SaveOutcome.SAVED
             }
-
-            val rowId = transactionRepository.insertTransaction(finalEntity)
-            if (rowId == -1L) return SaveOutcome.SKIPPED
-
-            saveRuleApplications(rowId, ruleApps)
-            processBalanceUpdate(parsed, finalEntity, rowId)
-            SaveOutcome.SAVED
-
-        } catch (e: Exception) {
-            Log.e(TAG, "Error saving transaction: ${e.message}")
-            SaveOutcome.SKIPPED
         }
+        // Send outside the mutation lock so the balance consumer can drain a full channel.
+        pendingBalance?.let { balanceUpdates.send(it) }
+        outcome
+    } catch (e: Exception) {
+        if (e is CancellationException) throw e
+        Log.e(TAG, "Error saving transaction: ${e.message}")
+        SaveOutcome.SKIPPED
     }
 
     private suspend fun replaceRuleApplications(
@@ -676,6 +918,9 @@ class OptimizedSmsReaderWorker @AssistedInject constructor(
         ruleRepository.saveRuleApplications(
             ruleApps.map { it.copy(transactionId = transactionId.toString()) }
         )
+        // ADD_TAG / REMOVE_TAG live in the tag table, not on the row (#748).
+        val (add, remove) = ruleApps.tagChanges()
+        if (add.isNotEmpty() || remove.isNotEmpty()) tagRepository.applyTagChanges(transactionId, add, remove)
     }
 
     // ─── Balance update ───────────────────────────────────────────────────────
@@ -683,11 +928,23 @@ class OptimizedSmsReaderWorker @AssistedInject constructor(
 // ─── Balance update ───────────────────────────────────────────────────────
 
     private suspend fun processBalanceUpdate(
-        parsed: ParsedTransaction,
-        entity: com.pennywiseai.tracker.data.database.entity.TransactionEntity,
+        input: DeferredBalanceInput,
         rowId: Long
     ) {
-        val accountLast4 = parsed.accountLast4 ?: return
+        // The transaction may have moved again since enqueue, including a merge
+        // that invalidated its original short-mask mapping. Follow the saved row.
+        val current = transactionRepository.getTransactionById(rowId) ?: return
+        val parsed = input.forSavedTransaction(bankAccountMerges.resolve(input.account), current) ?: return
+        val accountLast4 = parsed.accountLast4 ?: run {
+            // Mobile-money wallets (eMola, M-Pesa Mozambique) have no per-account
+            // number — the whole wallet is one account. Derive a service-level row
+            // from the running balance so a full re-scan also creates it, matching
+            // SmsTransactionProcessor.
+            if (parsed.isMobileWallet && parsed.balance != null) {
+                upsertWalletBalance(parsed, current, rowId)
+            }
+            return
+        }
 
         val card = if (parsed.isFromCard) {
             (cardRepository.getCard(parsed.bankName, accountLast4)
@@ -720,72 +977,125 @@ class OptimizedSmsReaderWorker @AssistedInject constructor(
 
         val existing = accountBalanceRepository.getLatestBalance(parsed.bankName, targetAccount)
 
-        // 1. Calculate the new balance
-        val newBalance = when {
-            // Explicit balance from SMS takes priority
-            parsed.balance != null -> parsed.balance!!
+        // A force resync may have wiped this account's rows; until a typed row exists
+        // again, its type comes from the snapshot taken before the rebuild (#792). A
+        // typed row wins, so a type the user sets while the resync runs is kept.
+        // Balance math still starts from the rebuilt history (`existing`), never from
+        // the pre-resync balance.
+        val typed = existing?.takeIf { it.accountType != null }
+            ?: accountsBeforeRebuild[parsed.bankName to targetAccount]
+            ?: existing
+        val resolvedIsCreditCard = BalanceCalculator.resolvedIsCreditCard(isCreditCard, typed)
 
-            // For Credit Cards: usually transaction amount adds to current outstanding balance
-            isCreditCard -> (existing?.balance ?: BigDecimal.ZERO) + parsed.amount
+        // The account keeps its own currency; a foreign-currency spend isn't
+        // added to it (see BalanceCalculator.balanceAfter).
+        val accountCurrency = existing?.currency
+            ?: parsed.accountCurrency
+            ?: parsed.currency
+        // Moves from the balance just before this SMS in time, not the newest
+        // row: the scan's parallel parsers save out of order (#982).
+        val saved = accountBalanceRepository.insertSmsTransactionBalance(
+            parsed.bankName, targetAccount, current.dateTime, rebuildStartedAt
+        ) { before ->
+            val newBalance = BalanceCalculator.balanceAfter(
+                explicitBalance = parsed.balance,
+                // A loan account's balance is owed too: a payment lowers it (#792).
+                isCreditCard = resolvedIsCreditCard || typed?.isLoan == true,
+                transactionType = parsed.type.toEntityType(),
+                transactionAmount = parsed.amount,
+                transactionCurrency = parsed.currency,
+                accountCurrency = accountCurrency,
+                currentBalance = before
+            )
 
-            // For existing Credit Card accounts receiving a payment (INCOME)
-            existing?.isCreditCard == true && parsed.type.toEntityType() == TransactionType.INCOME -> {
-                (existing.balance - parsed.amount).max(BigDecimal.ZERO)
+            // Credit-card SMS report the AVAILABLE limit, not the total. The UI derives
+            // available = creditLimit − balance, so store total = available + outstanding
+            // (the post-transaction balance). Falls back to the existing stored limit when
+            // the SMS carries no limit. (#486)
+            val resolvedCreditLimit = if (resolvedIsCreditCard && parsed.creditLimit != null) {
+                parsed.creditLimit!! + newBalance
+            } else {
+                existing?.creditLimit
             }
 
-            // Standard fallback calculation based on transaction type
-            else -> {
-                val cur = existing?.balance ?: BigDecimal.ZERO
-                when (parsed.type.toEntityType()) {
-                    TransactionType.INCOME -> cur + parsed.amount
-                    TransactionType.EXPENSE, TransactionType.INVESTMENT -> (cur - parsed.amount).max(BigDecimal.ZERO)
-                    else -> cur
-                }
-            }
+            AccountBalanceEntity(
+                bankName      = parsed.bankName,
+                accountLast4  = targetAccount,
+                balance       = newBalance,
+                timestamp     = current.dateTime,
+                transactionId = if (rowId != -1L) rowId else null,
+                creditLimit   = resolvedCreditLimit,
+                isCreditCard  = resolvedIsCreditCard,
+                smsSource     = parsed.smsBody.take(500),
+                sourceType    = "TRANSACTION",
+                accountType   = BalanceCalculator.preservedAccountType(typed),
+                currency      = accountCurrency,
+                profileId     = existing?.profileId ?: ProfileEntity.PERSONAL_ID,
+                alias         = existing?.alias,
+                lowBalanceThreshold = existing?.lowBalanceThreshold
+            )
         }
-
-        val balanceEntity = AccountBalanceEntity(
-            bankName      = parsed.bankName,
-            accountLast4  = targetAccount,
-            balance       = newBalance,
-            timestamp     = entity.dateTime,
-            transactionId = if (rowId != -1L) rowId else null,
-            creditLimit   = existing?.creditLimit,
-            isCreditCard  = isCreditCard || (existing?.isCreditCard ?: false),
-            smsSource     = parsed.smsBody.take(500),
-            sourceType    = "TRANSACTION",
-            currency      = parsed.currency,
-            profileId     = existing?.profileId ?: ProfileEntity.PERSONAL_ID,
-            alias         = existing?.alias
-        )
-
-        accountBalanceRepository.insertBalance(balanceEntity)
 
         val logMsg = if (parsed.creditLimit != null) {
             "Saved balance/limit (${CurrencyFormatter.formatCurrency(parsed.creditLimit!!, parsed.currency)})"
         } else {
-            "Saved balance (${CurrencyFormatter.formatCurrency(newBalance, parsed.currency)})"
+            "Saved balance (${CurrencyFormatter.formatCurrency(saved.balance, saved.currency)})"
         }
         Log.i(TAG, logMsg)
+    }
+
+    /**
+     * Derives a single service-level account row for a mobile-money wallet
+     * (eMola, M-Pesa Mozambique). No per-account number, never a card/credit —
+     * keyed on bankName + [AccountBalanceEntity.WALLET_ACCOUNT_MARKER], balance
+     * taken straight from the SMS. Mirrors SmsTransactionProcessor.upsertWalletBalance.
+     */
+    private suspend fun upsertWalletBalance(
+        parsed: ParsedTransaction,
+        entity: com.pennywiseai.tracker.data.database.entity.TransactionEntity,
+        rowId: Long
+    ) {
+        val balance = parsed.balance ?: return
+        val existing = accountBalanceRepository.getLatestBalance(
+            parsed.bankName,
+            AccountBalanceEntity.WALLET_ACCOUNT_MARKER
+        )
+        val balanceEntity = AccountBalanceEntity(
+            bankName      = parsed.bankName,
+            accountLast4  = AccountBalanceEntity.WALLET_ACCOUNT_MARKER,
+            balance       = balance,
+            timestamp     = entity.dateTime,
+            transactionId = if (rowId != -1L) rowId else null,
+            creditLimit   = null,
+            isCreditCard  = false,
+            smsSource     = parsed.smsBody.take(500),
+            sourceType    = "TRANSACTION",
+            accountType   = BalanceCalculator.preservedAccountType(existing),
+            // The balance is in the account's currency, which can differ from the spend's.
+            currency      = parsed.accountCurrency ?: parsed.currency,
+            profileId     = existing?.profileId ?: ProfileEntity.PERSONAL_ID,
+            alias         = existing?.alias,
+            lowBalanceThreshold = existing?.lowBalanceThreshold
+        )
+        accountBalanceRepository.insertBalance(balanceEntity)
+        Log.i(TAG, "Saved wallet balance for ${parsed.bankName}")
     }
 
     // ─── Unrecognized SMS batch ────────────────────────────────────────────────
 
     private suspend fun flushUnrecognizedBatch(batch: ArrayList<SmsMessage>) {
-        for (sms in batch) {
-            try {
-                if (!unrecognizedSmsRepository.exists(sms.sender, sms.body)) {
-                    unrecognizedSmsRepository.insert(
-                        UnrecognizedSmsEntity(
-                            sender     = sms.sender,
-                            smsBody    = sms.body,
-                            receivedAt = sms.timestamp.toLocalDateTime()
-                        )
-                    )
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "Error storing unrecognized SMS: ${e.message}")
-            }
+        val entities = batch.map { sms ->
+            UnrecognizedSmsEntity(
+                sender     = sms.sender,
+                smsBody    = sms.body,
+                receivedAt = sms.timestamp.toLocalDateTime()
+            )
+        }
+        try {
+            unrecognizedSmsRepository.insertAll(entities)
+        } catch (e: Exception) {
+            if (e is CancellationException) throw e
+            Log.e(TAG, "Error storing unrecognized SMS batch: ${e.message}")
         }
         batch.clear()
     }
@@ -794,29 +1104,102 @@ class OptimizedSmsReaderWorker @AssistedInject constructor(
 
     private suspend fun cleanUpAndFinalize(stats: ProcessingStats) {
         try { unrecognizedSmsRepository.cleanupOldEntries() }
-        catch (e: Exception) { Log.e(TAG, "Cleanup error: ${e.message}") }
+        catch (e: Exception) {
+            if (e is CancellationException) throw e
+            Log.e(TAG, "Cleanup error: ${e.message}")
+        }
         try {
+            val smsDuplicates = cleanupSmsDuplicates()
+            if (smsDuplicates > 0) {
+                Log.i(TAG, "Removed $smsDuplicates duplicate rows of the same SMS")
+            }
             val deletedDuplicates = cleanupExistingGPayDuplicates()
             if (deletedDuplicates > 0) {
                 Log.i(TAG, "Cleaned up $deletedDuplicates existing GPay duplicate transactions")
             }
         } catch (e: Exception) {
+            if (e is CancellationException) throw e
             Log.e(TAG, "GPay duplicate cleanup error: ${e.message}")
         }
         if (stats.saved.get() > 0) {
             try { llmRepository.updateSystemPrompt() }
-            catch (e: Exception) { Log.e(TAG, "Prompt update error: ${e.message}") }
+            catch (e: Exception) {
+                if (e is CancellationException) throw e
+                Log.e(TAG, "Prompt update error: ${e.message}")
+            }
         }
     }
 
+    /**
+     * Earlier rescans could store one SMS twice when a parser fix changed its
+     * amount (#886). Keep the oldest row — it carries the user's category, notes
+     * and tags — repairing its amount from the newest read when the old one is a
+     * known parser artifact, and remove the rest the same way GPay duplicates are
+     * removed.
+     */
+    private suspend fun cleanupSmsDuplicates(): Int {
+        var removed = 0
+        transactionRepository.getActiveSmsDuplicateRows()
+            .groupBy { it.smsBody to (it.smsSender ?: "") }
+            .values
+            .forEach { group ->
+                val keep = group.minBy { it.id }
+                val newest = group.maxBy { it.id }
+                // One transaction per SMS: an interrupted run must not leave a
+                // duplicate soft-deleted with its balance rows or rule
+                // applications behind — once deleted it no longer shows up here.
+                database.withTransaction {
+                    if (TransactionDeduplication.isParseArtifact(keep, newest)) {
+                        transactionRepository.correctParsedAmount(keep, newest)
+                    }
+                    group.filter { it.id != keep.id }.forEach { dup ->
+                        // Goal contributions on the duplicate move to [keep] (#914); a
+                        // duplicate whose split shares can't move is kept (#346).
+                        if (!transactionRepository.deleteDuplicate(dup.id, keep.id)) return@forEach
+                        accountBalanceRepository.deleteBalancesForTransaction(dup.id)
+                        ruleRepository.deleteRuleApplicationsForTransaction(dup.id.toString())
+                        removed++
+                    }
+                }
+            }
+        return removed
+    }
+
     private suspend fun cleanupExistingGPayDuplicates(): Int {
-        val duplicateIds = transactionRepository.findGPayDuplicateIdsForCleanup()
-        duplicateIds.forEach { id ->
-            transactionRepository.deleteTransactionById(id)
+        val duplicates = transactionRepository.findGPayDuplicatesForCleanup()
+        var removed = 0
+        duplicates.forEach { (id, keeperId) ->
+            if (!transactionRepository.deleteDuplicate(id, keeperId)) return@forEach
             accountBalanceRepository.deleteBalancesForTransaction(id)
             ruleRepository.deleteRuleApplicationsForTransaction(id.toString())
+            removed++
         }
-        return duplicateIds.size
+
+        prunePhantomGPayAccounts()
+        return removed
+    }
+
+    /**
+     * Remove the phantom account GPay dedup leaves behind (#456). GPay P2P is attributed
+     * to the partner bank ("State Bank of India"); once its transactions are deduped away
+     * against the real bank's SMS, balance rows that were never linked to a transaction
+     * (transaction_id NULL) survive [deleteBalancesForTransaction] and surface as an
+     * account with an inflated balance but no transactions.
+     *
+     * Sweep the partner-bank accounts and delete any that is purely a residue. The
+     * per-account qualification and delete run atomically in a single DB transaction
+     * (see [AccountBalanceRepository.deletePhantomGPayAccountIfQualifies]) so a
+     * concurrent real-time balance insert can't be erased between the check and the
+     * delete. Also cleans phantoms that predate this fix, not just fresh ones.
+     */
+    private suspend fun prunePhantomGPayAccounts() {
+        val partnerBank = GPAY_PARTNER_BANK
+        accountBalanceRepository.getAccountLast4sForBank(partnerBank).forEach { account ->
+            val removed = accountBalanceRepository.deletePhantomGPayAccountIfQualifies(partnerBank, account)
+            if (removed > 0) {
+                Log.i(TAG, "Removed phantom GPay account ($removed orphaned balance rows)")
+            }
+        }
     }
 
     // ─── Progress ─────────────────────────────────────────────────────────────
@@ -833,7 +1216,7 @@ class OptimizedSmsReaderWorker @AssistedInject constructor(
                 PROGRESS_SAVED                    to stats.saved.get(),
                 PROGRESS_BLOCKED                  to stats.blocked.get(),
                 PROGRESS_TIME_ELAPSED             to stats.elapsedMs(),
-                PROGRESS_ESTIMATED_TIME_REMAINING to (eta * 1000L),
+                PROGRESS_ESTIMATED_TIME_REMAINING to (eta * TimeConstants.MILLIS_PER_SECOND),
                 PROGRESS_ETA_SECONDS              to eta,
                 PROGRESS_MSG_PER_SEC              to mps,
                 PROGRESS_CURRENT_BATCH            to p,
@@ -842,45 +1225,96 @@ class OptimizedSmsReaderWorker @AssistedInject constructor(
         } catch (_: Exception) {}
     }
 
-    // ─── SMS / RCS reading ────────────────────────────────────────────────────
+    // ─── SMS / RCS reading (streaming) ─────────────────────────────────────────
 
-    private suspend fun readSmsMessages(forceResync: Boolean = false): List<SmsMessage> {
-        val messages = mutableListOf<SmsMessage>()
+    /** Computes scan params without reading any message bodies. */
+    private suspend fun computeScanParams(forceResync: Boolean): Pair<Long, Boolean> {
+        val params = SmsScanParamsCalculator.compute(
+            SmsScanParamsInput(
+                forceResync = forceResync,
+                lastScanTimestamp = userPreferencesRepository.getLastScanTimestamp().first(),
+                scanMonths = userPreferencesRepository.getSmsScanMonths(),
+                scanAllTime = userPreferencesRepository.getSmsScanAllTime(),
+                scanUseCustomDate = userPreferencesRepository.getSmsScanUseCustomDate(),
+                scanCustomDateMillis = userPreferencesRepository.getSmsScanCustomDate(),
+                lastScanPeriod = userPreferencesRepository.getLastScanPeriod().first(),
+                nowMillis = System.currentTimeMillis(),
+            )
+        )
+        return params.scanStartTime to params.needsFullScan
+    }
+
+    /** Fast COUNT-only query — reads zero message bodies. */
+    private suspend fun countSmsMessages(scanStartTime: Long): Int {
+        var count = 0
         try {
-            val lastScanTimestamp = userPreferencesRepository.getLastScanTimestamp().first() ?: 0L
-            val scanMonths        = userPreferencesRepository.getSmsScanMonths()
-            val scanAllTime       = userPreferencesRepository.getSmsScanAllTime()
-            val lastScanPeriod    = userPreferencesRepository.getLastScanPeriod().first() ?: 0
-            val now               = System.currentTimeMillis()
-
-            // First run, resync, period change, or scanAllTime toggled: full scan.
-            // scanAllTime=false→true detected via lastScanPeriod != -1 sentinel.
-            // scanAllTime=true→false detected via lastScanPeriod == -1 with scanAllTime=false.
-            val scanAllTimeToggled = scanAllTime && lastScanPeriod != -1
-            val scanAllTimeToggledOff = !scanAllTime && lastScanPeriod == -1
-            val needsFullScan = forceResync || lastScanTimestamp == 0L || (lastScanPeriod >= 0 && scanMonths > lastScanPeriod) || scanAllTimeToggled || scanAllTimeToggledOff
-
-            val scanStartTime = if (needsFullScan) {
-                if (scanAllTime) {
-                    // "All Time" must mean truly all SMS the Telephony provider still
-                    // has, not the last 10 years. Anything older simply isn't on the
-                    // device any more, so a 0L lower bound is safe.
-                    0L
-                } else {
-                    java.util.Calendar.getInstance().apply {
-                        add(java.util.Calendar.MONTH, -scanMonths)
-                        set(java.util.Calendar.HOUR_OF_DAY, 0); set(java.util.Calendar.MINUTE, 0)
-                        set(java.util.Calendar.SECOND, 0);      set(java.util.Calendar.MILLISECOND, 0)
-                    }.timeInMillis
-                }
-            } else {
-                val threeDaysAgo = now - 3 * 24 * 60 * 60 * 1000L
-                val periodLimit  = java.util.Calendar.getInstance().apply {
-                    add(java.util.Calendar.MONTH, -scanMonths)
-                }.timeInMillis
-                maxOf(minOf(lastScanTimestamp, threeDaysAgo), periodLimit)
+            applicationContext.contentResolver.query(
+                Telephony.Sms.CONTENT_URI,
+                arrayOf("COUNT(*)"),
+                "${Telephony.Sms.TYPE} = ? AND ${Telephony.Sms.DATE} >= ?",
+                arrayOf(Telephony.Sms.MESSAGE_TYPE_INBOX.toString(), scanStartTime.toString()),
+                null
+            )?.use { c ->
+                if (c.moveToFirst()) count = c.getInt(0)
             }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error counting SMS", e)
+        }
+        return count
+    }
 
+    /** Robust query for RCS messages. */
+    private suspend fun countRcsMessages(scanStartSeconds: Long): Int {
+        try {
+            applicationContext.contentResolver.query(
+                "content://mms".toUri(),
+                arrayOf("COUNT(*)"),
+                "date >= ? AND tr_id LIKE 'proto:%'",
+                arrayOf(scanStartSeconds.toString()),
+                null
+            )?.use { c ->
+                if (c.moveToFirst()) {
+                    return c.getInt(0)
+                }
+            }
+        } catch (e: Exception) {
+            if (e is CancellationException) throw e
+            Log.w(TAG, "Fast RCS count failed, falling back to cursor iteration: ${e.message}")
+        }
+
+        var count = 0
+        try {
+            applicationContext.contentResolver.query(
+                "content://mms".toUri(),
+                arrayOf("tr_id"),
+                "date >= ?",
+                arrayOf(scanStartSeconds.toString()),
+                null
+            )?.use { c ->
+                val trIdIdx = c.getColumnIndex("tr_id")
+                if (trIdIdx >= 0) {
+                    while (c.moveToNext()) {
+                        val trId = c.getString(trIdIdx)
+                        if (trId != null && trId.startsWith("proto:")) {
+                            count++
+                        }
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            if (e is CancellationException) throw e
+            Log.e(TAG, "Error counting RCS via fallback scan", e)
+        }
+        return count
+    }
+
+    /** Streams SMS cursor rows directly into the feed channel — no intermediate list. */
+    private suspend fun streamSmsToChannel(
+        feed: SendChannel<SmsMessage>,
+        scanStartTime: Long
+    ) {
+        var count = 0
+        try {
             applicationContext.contentResolver.query(
                 Telephony.Sms.CONTENT_URI,
                 SMS_PROJECTION,
@@ -894,53 +1328,59 @@ class OptimizedSmsReaderWorker @AssistedInject constructor(
                 val bodyIdx    = c.getColumnIndexOrThrow(Telephony.Sms.BODY)
                 val typeIdx    = c.getColumnIndexOrThrow(Telephony.Sms.TYPE)
                 while (c.moveToNext()) {
-                    messages.add(SmsMessage(
+                    feed.send(SmsMessage(
                         id        = c.getLong(idIdx),
                         sender    = c.getString(addressIdx) ?: "",
                         timestamp = c.getLong(dateIdx),
                         body      = c.getString(bodyIdx) ?: "",
                         type      = c.getInt(typeIdx)
                     ))
+                    count++
                 }
             }
-
-            userPreferencesRepository.setLastScanTimestamp(now)
-            if (needsFullScan) userPreferencesRepository.setLastScanPeriod(if (scanAllTime) -1 else scanMonths)
-
-            try { messages.addAll(readRcsMessages(scanStartTime / 1000)) }
-            catch (e: Exception) { Log.e(TAG, "RCS read error: ${e.message}") }
-
         } catch (e: Exception) {
-            Log.e(TAG, "Error reading SMS", e)
+            if (e is CancellationException) throw e
+            Log.e(TAG, "Error streaming SMS", e)
         }
-        Log.i(TAG, "Loaded ${messages.size} messages (SMS + RCS)")
-        return messages
+        Log.i(TAG, "Streamed $count SMS messages to pipeline")
     }
 
-    private fun readRcsMessages(scanStartSeconds: Long): List<SmsMessage> {
-        val result = mutableListOf<SmsMessage>()
-        applicationContext.contentResolver.query(
-            "content://mms".toUri(),
-            arrayOf("_id", "thread_id", "date", "tr_id", "m_id"),
-            "date >= ?",
-            arrayOf(scanStartSeconds.toString()),
-            "date DESC"
-        )?.use { c ->
-            while (c.moveToNext()) {
-                val messageId = c.getLong(c.getColumnIndexOrThrow("_id"))
-                val date      = c.getLong(c.getColumnIndexOrThrow("date"))
-                val trId      = c.getColumnIndex("tr_id").takeIf { it >= 0 }
-                    ?.let { c.getString(it) } ?: continue
-                if (!trId.startsWith("proto:")) continue
+    /** Streams RCS messages into the feed channel. */
+    private suspend fun streamRcsToChannel(
+        feed: SendChannel<SmsMessage>,
+        scanStartSeconds: Long
+    ) {
+        var count = 0
+        try {
+            applicationContext.contentResolver.query(
+                "content://mms".toUri(),
+                arrayOf("_id", "thread_id", "date", "tr_id", "m_id"),
+                "date >= ?",
+                arrayOf(scanStartSeconds.toString()),
+                // Oldest first like the SMS feed, so a balance row seldom lands
+                // before rows already saved and has to move them (#982).
+                "date ASC"
+            )?.use { c ->
+                while (c.moveToNext()) {
+                    val messageId = c.getLong(c.getColumnIndexOrThrow("_id"))
+                    val date      = c.getLong(c.getColumnIndexOrThrow("date"))
+                    val trId      = c.getColumnIndex("tr_id").takeIf { it >= 0 }
+                        ?.let { c.getString(it) } ?: continue
+                    if (!trId.startsWith("proto:")) continue
 
-                val sender = extractRcsSender(trId) ?: continue
-                var text = getRcsMessageText(messageId) ?: continue
-                if (text.trim().startsWith("{")) text = extractTextFromRcsJson(text) ?: continue
+                    val sender = extractRcsSender(trId) ?: continue
+                    var text = getRcsMessageText(messageId) ?: continue
+                    if (text.trim().startsWith("{")) text = extractTextFromRcsJson(text) ?: continue
 
-                result.add(SmsMessage(messageId, sender, date * 1000, text, Telephony.Sms.MESSAGE_TYPE_INBOX))
+                    feed.send(SmsMessage(messageId, sender, date * 1000, text, Telephony.Sms.MESSAGE_TYPE_INBOX))
+                    count++
+                }
             }
+        } catch (e: Exception) {
+            if (e is CancellationException) throw e
+            Log.e(TAG, "Error streaming RCS", e)
         }
-        return result
+        Log.i(TAG, "Streamed $count RCS messages to pipeline")
     }
 
     // ─── RCS helpers ──────────────────────────────────────────────────────────
@@ -949,7 +1389,7 @@ class OptimizedSmsReaderWorker @AssistedInject constructor(
         val decoded = String(android.util.Base64.decode(trId.removePrefix("proto:"), android.util.Base64.DEFAULT))
         Regex("""([a-z_]+)_[a-z0-9]+_agent@rbm\.goog""").find(decoded)?.let { m ->
             return m.groupValues[1].split("_")
-                .joinToString(" ") { it.replaceFirstChar { c -> c.uppercase() } }
+                .joinToString(" ") { if (it.isNotEmpty()) it.substring(0, 1).uppercase() + it.substring(1) else it }
         }
         Regex("""[\x12\x1a][\x00-\x20]([A-Za-z][A-Za-z\s]+)""").find(decoded)?.let { m ->
             val name = m.groupValues[1].trim()

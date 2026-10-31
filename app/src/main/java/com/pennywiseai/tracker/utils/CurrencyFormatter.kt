@@ -1,6 +1,7 @@
 package com.pennywiseai.tracker.utils
 
 import com.pennywiseai.parser.core.bank.BankParserFactory
+import com.pennywiseai.tracker.data.preferences.NumberFormatStyle
 import java.math.BigDecimal
 import java.text.NumberFormat
 import java.util.Currency
@@ -13,32 +14,95 @@ object CurrencyFormatter {
 
     private val INDIAN_LOCALE = Locale.Builder().setLanguage("en").setRegion("IN").build()
 
+    /** Western/international digit grouping (1,000,000). */
+    private val INTERNATIONAL_LOCALE = Locale.US
+
+    /** Currencies that use Indian lakh/crore grouping under [NumberFormatStyle.AUTO]. */
+    private val INDIAN_NOTATION_CURRENCIES = setOf("INR", "NPR", "PKR")
+
+    /**
+     * The user's chosen number-format style. A stateless object can't read DataStore,
+     * so this @Volatile field is pushed from [com.pennywiseai.tracker.PennyWiseApplication]
+     * which collects the preference Flow at startup. Defaults to AUTO (currency-driven).
+     */
+    @Volatile
+    var numberFormatStyle: NumberFormatStyle = NumberFormatStyle.AUTO
+
+    /**
+     * The locale that drives digit grouping for [currencyCode], honouring the
+     * user's [numberFormatStyle]. AUTO keeps each currency's native grouping
+     * (Indian for INR/NPR/PKR, international elsewhere).
+     */
+    private fun groupingLocale(currencyCode: String?): Locale = when (numberFormatStyle) {
+        NumberFormatStyle.INDIAN -> INDIAN_LOCALE
+        NumberFormatStyle.INTERNATIONAL -> INTERNATIONAL_LOCALE
+        NumberFormatStyle.AUTO ->
+            if (currencyCode != null && currencyCode in INDIAN_NOTATION_CURRENCIES) {
+                INDIAN_LOCALE
+            } else {
+                CURRENCY_LOCALES[currencyCode] ?: INTERNATIONAL_LOCALE
+            }
+    }
+
+    /** Whether to abbreviate large values with Indian L/Cr (vs western K/M). */
+    private fun useIndianAbbreviation(currencyCode: String): Boolean = when (numberFormatStyle) {
+        NumberFormatStyle.INDIAN -> true
+        NumberFormatStyle.INTERNATIONAL -> false
+        NumberFormatStyle.AUTO -> currencyCode in INDIAN_NOTATION_CURRENCIES
+    }
+
+    /**
+     * Currencies whose ISO 4217 minor unit is 3 (three decimal places),
+     * e.g. Jordanian Dinar, Kuwaiti Dinar. Used so amounts aren't truncated
+     * to 2 decimals on the symbol/fallback display paths.
+     */
+    private val THREE_DECIMAL_CURRENCIES = setOf("JOD", "KWD", "BHD", "OMR")
+
     /**
      * Currency symbol mapping for display
      */
     private val CURRENCY_SYMBOLS = mapOf(
-        "INR" to "Ôé╣",
+        "INR" to "₹",
         "PKR" to "Rs",
         "USD" to "$",
-        "EUR" to "Ôé¼",
-        "GBP" to "┬ú",
+        "EUR" to "€",
+        "GBP" to "£",
         "AED" to "AED",
         "SGD" to "S$",
         "CAD" to "C$",
         "MXN" to "MX$",
         "AUD" to "A$",
-        "JPY" to "┬Ñ",
-        "CNY" to "┬Ñ",
-        "IRR" to "´À╝",
-        "NPR" to "Ôé¿",
-        "ETB" to "ßëÑßê¡",
-        "THB" to "Ó©┐",
+        "JPY" to "¥",
+        "CNY" to "¥",
+        "IRR" to "﷼",
+        "NPR" to "₨",
+        "ETB" to "ብር",
+        "THB" to "฿",
         "MYR" to "RM",
         "KWD" to "KD",
-        "KRW" to "Ôé®",
-        "NGN" to "Ôéª",
+        "KRW" to "₩",
+        "NGN" to "₦",
         "TZS" to "TSh",
-        "BRL" to "R$"
+        "BRL" to "R$",
+        "EGP" to "E£",
+        "JOD" to "JD",
+        "BHD" to "BD",
+        "OMR" to "RO",
+        "LKR" to "රු",
+        "BDT" to "৳",
+        "CZK" to "Kč",
+        "RUB" to "₽",
+        "TRY" to "₺",
+        "MZN" to "MT",
+        "KES" to "KSh",
+        "SAR" to "SR",
+        "BYN" to "Br",
+        "COP" to "COL$",
+        // South American pesos (#654) — prefixed like MX$/COL$ so a peso figure
+        // can never be misread as USD in a mixed-currency list.
+        "ARS" to "AR$",
+        "CLP" to "CL$",
+        "UYU" to "\$U"
     )
 
     /**
@@ -66,18 +130,60 @@ object CurrencyFormatter {
         "KRW" to Locale.KOREA,
         "NGN" to Locale.Builder().setLanguage("en").setRegion("NG").build(),
         "TZS" to Locale.Builder().setLanguage("en").setRegion("TZ").build(),
-        "BRL" to Locale.Builder().setLanguage("pt").setRegion("BR").build()
+        "BRL" to Locale.Builder().setLanguage("pt").setRegion("BR").build(),
+        "EGP" to Locale.Builder().setLanguage("en").setRegion("EG").build(),
+        "JOD" to Locale.Builder().setLanguage("en").setRegion("JO").build(),
+        "BHD" to Locale.Builder().setLanguage("en").setRegion("BH").build(),
+        "OMR" to Locale.Builder().setLanguage("en").setRegion("OM").build(),
+        "LKR" to Locale.Builder().setLanguage("en").setRegion("LK").build(),
+        "ARS" to Locale.Builder().setLanguage("es").setRegion("AR").build(),
+        "CLP" to Locale.Builder().setLanguage("es").setRegion("CL").build(),
+        "UYU" to Locale.Builder().setLanguage("es").setRegion("UY").build()
     )
+
+    /**
+     * Currencies whose ISO code is valid (so `Currency.getInstance()` succeeds and
+     * the try/catch fallback below never triggers), but whose *locale-derived*
+     * symbol collides with another currency's — e.g. `en-LK` can format LKR with a
+     * plain "Rs", identical to PKR's symbol, making mixed rupee amounts (as in
+     * [formatByCurrency]) indistinguishable. These bypass `NumberFormat`'s
+     * currency-instance symbol entirely and always render the explicit
+     * [CURRENCY_SYMBOLS] value instead.
+     */
+    private val EXPLICIT_SYMBOL_CURRENCIES = setOf("PKR", "LKR")
 
     /**
      * Formats a BigDecimal amount as currency with the specified currency code
      */
-    fun formatCurrency(amount: BigDecimal, currencyCode: String = "INR"): String {
-        if (currencyCode == "PKR") {
-            return "${CURRENCY_SYMBOLS["PKR"]}${formatAmount(amount)}"
+    fun formatCurrency(amount: BigDecimal, currencyCode: String = "INR"): String =
+        ltr(formatCurrencyRaw(amount, currencyCode))
+
+    /**
+     * [formatted] with a leading [signPrefix] ("-" / "+") that stays on the left in
+     * an RTL (Arabic) UI. Plain `"-" + amount` renders as "JD5-" there, because a
+     * sign at the start of an RTL paragraph takes the paragraph's direction.
+     */
+    fun signed(signPrefix: String, formatted: String): String = ltr("$signPrefix$formatted")
+
+    /** RTL app languages we ship (or may ship) translations for. */
+    private val RTL_LANGUAGES = setOf("ar", "fa", "he", "iw", "ur")
+
+    /**
+     * Wraps the amount in a left-to-right isolate (LRI…PDI) under an RTL locale so
+     * a Latin-script amount ("-JD5", "₹1,200") reads left to right inside RTL text.
+     * An isolate, unlike a bare LRM, doesn't set the surrounding paragraph's
+     * direction, so "%1$s من %2$s" still reads right to left. No-op otherwise,
+     * so English output (and every exact-string test) is unchanged.
+     */
+    private fun ltr(s: String): String =
+        if (Locale.getDefault().language in RTL_LANGUAGES) "\u2066$s\u2069" else s
+
+    private fun formatCurrencyRaw(amount: BigDecimal, currencyCode: String): String {
+        if (currencyCode in EXPLICIT_SYMBOL_CURRENCIES) {
+            return "${CURRENCY_SYMBOLS[currencyCode]}${formatAmount(amount, currencyCode)}"
         }
         return try {
-            val locale = CURRENCY_LOCALES[currencyCode] ?: INDIAN_LOCALE
+            val locale = groupingLocale(currencyCode)
             val formatter = NumberFormat.getCurrencyInstance(locale)
 
             // Set the currency if supported
@@ -86,17 +192,29 @@ object CurrencyFormatter {
             } catch (e: Exception) {
                 // If currency not supported, use symbol mapping
                 val symbol = CURRENCY_SYMBOLS[currencyCode] ?: currencyCode
-                return "$symbol${formatAmount(amount)}"
+                return "$symbol${formatAmount(amount, currencyCode)}"
+            }
+
+            // Prefer our own symbol over the platform's so a formatted amount
+            // matches the picker / getCurrencySymbol (e.g. LKR renders as "Rs",
+            // SGD as "S$" instead of a bare "$"), while keeping the platform's
+            // locale-driven grouping and decimals.
+            (formatter as? java.text.DecimalFormat)?.let { df ->
+                CURRENCY_SYMBOLS[currencyCode]?.let { customSymbol ->
+                    val dfs = df.decimalFormatSymbols
+                    dfs.currencySymbol = customSymbol
+                    df.decimalFormatSymbols = dfs
+                }
             }
 
             // Show decimals only if they exist
             formatter.minimumFractionDigits = 0
-            formatter.maximumFractionDigits = 2
+            formatter.maximumFractionDigits = if (currencyCode in THREE_DECIMAL_CURRENCIES) 3 else 2
             formatter.format(amount)
         } catch (e: Exception) {
             // Fallback to symbol + amount
             val symbol = CURRENCY_SYMBOLS[currencyCode] ?: currencyCode
-            "$symbol${formatAmount(amount)}"
+            "$symbol${formatAmount(amount, currencyCode)}"
         }
     }
 
@@ -108,26 +226,70 @@ object CurrencyFormatter {
     }
 
     /**
-     * Legacy method for backward compatibility - defaults to INR
+     * Defaults the currency to INR, which silently mislabels every non-INR
+     * amount (the "₹600 for a $600 group" bug). Always pass the amount's own
+     * currency. For a total over a possibly-mixed list, bucket with
+     * [com.pennywiseai.tracker.utils.sumByCurrency] and render with
+     * [formatByCurrency] instead of summing into one figure.
      */
+    @Deprecated(
+        message = "Money must carry its currency — pass formatCurrency(amount, currencyCode). " +
+            "For totals over mixed currencies, use sumByCurrency(...) + formatByCurrency(...).",
+        replaceWith = ReplaceWith("formatCurrency(amount, currencyCode)"),
+        level = DeprecationLevel.ERROR
+    )
     fun formatCurrency(amount: BigDecimal): String {
         return formatCurrency(amount, "INR")
     }
 
     /**
-     * Legacy method for backward compatibility - defaults to INR
+     * Defaults the currency to INR — see the [BigDecimal] overload above. Always
+     * pass the amount's own currency.
      */
+    @Deprecated(
+        message = "Money must carry its currency — pass formatCurrency(amount, currencyCode).",
+        replaceWith = ReplaceWith("formatCurrency(amount, currencyCode)"),
+        level = DeprecationLevel.ERROR
+    )
     fun formatCurrency(amount: Double): String {
         return formatCurrency(amount.toBigDecimal(), "INR")
     }
 
     /**
+     * Formats a set of per-currency totals. We never sum across currencies (that
+     * would be meaningless), so a single-currency total renders as one figure
+     * (e.g. "$600") while a mixed set renders each currency's total joined by
+     * " · " (e.g. "$600 · ₹500"). Zero/empty totals fall back to a single zero
+     * in the input's own currency when known, else [fallbackCurrency].
+     *
+     * [signPrefix] (e.g. "-" or "+") expresses the sign for the whole figure, so
+     * the magnitude is rendered absolute — a net-negative sub-total (refunds >
+     * charges in one currency) renders "-€200", never "--€200".
+     */
+    fun formatByCurrency(
+        totalsByCurrency: Map<String, Money>,
+        signPrefix: String = "",
+        fallbackCurrency: String = "INR"
+    ): String {
+        val nonZero = totalsByCurrency.values.filter { it.amount.signum() != 0 }
+        if (nonZero.isEmpty()) {
+            // Keep the symbol right for an all-cancelling single-currency set
+            // (e.g. a $300 charge + $300 refund) instead of defaulting to ₹0.
+            val currency = totalsByCurrency.keys.firstOrNull() ?: fallbackCurrency
+            return Money.zero(currency).format(signPrefix)
+        }
+        return nonZero
+            .sortedByDescending { it.amount.abs() }
+            .joinToString(" · ") { Money(it.amount.abs(), it.currency).format(signPrefix) }
+    }
+
+    /**
      * Formats just the numeric amount without currency symbol
      */
-    private fun formatAmount(amount: BigDecimal): String {
-        val formatter = NumberFormat.getNumberInstance(INDIAN_LOCALE)
+    private fun formatAmount(amount: BigDecimal, currencyCode: String? = null): String {
+        val formatter = NumberFormat.getNumberInstance(groupingLocale(currencyCode))
         formatter.minimumFractionDigits = 0
-        formatter.maximumFractionDigits = 2
+        formatter.maximumFractionDigits = if (currencyCode != null && currencyCode in THREE_DECIMAL_CURRENCIES) 3 else 2
         return formatter.format(amount)
     }
 
@@ -145,21 +307,22 @@ object CurrencyFormatter {
 
     /**
      * Formats large currency values in abbreviated form for chart axes.
-     * Uses Indian notation (L/Cr) for INR/NPR/PKR, Western notation (K/M) for others.
+     * Uses Indian notation (L/Cr) or Western notation (K/M) per the user's
+     * [numberFormatStyle] (AUTO = L/Cr for INR/NPR/PKR, K/M otherwise).
      */
     fun formatAbbreviated(value: Double, currencyCode: String): String {
         val symbol = getCurrencySymbol(currencyCode)
         val absValue = kotlin.math.abs(value)
-        val useIndianNotation = currencyCode in setOf("INR", "NPR", "PKR")
+        val useIndianNotation = useIndianAbbreviation(currencyCode)
         return when {
             useIndianNotation && absValue >= 1_00_00_000 ->
-                "${symbol}${String.format("%.1f", absValue / 1_00_00_000)}Cr"
+                "${symbol}${String.format(Locale.US, "%.1f", absValue / 1_00_00_000)}Cr"
             useIndianNotation && absValue >= 1_00_000 ->
-                "${symbol}${String.format("%.1f", absValue / 1_00_000)}L"
+                "${symbol}${String.format(Locale.US, "%.1f", absValue / 1_00_000)}L"
             absValue >= 10_000_000 ->
-                "${symbol}${String.format("%.1f", absValue / 1_000_000)}M"
+                "${symbol}${String.format(Locale.US, "%.1f", absValue / 1_000_000)}M"
             absValue >= 1_000 ->
-                "${symbol}${String.format("%.1f", absValue / 1_000)}K"
+                "${symbol}${String.format(Locale.US, "%.1f", absValue / 1_000)}K"
             absValue > 0 -> "${symbol}${absValue.toInt()}"
             else -> "${symbol}0"
         }
@@ -167,7 +330,7 @@ object CurrencyFormatter {
 
     /**
      * Resolves the effective currency for an account. Manual accounts store the
-     * currency the user chose ÔÇö trust it. SMS-tracked accounts fall back to the bank
+     * currency the user chose — trust it. SMS-tracked accounts fall back to the bank
      * parser's currency (their stored value may be the INR default even for a non-INR
      * bank). Shared by Account Detail, onboarding, and Settings so the rule stays
      * consistent everywhere.

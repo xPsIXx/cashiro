@@ -15,6 +15,9 @@ interface UnrecognizedSmsDao {
     
     @Insert(onConflict = androidx.room.OnConflictStrategy.IGNORE)
     suspend fun insert(sms: UnrecognizedSmsEntity): Long
+
+    @Insert(onConflict = androidx.room.OnConflictStrategy.IGNORE)
+    suspend fun insertAll(smsList: List<UnrecognizedSmsEntity>): List<Long>
     
     @Query("SELECT * FROM unrecognized_sms WHERE reported = 0 AND is_deleted = 0 ORDER BY received_at DESC")
     fun getAllUnreported(): Flow<List<UnrecognizedSmsEntity>>
@@ -43,6 +46,12 @@ interface UnrecognizedSmsDao {
     @Query("UPDATE unrecognized_sms SET is_deleted = 1 WHERE id = :id")
     suspend fun softDeleteById(id: Long)
     
+    @Query("SELECT * FROM unrecognized_sms WHERE id = :id")
+    suspend fun getById(id: Long): UnrecognizedSmsEntity?
+
+    @Query("UPDATE unrecognized_sms SET is_deleted = 0, reported = 0, received_at = :receivedAt WHERE id = :id")
+    suspend fun revive(id: Long, receivedAt: LocalDateTime)
+
     @Query("SELECT * FROM unrecognized_sms WHERE sender = :sender AND sms_body = :smsBody LIMIT 1")
     suspend fun findBySenderAndBody(sender: String, smsBody: String): UnrecognizedSmsEntity?
 }

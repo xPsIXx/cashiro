@@ -1,5 +1,9 @@
 package com.pennywiseai.tracker.presentation.exchangerates
 
+import com.pennywiseai.tracker.utils.AppDates
+
+import com.pennywiseai.tracker.R
+import androidx.compose.ui.res.stringResource
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -21,7 +25,7 @@ import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
-import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
+import androidx.hilt.navigation.compose.hiltViewModel
 import com.pennywiseai.tracker.data.database.entity.ExchangeRateEntity
 import com.pennywiseai.tracker.ui.components.CustomTitleTopAppBar
 import com.pennywiseai.tracker.ui.theme.*
@@ -52,12 +56,11 @@ fun ExchangeRatesScreen(
             CustomTitleTopAppBar(
                 scrollBehaviorSmall = scrollBehaviorSmall,
                 scrollBehaviorLarge = scrollBehaviorLarge,
-                title = "Exchange Rates",
+                title = stringResource(R.string.exchange_rates_title),
                 hasBackButton = true,
-                hasActionButton = true,
                 navigationContent = {
                     IconButton(onClick = onNavigateBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(R.string.accounts_back))
                     }
                 },
                 actionContent = {
@@ -65,7 +68,7 @@ fun ExchangeRatesScreen(
                         onClick = { viewModel.refreshRates() },
                         enabled = !uiState.isRefreshing
                     ) {
-                        Icon(Icons.Default.Refresh, contentDescription = "Refresh rates")
+                        Icon(Icons.Default.Refresh, contentDescription = stringResource(R.string.exchange_rates_refresh))
                     }
                 },
                 hazeState = hazeState
@@ -93,13 +96,13 @@ fun ExchangeRatesScreen(
                 ) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         Text(
-                            text = "No exchange rates available",
+                            text = stringResource(R.string.exchange_rates_empty_title),
                             style = MaterialTheme.typography.bodyLarge,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                         Spacer(modifier = Modifier.height(Spacing.sm))
                         Text(
-                            text = "Rates will appear when you have transactions in multiple currencies",
+                            text = stringResource(R.string.exchange_rates_empty_description),
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -129,7 +132,7 @@ fun ExchangeRatesScreen(
                     uiState.lastUpdated?.let { lastUpdated ->
                         item {
                             Text(
-                                text = "Last updated: ${lastUpdated.format(DateTimeFormatter.ofPattern("MMM d, yyyy h:mm a"))}",
+                                text = stringResource(R.string.exchange_rates_last_updated, lastUpdated.format(AppDates.dateTimeFormatter())),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -161,7 +164,7 @@ fun ExchangeRatesScreen(
                     item {
                         Spacer(modifier = Modifier.height(Spacing.md))
                         Text(
-                            text = "Tap a rate to set a custom value. Custom rates are preserved across API refreshes.",
+                            text = stringResource(R.string.exchange_rates_hint),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -172,7 +175,7 @@ fun ExchangeRatesScreen(
                                 onClick = { viewModel.clearAllCustomRates() },
                                 modifier = Modifier.fillMaxWidth()
                             ) {
-                                Text("Reset All to Auto")
+                                Text(stringResource(R.string.exchange_rates_reset_all))
                             }
                         }
 
@@ -247,7 +250,7 @@ private fun ExchangeRateCard(
                     fontWeight = FontWeight.Bold
                 )
                 Text(
-                    text = if (rate.isCustomRate) "Custom" else "API",
+                    text = if (rate.isCustomRate) stringResource(R.string.exchange_rates_badge_custom) else stringResource(R.string.exchange_rates_badge_api),
                     style = MaterialTheme.typography.labelSmall,
                     color = if (rate.isCustomRate)
                         MaterialTheme.colorScheme.primary
@@ -289,11 +292,11 @@ private fun EditRateDialog(
                         rateText = it
                         isError = it.toBigDecimalOrNull() == null || (it.toBigDecimalOrNull() ?: BigDecimal.ZERO) <= BigDecimal.ZERO
                     },
-                    label = { Text("Exchange Rate") },
+                    label = { Text(stringResource(R.string.exchange_rates_rate_label)) },
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
                     isError = isError,
                     supportingText = if (isError) {
-                        { Text("Enter a valid positive number") }
+                        { Text(stringResource(R.string.exchange_rates_invalid_rate)) }
                     } else null,
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
@@ -311,7 +314,7 @@ private fun EditRateDialog(
                         onClick = onResetToAuto,
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        Text("Reset to Auto")
+                        Text(stringResource(R.string.exchange_rates_reset))
                     }
                 }
             }
@@ -326,12 +329,12 @@ private fun EditRateDialog(
                 },
                 enabled = !isError && rateText.isNotBlank()
             ) {
-                Text("Set Custom Rate")
+                Text(stringResource(R.string.exchange_rates_set_custom))
             }
         },
         dismissButton = {
             TextButton(onClick = onDismiss) {
-                Text("Cancel")
+                Text(stringResource(R.string.accounts_action_cancel))
             }
         }
     )

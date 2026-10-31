@@ -1,56 +1,83 @@
 package com.pennywiseai.tracker.ui.screens.settings
 
-import android.app.DownloadManager
 import android.content.Context
 import android.net.Uri
 import android.os.Environment
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import com.pennywiseai.tracker.R
+import com.pennywiseai.tracker.billing.EntitlementGate
+import com.pennywiseai.tracker.ui.UiText
 import com.pennywiseai.tracker.core.Constants.Links
 import com.pennywiseai.tracker.data.repository.ModelRepository
 import com.pennywiseai.tracker.data.repository.ModelState
 import com.pennywiseai.tracker.data.repository.UnrecognizedSmsRepository
+import com.pennywiseai.tracker.data.preferences.DateFormatStyle
+import com.pennywiseai.tracker.utils.AppDates
+import com.pennywiseai.tracker.data.preferences.NumberFormatStyle
 import com.pennywiseai.tracker.data.preferences.UserPreferencesRepository
+import com.pennywiseai.tracker.data.manager.SmsScanParamsCalculator
 import com.pennywiseai.tracker.data.backup.BackupExporter
 import com.pennywiseai.tracker.data.backup.BackupImporter
 import com.pennywiseai.tracker.data.backup.ExportResult
 import com.pennywiseai.tracker.data.backup.ImportResult
 import com.pennywiseai.tracker.data.backup.ImportStrategy
+import com.pennywiseai.tracker.backup.folder.FolderBackupWriter
+import com.pennywiseai.tracker.backup.folder.ScheduledFolderBackupScheduler
+import com.pennywiseai.tracker.data.repository.AccountBalanceRepository
 import com.pennywiseai.tracker.data.repository.TransactionRepository
+import com.pennywiseai.tracker.domain.usecase.DeleteAllTransactionsUseCase
+import com.pennywiseai.tracker.data.database.entity.AccountBalanceEntity
+import com.pennywiseai.tracker.utils.CurrencyFormatter
 import com.pennywiseai.tracker.utils.CurrencyUtils
+import com.pennywiseai.tracker.utils.SmsReportUrlBuilder
 import android.content.Intent
 import androidx.core.content.FileProvider
 import com.pennywiseai.tracker.core.Constants
 import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
-import java.io.File
+import kotlinx.coroutines.flow.first
 import java.net.URLEncoder
+import java.io.File
 import javax.inject.Inject
 
+@OptIn(ExperimentalCoroutinesApi::class)
 @HiltViewModel
 class SettingsViewModel @Inject constructor(
-    @ApplicationContext private val context: Context,
+    @param:ApplicationContext private val context: Context,
     private val modelRepository: ModelRepository,
     private val userPreferencesRepository: UserPreferencesRepository,
     private val unrecognizedSmsRepository: UnrecognizedSmsRepository,
     private val transactionRepository: TransactionRepository,
+    private val deleteAllTransactionsUseCase: DeleteAllTransactionsUseCase,
+    private val accountBalanceRepository: AccountBalanceRepository,
     private val backupExporter: BackupExporter,
     private val backupImporter: BackupImporter,
+    private val importCsvUseCase: com.pennywiseai.tracker.data.csv.ImportCsvUseCase,
+    private val folderBackupWriter: FolderBackupWriter,
+    private val scheduledFolderBackupScheduler: ScheduledFolderBackupScheduler,
     private val contactsResolver: com.pennywiseai.tracker.data.contacts.ContactsResolver,
-    private val diagnosticLogger: com.pennywiseai.tracker.data.diagnostic.DiagnosticLogger
+    private val modelDownloader: com.pennywiseai.tracker.data.manager.ModelDownloader,
+    entitlementGate: EntitlementGate,
 ) : ViewModel() {
+
+    /** Drives the Settings → Pro row: shows "Active" when true, "Upgrade" when false. */
+    val isProEntitled: StateFlow<Boolean> = entitlementGate.isProEntitled
     
-    private val downloadManager = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
     
     // Download state
     private val _downloadState = MutableStateFlow(DownloadState.NOT_DOWNLOADED)
@@ -66,13 +93,55 @@ class SettingsViewModel @Inject constructor(
     val totalMB: StateFlow<Long> = _totalMB.asStateFlow()
     
     // Import/Export state
-    private val _importExportMessage = MutableStateFlow<String?>(null)
-    val importExportMessage: StateFlow<String?> = _importExportMessage.asStateFlow()
+    private val _importExportMessage = MutableStateFlow<UiText?>(null)
+    val importExportMessage: StateFlow<UiText?> = _importExportMessage.asStateFlow()
     
     private val _exportedBackupFile = MutableStateFlow<File?>(null)
     val exportedBackupFile: StateFlow<File?> = _exportedBackupFile.asStateFlow()
-    
-    private var currentDownloadId: Long? = null
+
+    // "Delete all transactions": null while the confirmation isn't open, else the
+    // number of rows the delete would remove — observed, not snapshotted, so the
+    // figure the user is consenting to stays the one the delete will act on even
+    // if a background scan writes a row while the dialog is up.
+    private val _deleteAllTransactionsRequested = MutableStateFlow(false)
+    val deleteAllTransactionsCount: StateFlow<Int?> = _deleteAllTransactionsRequested
+        .flatMapLatest { requested ->
+            if (requested) transactionRepository.observeAllTransactionCount().map { it as Int? }
+            else flowOf(null)
+        }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
+
+    private val _isDeletingAllTransactions = MutableStateFlow(false)
+    val isDeletingAllTransactions: StateFlow<Boolean> = _isDeletingAllTransactions.asStateFlow()
+
+    // Kept separate from [importExportMessage] so the outcome isn't reported
+    // under that flow's "Backup Status" dialog.
+    // One or more sentences, shown space-separated.
+    private val _deleteAllTransactionsResult = MutableStateFlow<List<UiText>?>(null)
+    val deleteAllTransactionsResult: StateFlow<List<UiText>?> = _deleteAllTransactionsResult.asStateFlow()
+
+    fun clearDeleteAllTransactionsResult() {
+        _deleteAllTransactionsResult.value = null
+    }
+
+    val scheduledFolderBackupEnabled = userPreferencesRepository.scheduledFolderBackupEnabled
+    val scheduledFolderBackupLastTimestamp = userPreferencesRepository.scheduledFolderBackupLastTimestamp
+    val exportIncludeReceipts = userPreferencesRepository.exportIncludeReceipts
+    val folderBackupIncludeReceipts = userPreferencesRepository.folderBackupIncludeReceipts
+
+    fun setExportIncludeReceipts(include: Boolean) {
+        viewModelScope.launch { userPreferencesRepository.setExportIncludeReceipts(include) }
+    }
+
+    fun setFolderBackupIncludeReceipts(include: Boolean) {
+        viewModelScope.launch { userPreferencesRepository.setFolderBackupIncludeReceipts(include) }
+    }
+
+    private val _requestFolderPicker = MutableStateFlow(false)
+    val requestFolderPicker: StateFlow<Boolean> = _requestFolderPicker.asStateFlow()
+
+    private var currentFolderPickerAction: FolderPickerAction = FolderPickerAction.ENABLE
+
     
     // Developer mode state
     val isDeveloperModeEnabled = userPreferencesRepository.isDeveloperModeEnabled
@@ -80,21 +149,42 @@ class SettingsViewModel @Inject constructor(
     // SMS scan period state
     val smsScanMonths = userPreferencesRepository.smsScanMonths
     val smsScanAllTime = userPreferencesRepository.smsScanAllTime
+    val smsScanUseCustomDate = userPreferencesRepository.smsScanUseCustomDate
+    val smsScanCustomDate = userPreferencesRepository.smsScanCustomDate
 
     // Unified Currency Mode
     val unifiedCurrencyMode = userPreferencesRepository.unifiedCurrencyMode
     val displayCurrency = userPreferencesRepository.displayCurrency
 
+    // Count credit-card spend toward the "Spent this month" total (#705)
+    val countCreditCardAsExpense = userPreferencesRepository.countCreditCardAsExpense
+
+    val dailySummaryEnabled = userPreferencesRepository.dailySummaryEnabled
+
     // Replace UPI VPAs with contact names (gated by READ_CONTACTS).
     val useContactsForVpa = userPreferencesRepository.useContactsForVpa
 
+    // Your own UPI ID for split-bill requests (#346).
+    val upiId = userPreferencesRepository.upiId
 
-    val availableCurrencies: StateFlow<List<String>> = transactionRepository.getAllCurrencies()
-        .map { transactionCurrencies ->
-            val supportedCurrencies = CurrencyUtils.getAllSupportedCurrencies()
-            val allCurrencies = (transactionCurrencies + supportedCurrencies).distinct()
-            CurrencyUtils.sortCurrencies(allCurrencies)
-        }
+    /** Blank clears it; the dialog only passes a valid UPI ID otherwise. */
+    fun setUpiId(id: String) {
+        viewModelScope.launch { userPreferencesRepository.setUpiId(id) }
+    }
+
+    // Derive the selectable set from the user's ACTUAL data (transaction + account
+    // currencies) on top of the common seed list. This way any currency the user
+    // really holds — e.g. MZN held only in an account — is always selectable, instead
+    // of silently missing because it wasn't in the hand-maintained supported list.
+    val availableCurrencies: StateFlow<List<String>> = combine(
+        transactionRepository.getAllCurrencies(),
+        accountBalanceRepository.getAllLatestBalances()
+    ) { transactionCurrencies, accounts ->
+        val accountCurrencies = accounts.map { it.currency }
+        val supportedCurrencies = CurrencyUtils.getAllSupportedCurrencies()
+        val allCurrencies = (transactionCurrencies + accountCurrencies + supportedCurrencies).distinct()
+        CurrencyUtils.sortCurrencies(allCurrencies)
+    }
         .stateIn(
             scope = viewModelScope,
             started = SharingStarted.WhileSubscribed(5000),
@@ -103,6 +193,32 @@ class SettingsViewModel @Inject constructor(
     
     // Base currency state
     val baseCurrency = userPreferencesRepository.baseCurrency
+
+    // Number format style (digit grouping: Auto / Indian / International)
+    val numberFormatStyle = userPreferencesRepository.numberFormatStyle
+
+    val dateFormatStyle = userPreferencesRepository.dateFormatStyle
+
+    // Budget cycle start day (1..31). Drives Home/Budgets/Analytics so a user
+    // whose salary doesn't land on the 1st can define their own pay cycle.
+    val budgetCycleStartDay = userPreferencesRepository.budgetCycleStartDay
+
+    // Main account selection (drives the default currency unless overridden above).
+    val accounts: StateFlow<List<AccountBalanceEntity>> =
+        accountBalanceRepository.getAllLatestBalances()
+            .stateIn(
+                scope = viewModelScope,
+                started = SharingStarted.WhileSubscribed(5000),
+                initialValue = emptyList()
+            )
+
+    val mainAccountKey: StateFlow<String?> = userPreferencesRepository.userPreferences
+        .map { it.mainAccountKey }
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5000),
+            initialValue = null
+        )
     
     // Unrecognized SMS state
     val unreportedSmsCount = unrecognizedSmsRepository.getUnreportedCount()
@@ -113,279 +229,88 @@ class SettingsViewModel @Inject constructor(
         )
     
     init {
+        // Resolves the shared ModelState (verifying a present file when needed) across
+        // every branch below, so it replaces the old size-only checkModelState().
         checkDownloadStatus()
-        // Also sync with model repository
     }
     
     private fun checkDownloadStatus() {
         viewModelScope.launch {
-            // First check for active download
-            val savedDownloadId = userPreferencesRepository.getActiveDownloadId()
-            diagnosticLogger.d("SettingsViewModel", "Checking download status, saved ID: $savedDownloadId")
-            
-            if (savedDownloadId != null) {
-                // Query DownloadManager for this ID
-                val query = DownloadManager.Query().setFilterById(savedDownloadId)
-                val cursor = downloadManager.query(query)
-                
-                if (cursor != null && cursor.moveToFirst()) {
-                    val statusIndex = cursor.getColumnIndex(DownloadManager.COLUMN_STATUS)
-                    
-                    if (statusIndex != -1) {
-                        val status = cursor.getInt(statusIndex)
-                        diagnosticLogger.d("SettingsViewModel", "Found active download with status: $status")
-                        
-                        when (status) {
-                            DownloadManager.STATUS_RUNNING,
-                            DownloadManager.STATUS_PENDING -> {
-                                _downloadState.value = DownloadState.DOWNLOADING
-                                currentDownloadId = savedDownloadId
-                                // Sync ModelRepository state
-                                modelRepository.updateModelState(ModelState.DOWNLOADING)
-                                // Get current progress
-                                val bytesIndex = cursor.getColumnIndex(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR)
-                                val totalIndex = cursor.getColumnIndex(DownloadManager.COLUMN_TOTAL_SIZE_BYTES)
-                                if (bytesIndex != -1 && totalIndex != -1) {
-                                    val bytes = cursor.getLong(bytesIndex)
-                                    val total = cursor.getLong(totalIndex)
-                                    _downloadedMB.value = bytes / (1024 * 1024)
-                                    _totalMB.value = total / (1024 * 1024)
-                                    if (total > 0) {
-                                        _downloadProgress.value = (bytes * 100 / total).toInt()
-                                    }
-                                }
-                                monitorDownload(savedDownloadId)
-                            }
-                            DownloadManager.STATUS_SUCCESSFUL -> {
-                                _downloadState.value = DownloadState.COMPLETED
-                                _downloadProgress.value = 100
-                                userPreferencesRepository.clearActiveDownloadId()
-                                modelRepository.updateModelState(ModelState.READY)
-                            }
-                            DownloadManager.STATUS_FAILED -> {
-                                _downloadState.value = DownloadState.FAILED
-                                userPreferencesRepository.clearActiveDownloadId()
-                                // Sync ModelRepository state
-                                modelRepository.updateModelState(ModelState.NOT_DOWNLOADED)
-                            }
-                            DownloadManager.STATUS_PAUSED -> {
-                                _downloadState.value = DownloadState.PAUSED
-                                currentDownloadId = savedDownloadId
-                                // Sync ModelRepository state - still downloading but paused
-                                modelRepository.updateModelState(ModelState.DOWNLOADING)
-                            }
-                        }
-                    }
-                    cursor.close()
-                } else {
-                    // Download ID not found in DownloadManager, clear it and check file
-                    diagnosticLogger.d("SettingsViewModel", "Download ID not found in DownloadManager, checking file")
-                    userPreferencesRepository.clearActiveDownloadId()
-                    checkModelFile()
+            if (!modelDownloader.isRunning &&
+                !modelDownloader.adoptLegacyDownload() &&
+                !modelDownloader.resumeIfInterrupted()
+            ) checkModelFile()
+        }
+        // Mirror the shared downloader (it may have been started from Chat).
+        viewModelScope.launch {
+            combine(modelDownloader.progress, modelRepository.modelState) { p, m -> p to m }.collect { (p, m) ->
+                if (m == ModelState.DOWNLOADING) {
+                    _downloadState.value = DownloadState.DOWNLOADING
+                    _downloadedMB.value = p.downloadedBytes / BYTES_PER_MB
+                    _totalMB.value = p.totalBytes / BYTES_PER_MB
+                    _downloadProgress.value = (p.downloadedBytes * 100 / p.totalBytes.coerceAtLeast(1)).toInt()
                 }
-            } else {
-                // No active download, check if model file exists
-                checkModelFile()
+                when {
+                    p.failure == com.pennywiseai.tracker.data.manager.ModelDownloader.Failure.NO_SPACE ->
+                        _downloadState.value = DownloadState.ERROR_INSUFFICIENT_SPACE
+                    p.failure != null -> _downloadState.value = DownloadState.FAILED
+                    m == ModelState.READY && _downloadState.value == DownloadState.DOWNLOADING -> {
+                        _downloadState.value = DownloadState.COMPLETED
+                        _downloadProgress.value = 100
+                        _downloadedMB.value = _totalMB.value
+                    }
+                    // Cancelled elsewhere (e.g. from Chat) while this screen was alive.
+                    m == ModelState.NOT_DOWNLOADED && _downloadState.value == DownloadState.DOWNLOADING -> {
+                        _downloadState.value = DownloadState.NOT_DOWNLOADED
+                        _downloadProgress.value = 0
+                        _downloadedMB.value = 0
+                        _totalMB.value = 0
+                    }
+                }
             }
         }
     }
-    
-    private fun checkModelFile() {
+
+    private suspend fun checkModelFile() {
         val modelFile = File(context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS), Constants.ModelDownload.MODEL_FILE_NAME)
-        diagnosticLogger.d("SettingsViewModel", "Checking model file at: ${modelFile.absolutePath}")
-        diagnosticLogger.d("SettingsViewModel", "Model file exists: ${modelFile.exists()}, size: ${modelFile.length()}, expected: ${Constants.ModelDownload.MODEL_SIZE_BYTES}")
-        
-        // Check against expected size to ensure it's complete
-        // Allow 5% variance in file size as download sizes can vary slightly
+        Log.d("SettingsViewModel", "Checking model file at: ${modelFile.absolutePath}")
+        Log.d("SettingsViewModel", "Model file exists: ${modelFile.exists()}, size: ${modelFile.length()}, expected: ${Constants.ModelDownload.MODEL_SIZE_BYTES}")
+
+        // Drop an obviously-incomplete partial file before verifying.
+        // Allow 5% variance in file size as download sizes can vary slightly.
         val minSize = (Constants.ModelDownload.MODEL_SIZE_BYTES * 0.95).toLong()
-        val maxSize = (Constants.ModelDownload.MODEL_SIZE_BYTES * 1.05).toLong()
-        
-        if (modelFile.exists() && modelFile.length() in minSize..maxSize) {
-            _downloadState.value = DownloadState.COMPLETED
-            _totalMB.value = modelFile.length() / (1024 * 1024)
-            _downloadedMB.value = _totalMB.value
-            _downloadProgress.value = 100
-            // Update model repository state
-            diagnosticLogger.d("SettingsViewModel", "Model complete (${modelFile.length()} bytes), updating repository state to READY")
-            modelRepository.updateModelState(ModelState.READY)
-        } else if (modelFile.exists() && modelFile.length() > maxSize) {
-            // File is too large, but might still be valid - mark as complete
-            _downloadState.value = DownloadState.COMPLETED
-            _totalMB.value = modelFile.length() / (1024 * 1024)
-            _downloadedMB.value = _totalMB.value
-            _downloadProgress.value = 100
-            diagnosticLogger.d("SettingsViewModel", "Model file larger than expected (${modelFile.length()} bytes), but marking as complete")
-            modelRepository.updateModelState(ModelState.READY)
-        } else if (modelFile.exists()) {
-            // Partial file exists, delete it
-            diagnosticLogger.d("SettingsViewModel", "Partial model file found (${modelFile.length()} bytes), deleting")
+        if (modelFile.exists() && modelFile.length() < minSize) {
+            Log.d("SettingsViewModel", "Partial model file found (${modelFile.length()} bytes), deleting")
             modelFile.delete()
-            _downloadState.value = DownloadState.NOT_DOWNLOADED
+        }
+
+        // Re-verify a present full-size file; a hash mismatch deletes it here. This MUST
+        // run before we set DownloadState so a rejected model is never reported COMPLETED.
+        modelRepository.refreshModelState()
+
+        // Mirror the real post-verification outcome into the Settings download state, so
+        // a deleted (hash-invalid) model shows NOT_DOWNLOADED rather than a stale COMPLETED.
+        if (modelRepository.isModelDownloaded()) {
+            _downloadState.value = DownloadState.COMPLETED
+            _totalMB.value = modelFile.length() / (1024 * 1024)
+            _downloadedMB.value = _totalMB.value
+            _downloadProgress.value = 100
         } else {
-            diagnosticLogger.d("SettingsViewModel", "Model not found")
             _downloadState.value = DownloadState.NOT_DOWNLOADED
+            _downloadProgress.value = 0
         }
     }
     
-    fun startModelDownload() {
-        viewModelScope.launch {
-            // Check if download is already active
-            val existingDownloadId = userPreferencesRepository.getActiveDownloadId()
-            if (existingDownloadId != null) {
-                // Check if this download is still active
-                val query = DownloadManager.Query().setFilterById(existingDownloadId)
-                val cursor = downloadManager.query(query)
-                
-                if (cursor != null && cursor.moveToFirst()) {
-                    val statusIndex = cursor.getColumnIndex(DownloadManager.COLUMN_STATUS)
-                    if (statusIndex != -1) {
-                        val status = cursor.getInt(statusIndex)
-                        if (status == DownloadManager.STATUS_RUNNING || 
-                            status == DownloadManager.STATUS_PENDING ||
-                            status == DownloadManager.STATUS_PAUSED) {
-                            // Download is already active, just monitor it
-                            diagnosticLogger.d("SettingsViewModel", "Download already active with ID: $existingDownloadId")
-                            cursor.close()
-                            _downloadState.value = DownloadState.DOWNLOADING
-                            currentDownloadId = existingDownloadId
-                            modelRepository.updateModelState(ModelState.DOWNLOADING)
-                            monitorDownload(existingDownloadId)
-                            return@launch
-                        }
-                    }
-                    cursor.close()
-                }
-            }
-            
-            // Check storage space
-            val availableSpace = context.filesDir.usableSpace
-            if (availableSpace < Constants.ModelDownload.REQUIRED_SPACE_BYTES) {
-                _downloadState.value = DownloadState.ERROR_INSUFFICIENT_SPACE
-                return@launch
-            }
-            
-            // Validate model URL before attempting download
-            val modelUrl = Constants.ModelDownload.MODEL_URL
-            if (modelUrl.isBlank() || !modelUrl.startsWith("http")) {
-                diagnosticLogger.e("SettingsViewModel", "Invalid MODEL_URL: '$modelUrl'")
-                _downloadState.value = DownloadState.FAILED
-                return@launch
-            }
+    fun startModelDownload() = modelDownloader.start()
 
-            // Clean up any stale partial file — DownloadManager stays PENDING if destination exists
-            val existingFile = File(context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS), Constants.ModelDownload.MODEL_FILE_NAME)
-            if (existingFile.exists()) {
-                existingFile.delete()
-            }
-
-            try {
-                // Create download request
-                val request = DownloadManager.Request(Uri.parse(modelUrl))
-                    .setTitle("AI Chat Model")
-                    .setDescription("Downloading AI chat assistant for PennyWise")
-                    .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
-                    .setDestinationInExternalFilesDir(context, Environment.DIRECTORY_DOWNLOADS, Constants.ModelDownload.MODEL_FILE_NAME)
-                    .setAllowedOverMetered(true) // Allow mobile data downloads
-                    .setAllowedOverRoaming(false)
-
-                currentDownloadId = downloadManager.enqueue(request)
-                _downloadState.value = DownloadState.DOWNLOADING
-
-                // Sync ModelRepository state
-                modelRepository.updateModelState(ModelState.DOWNLOADING)
-
-                // Save download ID
-                userPreferencesRepository.saveActiveDownloadId(currentDownloadId!!)
-                diagnosticLogger.d("SettingsViewModel", "Started download with ID: $currentDownloadId")
-
-                // Start monitoring progress
-                monitorDownload(currentDownloadId!!)
-            } catch (e: Exception) {
-                diagnosticLogger.e("SettingsViewModel", "Failed to start download", e)
-                _downloadState.value = DownloadState.FAILED
-            }
-        }
-    }
-    
-    private fun monitorDownload(downloadId: Long) {
-        viewModelScope.launch {
-            while (isActive && _downloadState.value == DownloadState.DOWNLOADING) {
-                val query = DownloadManager.Query().setFilterById(downloadId)
-                val cursor = downloadManager.query(query)
-                
-                if (cursor != null && cursor.moveToFirst()) {
-                    val bytesColumnIndex = cursor.getColumnIndex(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR)
-                    val totalBytesColumnIndex = cursor.getColumnIndex(DownloadManager.COLUMN_TOTAL_SIZE_BYTES)
-                    val statusColumnIndex = cursor.getColumnIndex(DownloadManager.COLUMN_STATUS)
-                    
-                    if (bytesColumnIndex != -1 && totalBytesColumnIndex != -1) {
-                        val bytesDownloaded = cursor.getLong(bytesColumnIndex)
-                        val rawBytesTotal = cursor.getLong(totalBytesColumnIndex)
-
-                        // Fallback to known model size when DownloadManager reports 0
-                        val bytesTotal = if (rawBytesTotal > 0) rawBytesTotal else Constants.ModelDownload.MODEL_SIZE_BYTES
-
-                        val progress = (bytesDownloaded * 100 / bytesTotal).toInt()
-
-                        _downloadProgress.value = progress
-                        _downloadedMB.value = bytesDownloaded / (1024 * 1024)
-                        _totalMB.value = bytesTotal / (1024 * 1024)
-                    }
-                    
-                    // Check status
-                    if (statusColumnIndex != -1) {
-                        when (cursor.getInt(statusColumnIndex)) {
-                            DownloadManager.STATUS_SUCCESSFUL -> {
-                                _downloadState.value = DownloadState.COMPLETED
-                                _downloadProgress.value = 100
-                                // Clear saved download ID
-                                userPreferencesRepository.clearActiveDownloadId()
-                                // Update model repository state
-                                modelRepository.updateModelState(ModelState.READY)
-                                diagnosticLogger.d("SettingsViewModel", "Download completed successfully")
-                            }
-                            DownloadManager.STATUS_FAILED -> {
-                                _downloadState.value = DownloadState.FAILED
-                                // Clear saved download ID
-                                userPreferencesRepository.clearActiveDownloadId()
-                                // Sync ModelRepository state
-                                modelRepository.updateModelState(ModelState.NOT_DOWNLOADED)
-                                diagnosticLogger.d("SettingsViewModel", "Download failed")
-                            }
-                            DownloadManager.STATUS_PAUSED -> {
-                                _downloadState.value = DownloadState.PAUSED
-                            }
-                        }
-                    }
-                }
-                cursor?.close()
-                delay(1000) // Update every second
-            }
-        }
-    }
-    
     fun cancelDownload() {
-        viewModelScope.launch {
-            currentDownloadId?.let {
-                downloadManager.remove(it)
-                _downloadState.value = DownloadState.NOT_DOWNLOADED
-                _downloadProgress.value = 0
-                _downloadedMB.value = 0
-                _totalMB.value = 0
-                
-                // Clear saved download ID
-                userPreferencesRepository.clearActiveDownloadId()
-                
-                // Delete partial file
-                val modelFile = File(context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS), Constants.ModelDownload.MODEL_FILE_NAME)
-                if (modelFile.exists()) {
-                    modelFile.delete()
-                }
-                diagnosticLogger.d("SettingsViewModel", "Download cancelled and cleaned up")
-            }
-        }
+        modelDownloader.cancel()
+        _downloadState.value = DownloadState.NOT_DOWNLOADED
+        _downloadProgress.value = 0
+        _downloadedMB.value = 0
+        _totalMB.value = 0
     }
-    
+
     fun deleteModel() {
         viewModelScope.launch {
             val modelFile = File(context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS), Constants.ModelDownload.MODEL_FILE_NAME)
@@ -399,7 +324,7 @@ class SettingsViewModel @Inject constructor(
                 userPreferencesRepository.clearActiveDownloadId()
                 // Update model repository state
                 modelRepository.updateModelState(ModelState.NOT_DOWNLOADED)
-                diagnosticLogger.d("SettingsViewModel", "Model deleted")
+                Log.d("SettingsViewModel", "Model deleted")
             }
         }
     }
@@ -407,21 +332,98 @@ class SettingsViewModel @Inject constructor(
     fun setUnifiedCurrencyMode(enabled: Boolean) {
         viewModelScope.launch {
             userPreferencesRepository.setUnifiedCurrencyMode(enabled)
-            com.pennywiseai.tracker.widget.RecentTransactionsWidgetUpdateWorker.enqueueOneShot(context)
+            com.pennywiseai.tracker.widget.WidgetRefresher.refreshTransactionWidgets(context)
+        }
+    }
+
+    /**
+     * Opens the "delete all transactions" confirmation, loading the row count
+     * it will report. Transactions only: accounts, budgets, loans, categories
+     * and rules are left alone, and the cascading foreign keys clear the
+     * splits / tags / rule-applications that hang off the deleted rows.
+     */
+    fun requestDeleteAllTransactions() {
+        _deleteAllTransactionsRequested.value = true
+    }
+
+    fun cancelDeleteAllTransactions() {
+        _deleteAllTransactionsRequested.value = false
+    }
+
+    /**
+     * Clears the transaction history. The delete and the balance settlement that
+     * follows it are one database transaction inside
+     * [DeleteAllTransactionsUseCase] — see there for what happens to each kind of
+     * account's balance and why.
+     */
+    private suspend fun onDeleteAllSucceeded(deleted: Int) {
+        com.pennywiseai.tracker.widget.WidgetRefresher.refreshTransactionWidgets(context)
+        com.pennywiseai.tracker.widget.RecentTransactionsWidgetDataStore.clear(context)
+
+        // SMS ingestion runs independently and can commit a row straight after
+        // the delete's transaction commits. That isn't the delete failing — the
+        // authorised history did go — but reporting a clean sweep while rows
+        // exist would be a lie, so say what actually happened.
+        val arrived = transactionRepository.observeAllTransactionCount().first()
+        _deleteAllTransactionsResult.value = buildList {
+            add(
+                if (deleted == 0) UiText.Res(R.string.settings_delete_all_result_none)
+                else UiText.Plural(R.plurals.settings_delete_all_result_deleted, deleted)
+            )
+            if (arrived > 0) {
+                add(UiText.Plural(R.plurals.settings_delete_all_result_arrived, arrived))
+            }
+        }
+    }
+
+    fun deleteAllTransactions(expectedCount: Int) {
+        viewModelScope.launch {
+            _isDeletingAllTransactions.value = true
+            try {
+                when (val result = deleteAllTransactionsUseCase(expectedCount)) {
+                    is DeleteAllTransactionsUseCase.Result.CountChanged -> {
+                        // Nothing was removed; the dialog stays open showing the
+                        // new (observed) figure so the user re-authorises it.
+                        _deleteAllTransactionsResult.value = listOf(
+                            UiText.Res(R.string.settings_delete_all_result_count_changed, listOf(result.actual))
+                        )
+                        return@launch
+                    }
+                    is DeleteAllTransactionsUseCase.Result.Deleted -> {
+                        onDeleteAllSucceeded(result.deleted)
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e("SettingsViewModel", "Delete all transactions failed", e)
+                _deleteAllTransactionsResult.value = listOf(
+                    UiText.Res(R.string.settings_delete_all_result_error, listOf("${e.message}"))
+                )
+            } finally {
+                _isDeletingAllTransactions.value = false
+                _deleteAllTransactionsRequested.value = false
+            }
+        }
+    }
+
+    fun setCountCreditCardAsExpense(enabled: Boolean) {
+        viewModelScope.launch {
+            userPreferencesRepository.setCountCreditCardAsExpense(enabled)
+            com.pennywiseai.tracker.widget.WidgetRefresher.refreshTransactionWidgets(context)
         }
     }
 
     fun setDisplayCurrency(currency: String) {
         viewModelScope.launch {
             userPreferencesRepository.setDisplayCurrency(currency)
-            com.pennywiseai.tracker.widget.RecentTransactionsWidgetUpdateWorker.enqueueOneShot(context)
+            com.pennywiseai.tracker.widget.WidgetRefresher.refreshTransactionWidgets(context)
             com.pennywiseai.tracker.widget.RecentTransactionsWidgetDataStore.clear(context)
         }
     }
 
-    fun setBaseCurrency(currency: String) {
+    fun setDailySummaryEnabled(enabled: Boolean) {
         viewModelScope.launch {
-            userPreferencesRepository.setBaseCurrency(currency)
+            userPreferencesRepository.setDailySummaryEnabled(enabled)
+            com.pennywiseai.tracker.worker.DailySummaryWorker.sync(context, enabled)
         }
     }
 
@@ -444,7 +446,6 @@ class SettingsViewModel @Inject constructor(
             contactsResolver.clearCache()
         }
     }
-
     
     fun updateSmsScanMonths(months: Int) {
         viewModelScope.launch {
@@ -453,9 +454,10 @@ class SettingsViewModel @Inject constructor(
             // If increasing scan period, reset scan timestamp to force full scan
             if (months > currentMonths) {
                 userPreferencesRepository.setLastScanTimestamp(0L)
-                diagnosticLogger.d("SettingsViewModel", "Scan period increased from $currentMonths to $months months - will perform full scan")
+                Log.d("SettingsViewModel", "Scan period increased from $currentMonths to $months months - will perform full scan")
             }
 
+            userPreferencesRepository.updateSmsScanUseCustomDate(false)
             userPreferencesRepository.updateSmsScanMonths(months)
         }
     }
@@ -465,10 +467,28 @@ class SettingsViewModel @Inject constructor(
             // If enabling all time scanning, reset scan timestamp to force full scan
             if (allTime) {
                 userPreferencesRepository.setLastScanTimestamp(0L)
-                diagnosticLogger.d("SettingsViewModel", "All time scanning enabled - will perform full scan")
+                Log.d("SettingsViewModel", "All time scanning enabled - will perform full scan")
             }
 
+            userPreferencesRepository.updateSmsScanUseCustomDate(false)
             userPreferencesRepository.updateSmsScanAllTime(allTime)
+        }
+    }
+
+    fun updateSmsScanCustomDate(selectedDateMillis: Long) {
+        viewModelScope.launch {
+            val normalizedDate = SmsScanParamsCalculator.normalizePickerDateToLocalStartOfDay(selectedDateMillis)
+            val currentDate = userPreferencesRepository.getSmsScanCustomDate()
+            val wasUsingCustomDate = userPreferencesRepository.getSmsScanUseCustomDate()
+
+            if (!wasUsingCustomDate || currentDate == null || normalizedDate < currentDate) {
+                userPreferencesRepository.setLastScanTimestamp(0L)
+                Log.d("SettingsViewModel", "Custom SMS scan date updated - will perform full scan")
+            }
+
+            userPreferencesRepository.updateSmsScanAllTime(false)
+            userPreferencesRepository.updateSmsScanUseCustomDate(true)
+            userPreferencesRepository.updateSmsScanCustomDate(normalizedDate)
         }
     }
     
@@ -478,25 +498,8 @@ class SettingsViewModel @Inject constructor(
                 val firstUnreported = unrecognizedSmsRepository.getFirstUnreported()
                 
                 if (firstUnreported != null) {
-                    // URL encode the parameters
-                    val encodedMessage = URLEncoder.encode(firstUnreported.smsBody, "UTF-8")
-                    val encodedSender = URLEncoder.encode(firstUnreported.sender, "UTF-8")
-                    
-                    // Encrypt device data for verification
-                    val encryptedDeviceData = com.pennywiseai.tracker.utils.DeviceEncryption.encryptDeviceData(context)
-                    diagnosticLogger.d("SettingsViewModel", "Encrypted device data: ${encryptedDeviceData?.take(50)}... (length: ${encryptedDeviceData?.length})")
-                    
-                    val encodedDeviceData = if (encryptedDeviceData != null) {
-                        URLEncoder.encode(encryptedDeviceData, "UTF-8")
-                    } else {
-                        ""
-                    }
-                    diagnosticLogger.d("SettingsViewModel", "Encoded device data: ${encodedDeviceData.take(50)}... (length: ${encodedDeviceData.length})")
-                    
-                    // Reporting to original service disabled in this fork.
-                    // Direct users to the fork's GitHub issues instead.
-                    val url = "${Constants.Links.GITHUB_URL}/issues/new"
-                    diagnosticLogger.d("SettingsViewModel", "Opening fork issues instead of original parser")
+                    val url = SmsReportUrlBuilder.buildUrl(context, firstUnreported.smsBody, firstUnreported.sender)
+                    Log.d("SettingsViewModel", "Full URL length: ${url.length}")
                     
                     // Open in browser
                     val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
@@ -505,12 +508,12 @@ class SettingsViewModel @Inject constructor(
                     // Mark as reported
                     unrecognizedSmsRepository.markAsReported(listOf(firstUnreported.id))
                     
-                    diagnosticLogger.d("SettingsViewModel", "Opened report for unrecognized SMS from: ${firstUnreported.sender}")
+                    Log.d("SettingsViewModel", "Opened report for unrecognized SMS from: ${firstUnreported.sender}")
                 } else {
-                    diagnosticLogger.d("SettingsViewModel", "No unreported SMS messages found")
+                    Log.d("SettingsViewModel", "No unreported SMS messages found")
                 }
             } catch (e: Exception) {
-                diagnosticLogger.e("SettingsViewModel", "Error opening unrecognized SMS report", e)
+                Log.e("SettingsViewModel", "Error opening unrecognized SMS report", e)
             }
         }
     }
@@ -518,22 +521,23 @@ class SettingsViewModel @Inject constructor(
     fun exportBackup() {
         viewModelScope.launch {
             try {
-                val result = backupExporter.exportBackup()
+                val result = backupExporter.exportBackup(
+                    includeReceipts = userPreferencesRepository.exportIncludeReceipts.first()
+                )
                 when (result) {
                     is ExportResult.Success -> {
                         // Store the file for later saving
                         _exportedBackupFile.value = result.file
-                        _importExportMessage.value = "Backup created successfully! Choose where to save it."
+                        _importExportMessage.value = UiText.Res(R.string.settings_backup_created_choose)
                     }
                     is ExportResult.Error -> {
-                        _importExportMessage.value = "Export failed: ${result.message}"
-                        diagnosticLogger.e("SettingsViewModel", "Export failed: ${result.message}")
+                        _importExportMessage.value = UiText.Res(R.string.settings_export_failed, listOf("${result.message}"))
+                        Log.e("SettingsViewModel", "Export failed: ${result.message}")
                     }
-                    else -> {}
                 }
             } catch (e: Exception) {
-                _importExportMessage.value = "Export error: ${e.message}"
-                diagnosticLogger.e("SettingsViewModel", "Export error", e)
+                _importExportMessage.value = UiText.Res(R.string.settings_export_error, listOf("${e.message}"))
+                Log.e("SettingsViewModel", "Export error", e)
             }
         }
     }
@@ -547,12 +551,12 @@ class SettingsViewModel @Inject constructor(
                             inputStream.copyTo(outputStream)
                         }
                     }
-                    _importExportMessage.value = "Backup saved successfully!"
+                    _importExportMessage.value = UiText.Res(R.string.settings_backup_saved)
                     _exportedBackupFile.value = null
                 }
             } catch (e: Exception) {
-                _importExportMessage.value = "Failed to save backup: ${e.message}"
-                diagnosticLogger.e("SettingsViewModel", "Error saving backup", e)
+                _importExportMessage.value = UiText.Res(R.string.settings_backup_save_failed, listOf("${e.message}"))
+                Log.e("SettingsViewModel", "Error saving backup", e)
             }
         }
     }
@@ -574,58 +578,245 @@ class SettingsViewModel @Inject constructor(
             val intent = Intent(Intent.ACTION_SEND).apply {
                 type = "application/octet-stream"
                 putExtra(Intent.EXTRA_STREAM, uri)
-                putExtra(Intent.EXTRA_SUBJECT, "PennyWise Backup")
+                putExtra(Intent.EXTRA_SUBJECT, context.getString(R.string.settings_share_backup_subject))
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
             
-            context.startActivity(Intent.createChooser(intent, "Share Backup").apply {
+            context.startActivity(Intent.createChooser(intent, context.getString(R.string.settings_share_backup_chooser)).apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             })
         } catch (e: Exception) {
-            diagnosticLogger.e("SettingsViewModel", "Error sharing backup file", e)
+            Log.e("SettingsViewModel", "Error sharing backup file", e)
         }
     }
     
     fun importBackup(uri: android.net.Uri) {
         viewModelScope.launch {
             try {
-                _importExportMessage.value = "Importing backup..."
+                _importExportMessage.value = UiText.Res(R.string.settings_importing_backup)
                 val result = backupImporter.importBackup(uri, ImportStrategy.MERGE)
                 when (result) {
                     is ImportResult.Success -> {
-                        val skipped = if (result.skippedRows > 0) " ${result.skippedRows} rows could not be imported." else ""
-                        _importExportMessage.value = "Import successful! Imported ${result.importedTransactions} transactions, ${result.importedCategories} categories. Skipped ${result.skippedDuplicates} duplicates.$skipped"
+                        val counts = listOf(result.importedTransactions, result.importedCategories, result.skippedDuplicates)
+                        _importExportMessage.value = if (result.skippedRows > 0) {
+                            UiText.Res(R.string.settings_import_backup_success_with_skipped_rows, counts + result.skippedRows)
+                        } else {
+                            UiText.Res(R.string.settings_import_backup_success, counts)
+                        }
                     }
                     is ImportResult.Error -> {
-                        _importExportMessage.value = "Import failed: ${result.message}"
-                        diagnosticLogger.e("SettingsViewModel", "Import failed: ${result.message}")
+                        _importExportMessage.value = UiText.Res(R.string.settings_import_failed, listOf("${result.message}"))
+                        Log.e("SettingsViewModel", "Import failed: ${result.message}")
                     }
                 }
             } catch (e: Exception) {
-                _importExportMessage.value = "Import error: ${e.message}"
-                diagnosticLogger.e("SettingsViewModel", "Import error", e)
+                _importExportMessage.value = UiText.Res(R.string.settings_import_error, listOf("${e.message}"))
+                Log.e("SettingsViewModel", "Import error", e)
             }
         }
     }
     
+    /**
+     * Imports historical transactions from a CSV in PennyWise's own export format.
+     * Free feature (onboarding/migration) — not gated behind Pro.
+     */
+    fun importCsv(uri: android.net.Uri) {
+        viewModelScope.launch {
+            try {
+                _importExportMessage.value = UiText.Res(R.string.settings_importing_transactions)
+                when (val result = importCsvUseCase.execute(uri)) {
+                    is com.pennywiseai.tracker.data.csv.ImportCsvUseCase.Result.Success -> {
+                        _importExportMessage.value = if (result.failed > 0) {
+                            UiText.Res(
+                                R.string.settings_import_csv_success_with_failed_rows,
+                                listOf(result.imported, result.skippedDuplicate, result.failed)
+                            )
+                        } else {
+                            UiText.Res(R.string.settings_import_csv_success, listOf(result.imported, result.skippedDuplicate))
+                        }
+                    }
+                    is com.pennywiseai.tracker.data.csv.ImportCsvUseCase.Result.Error -> {
+                        _importExportMessage.value = UiText.Plain(result.message)
+                        Log.e("SettingsViewModel", "CSV import failed: ${result.message}")
+                    }
+                }
+            } catch (e: Exception) {
+                _importExportMessage.value = UiText.Res(R.string.settings_import_error, listOf("${e.message}"))
+                Log.e("SettingsViewModel", "CSV import error", e)
+            }
+        }
+    }
+
     fun clearImportExportMessage() {
         _importExportMessage.value = null
+    }
+
+    fun setScheduledFolderBackupEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            if (enabled) {
+                val treeUri = userPreferencesRepository.getScheduledFolderBackupTreeUri()
+                if (treeUri.isNullOrBlank()) {
+                    currentFolderPickerAction = FolderPickerAction.ENABLE
+                    _requestFolderPicker.value = true
+                    return@launch
+                }
+                enableScheduledFolderBackup(treeUri)
+            } else {
+                userPreferencesRepository.setScheduledFolderBackupEnabled(false)
+                scheduledFolderBackupScheduler.cancel()
+                _importExportMessage.value = UiText.Res(R.string.settings_folder_backup_disabled)
+            }
+        }
+    }
+
+    fun requestChangeBackupFolder() {
+        currentFolderPickerAction = FolderPickerAction.CHANGE
+        _requestFolderPicker.value = true
+    }
+
+    fun onFolderPickerLaunched() {
+        _requestFolderPicker.value = false
+    }
+
+    fun onBackupFolderSelected(uri: Uri) {
+        viewModelScope.launch {
+            try {
+                val flags = Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                    Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                context.contentResolver.takePersistableUriPermission(uri, flags)
+
+                val treeUri = uri.toString()
+                userPreferencesRepository.setScheduledFolderBackupTreeUri(treeUri)
+
+                when (currentFolderPickerAction) {
+                    FolderPickerAction.ENABLE -> enableScheduledFolderBackup(treeUri)
+                    FolderPickerAction.CHANGE -> {
+                        if (userPreferencesRepository.isScheduledFolderBackupEnabled()) {
+                            scheduledFolderBackupScheduler.schedule()
+                        }
+                        backupToFolderNow(showSuccessMessage = true)
+                    }
+                }
+            } catch (e: Exception) {
+                _importExportMessage.value = UiText.Res(R.string.settings_folder_access_failed, listOf("${e.message}"))
+                Log.e("SettingsViewModel", "Failed to persist backup folder", e)
+            }
+        }
+    }
+
+    fun backupToFolderNow(showSuccessMessage: Boolean = true) {
+        viewModelScope.launch {
+            performFolderBackup(showSuccessMessage)
+        }
+    }
+
+    private suspend fun performFolderBackup(showSuccessMessage: Boolean): Boolean {
+        val treeUri = userPreferencesRepository.getScheduledFolderBackupTreeUri()
+        if (treeUri.isNullOrBlank()) {
+            _importExportMessage.value = UiText.Res(R.string.settings_folder_select_first)
+            return false
+        }
+
+        if (!folderBackupWriter.canWriteToFolder(treeUri)) {
+            _importExportMessage.value = UiText.Res(R.string.settings_folder_not_writable)
+            return false
+        }
+
+        val includeReceipts = userPreferencesRepository.folderBackupIncludeReceipts.first()
+        return when (val exportResult = backupExporter.exportBackup(includeReceipts = includeReceipts)) {
+            is ExportResult.Success -> {
+                val writeResult = try {
+                    folderBackupWriter.writeBackup(treeUri, exportResult.file)
+                } finally {
+                    exportResult.file.delete()
+                }
+                when (writeResult) {
+                    is FolderBackupWriter.Result.Success -> {
+                        userPreferencesRepository.setScheduledFolderBackupLastTimestamp(
+                            System.currentTimeMillis()
+                        )
+                        if (showSuccessMessage) {
+                            _importExportMessage.value = UiText.Res(R.string.settings_folder_backup_saved)
+                        }
+                        true
+                    }
+                    is FolderBackupWriter.Result.Failure -> {
+                        _importExportMessage.value = UiText.Plain(writeResult.message)
+                        false
+                    }
+                }
+            }
+            is ExportResult.Error -> {
+                _importExportMessage.value = UiText.Plain(exportResult.message)
+                false
+            }
+        }
+    }
+
+    private suspend fun enableScheduledFolderBackup(treeUri: String) {
+        if (!folderBackupWriter.canWriteToFolder(treeUri)) {
+            _importExportMessage.value = UiText.Res(R.string.settings_folder_not_writable)
+            return
+        }
+
+        userPreferencesRepository.setScheduledFolderBackupEnabled(true)
+        scheduledFolderBackupScheduler.schedule()
+        // Only claim success if the immediate backup actually wrote. On failure,
+        // performFolderBackup has already surfaced the reason — don't clobber it.
+        if (performFolderBackup(showSuccessMessage = false)) {
+            _importExportMessage.value = UiText.Res(R.string.settings_folder_backup_enabled)
+        }
     }
     
     fun updateBaseCurrency(currency: String) {
         viewModelScope.launch {
-            userPreferencesRepository.setBaseCurrency(currency)
+            userPreferencesRepository.updateBaseCurrency(currency)
+        }
+    }
+
+    fun updateNumberFormatStyle(style: NumberFormatStyle) {
+        viewModelScope.launch {
+            userPreferencesRepository.updateNumberFormatStyle(style)
+        }
+    }
+
+    fun updateDateFormatStyle(style: DateFormatStyle) {
+        viewModelScope.launch {
+            userPreferencesRepository.updateDateFormatStyle(style)
+            // Widgets store pre-formatted dates. Set the style before refreshing so
+            // the worker doesn't race the app-level collector and render the old one.
+            AppDates.dateFormatStyle = style
+            com.pennywiseai.tracker.widget.WidgetRefresher.refreshTransactionWidgets(context)
+        }
+    }
+
+    fun updateBudgetCycleStartDay(day: Int) {
+        viewModelScope.launch {
+            userPreferencesRepository.updateBudgetCycleStartDay(day)
+        }
+    }
+
+    /**
+     * Sets the main account and derives the default currency from it — unless the user
+     * has already picked a currency explicitly, in which case that choice is kept.
+     */
+    fun setMainAccount(account: AccountBalanceEntity) {
+        viewModelScope.launch {
+            userPreferencesRepository.updateMainAccountKey(
+                "${account.bankName}_${account.accountLast4}"
+            )
+            val currency = CurrencyFormatter.resolveAccountCurrency(
+                sourceType = account.sourceType,
+                storedCurrency = account.currency,
+                bankName = account.bankName
+            )
+            userPreferencesRepository.applyMainAccountCurrency(currency)
         }
     }
 }
 
-/** UI model for showing accounts in the Firefly mapping section */
-data class AccountMappingItem(
-    val key: String,           // e.g. "HDFC Bank**1234"
-    val displayName: String,   // e.g. "HDFC Bank ****1234"
-    val isCreditCard: Boolean = false
-)
+private const val BYTES_PER_MB = 1024L * 1024L
 
 enum class DownloadState {
     NOT_DOWNLOADED,
@@ -634,4 +825,9 @@ enum class DownloadState {
     COMPLETED,
     FAILED,
     ERROR_INSUFFICIENT_SPACE
+}
+
+private enum class FolderPickerAction {
+    ENABLE,
+    CHANGE
 }

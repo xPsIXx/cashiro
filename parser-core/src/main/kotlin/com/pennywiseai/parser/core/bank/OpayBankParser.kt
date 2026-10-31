@@ -6,7 +6,7 @@ import java.math.BigDecimal
 /**
  * Parser for Opay (Nigeria) SMS messages.
  *
- * Supported format (sentence-style, NO account number and NO balance ÔÇö Opay omits both):
+ * Supported format (sentence-style, NO account number and NO balance — Opay omits both):
  * ```
  * Dear OPay user, N2,300.00 has been debited for Card Payment via POS on 14-May-2026 19:28.
  * Dear OPay user, N150.00 has been credited ... (best-effort credit handling)
@@ -54,7 +54,7 @@ class OpayBankParser : BankParser() {
 
     override fun extractMerchant(message: String, sender: String): String? {
         // Anchor the trailing " on " to the actual date (DD-Mon-YYYY) so a purpose that
-        // itself contains " on " (e.g. "Payment on Account") isn't truncated ÔÇö the lazy
+        // itself contains " on " (e.g. "Payment on Account") isn't truncated — the lazy
         // capture backtracks past any earlier " on " that isn't followed by a date.
         val match = Regex(
             """(?i)has\s+been\s+(?:debited|credited)\s+for\s+(.+?)\s+on\s+\d{1,2}-[A-Za-z]{3}-\d{2,4}"""

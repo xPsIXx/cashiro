@@ -224,6 +224,13 @@ object BrandIcons {
         "nmb bank" to R.drawable.ic_brand_nmb_bank,
         "nabil bank" to R.drawable.ic_brand_nmb_bank,
         "siddhartha bank" to R.drawable.ic_brand_siddhartha_bank,
+        "citizens bank" to R.drawable.ic_brand_citizens_bank,
+        "machchhapuchchhre bank" to R.drawable.ic_brand_machhapuchchhre_bank,
+        "lumbini bikash bank" to R.drawable.ic_brand_lumbini_bikash_bank,
+        "nepal bank limited" to R.drawable.ic_brand_nepal_bank,
+        "nepal bank" to R.drawable.ic_brand_nepal_bank,
+        "nepal sbi bank" to R.drawable.ic_brand_nepal_sbi_bank,
+        "standard chartered bank nepal" to R.drawable.ic_brand_standard_chartered,
         // Banks - Africa / Mobile Money
         "m-pesa" to R.drawable.ic_brand_mpesa,
         "mpesa" to R.drawable.ic_brand_mpesa,
@@ -237,6 +244,13 @@ object BrandIcons {
         "priorbank" to R.drawable.ic_brand_priorbank,
         "alinma" to R.drawable.ic_brand_alinma_bank,
         "cib egypt" to R.drawable.ic_brand_cib_egypt,
+        // Sri Lanka
+        "dialog axiata" to R.drawable.ic_brand_dialog,
+        "mobitel" to R.drawable.ic_brand_mobitel,
+        "slt" to R.drawable.ic_brand_slt,
+        "pickme" to R.drawable.ic_brand_pickme,
+        "glomark" to R.drawable.ic_brand_glomark,
+        "keells" to R.drawable.ic_brand_keells,
     )
     
     fun getIconResource(merchantName: String): Int? {
@@ -374,6 +388,14 @@ object BrandIcons {
         merchantName.contains("au bank", ignoreCase = true) -> "#EC6608"
         merchantName.contains("discover", ignoreCase = true) -> "#FF6000"
         merchantName.contains("schwab", ignoreCase = true) -> "#00A0DF"
+
+        // Sri Lanka
+        merchantName.contains("dialog axiata", ignoreCase = true) -> "#D81818"
+        merchantName.contains("mobitel", ignoreCase = true) -> "#4CA64C"
+        merchantName.contains("slt", ignoreCase = true) -> "#004890"
+        merchantName.contains("pickme", ignoreCase = true) -> "#F0C000"
+        merchantName.contains("glomark", ignoreCase = true) -> "#002B5C"
+        merchantName.contains("keells", ignoreCase = true) -> "#6BA539"
 
         else -> null
     }

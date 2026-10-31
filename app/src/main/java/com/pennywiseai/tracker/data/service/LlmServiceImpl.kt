@@ -10,6 +10,10 @@ import com.google.ai.edge.litertlm.EngineConfig
 import com.google.ai.edge.litertlm.Message
 import com.google.ai.edge.litertlm.SamplerConfig
 import com.google.ai.edge.litertlm.Backend
+import com.google.ai.edge.litertlm.tool
+import com.pennywiseai.tracker.domain.service.LlmEvent
+import kotlinx.coroutines.flow.mapNotNull
+import kotlinx.coroutines.flow.transform
 import com.pennywiseai.tracker.domain.service.LlmService
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
@@ -17,6 +21,8 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -29,8 +35,17 @@ class LlmServiceImpl @Inject constructor(
     private var engine: Engine? = null
     private var conversation: Conversation? = null
 
+    // Create / close / reset run on Dispatchers.IO from different callers; without
+    // this two closes could race on one Conversation, and LiteRT throws
+    // IllegalStateException for a close it can't perform (a 2.21.0 crash).
+    private val lifecycle = Mutex()
+
     override suspend fun initialize(modelPath: String): Result<Unit> = withContext(Dispatchers.IO) {
-        try {
+        lifecycle.withLock { initializeLocked(modelPath) }
+    }
+
+    private fun initializeLocked(modelPath: String): Result<Unit> {
+        return try {
             val engineConfig = EngineConfig(
                 modelPath = modelPath,
                 backend = Backend.CPU(),
@@ -48,15 +63,17 @@ class LlmServiceImpl @Inject constructor(
 
     override suspend fun createConversation(
         systemPrompt: String,
-        history: List<Pair<String, Boolean>>
-    ): Result<Unit> = withContext(Dispatchers.IO) {
+        history: List<Pair<String, Boolean>>,
+        withTools: Boolean
+    ): Result<Unit> = withContext(Dispatchers.IO) { lifecycle.withLock {
         try {
-            val currentEngine = engine ?: return@withContext Result.failure(
+            val currentEngine = engine ?: return@withLock Result.failure(
                 IllegalStateException("Engine not initialized")
             )
 
-            // Close any existing conversation
-            conversation?.close()
+            // Close any existing conversation. Taken first, so a failed close can't
+            // leave a dead conversation behind for the next caller to close again.
+            takeConversation()?.closeQuietly()
 
             val initialMessages = history.map { (message, isUser) ->
                 if (isUser) Message.user(message) else Message.model(message)
@@ -65,6 +82,10 @@ class LlmServiceImpl @Inject constructor(
             val conversationConfig = ConversationConfig(
                 systemInstruction = Contents.of(systemPrompt),
                 initialMessages = initialMessages,
+                // Tool calls are surfaced, never auto-executed (#170): every
+                // mutation goes through the user first.
+                tools = if (withTools) listOf(tool(PennyWiseTools())) else emptyList(),
+                automaticToolCalling = false,
                 samplerConfig = SamplerConfig(
                     topK = 10,
                     topP = 0.95,
@@ -79,9 +100,12 @@ class LlmServiceImpl @Inject constructor(
             Log.e(TAG, "Failed to create conversation", e)
             Result.failure(e)
         }
-    }
+    } }
 
-    override fun sendMessage(message: String): Flow<String> {
+    override fun sendMessage(message: String): Flow<String> =
+        sendMessageEvents(message).mapNotNull { (it as? LlmEvent.Text)?.delta }
+
+    override fun sendMessageEvents(message: String): Flow<LlmEvent> {
         val activeConversation = conversation
             ?: throw IllegalStateException("No active conversation")
 
@@ -92,10 +116,12 @@ class LlmServiceImpl @Inject constructor(
                 Log.e(TAG, "Error during streaming response", e)
                 throw e
             }
-            .map { message ->
-                message.contents.contents
+            .transform { chunk ->
+                val text = chunk.contents.contents
                     .filterIsInstance<com.google.ai.edge.litertlm.Content.Text>()
                     .joinToString("") { it.text }
+                if (text.isNotEmpty()) emit(LlmEvent.Text(text))
+                chunk.toolCalls.forEach { emit(LlmEvent.ToolCall(it.name, it.arguments)) }
             }
             .flowOn(Dispatchers.IO)
     }
@@ -104,20 +130,27 @@ class LlmServiceImpl @Inject constructor(
 
     override suspend fun closeConversation() {
         withContext(Dispatchers.IO) {
-            conversation?.close()
-            conversation = null
+            lifecycle.withLock { takeConversation()?.closeQuietly() }
             Log.d(TAG, "Conversation closed")
         }
     }
 
     override suspend fun reset() {
         withContext(Dispatchers.IO) {
-            conversation?.close()
-            conversation = null
-            engine?.close()
-            engine = null
+            lifecycle.withLock {
+                takeConversation()?.closeQuietly()
+                engine?.let { e -> runCatching { e.close() }.onFailure { Log.w(TAG, "Ignoring failed engine close", it) } }
+                engine = null
+            }
             Log.d(TAG, "Engine and conversation reset")
         }
+    }
+
+    private fun takeConversation(): Conversation? = conversation.also { conversation = null }
+
+    /** Closing is cleanup: a close LiteRT refuses (already closed, mid-generation) must not crash the app. */
+    private fun Conversation.closeQuietly() {
+        runCatching { close() }.onFailure { Log.w(TAG, "Ignoring failed conversation close", it) }
     }
 
     override fun isInitialized(): Boolean = engine != null

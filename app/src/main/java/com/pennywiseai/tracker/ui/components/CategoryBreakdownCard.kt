@@ -1,5 +1,7 @@
 package com.pennywiseai.tracker.ui.components
 
+import com.pennywiseai.tracker.R
+import androidx.compose.ui.res.stringResource
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
@@ -15,10 +17,12 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.pennywiseai.tracker.ui.components.cards.PennyWiseCardV2
 import com.pennywiseai.tracker.ui.icons.CategoryMapping
 import com.pennywiseai.tracker.ui.screens.analytics.CategoryData
 import com.pennywiseai.tracker.ui.theme.Spacing
 import com.pennywiseai.tracker.utils.CurrencyFormatter
+import com.pennywiseai.tracker.ui.icons.categoryLabel
 
 @Composable
 fun CategoryBreakdownCard(
@@ -27,16 +31,16 @@ fun CategoryBreakdownCard(
     modifier: Modifier = Modifier,
     onCategoryClick: (CategoryData) -> Unit = {}
 ) {
-    val maxAmount = categories.maxOfOrNull { it.amount } ?: java.math.BigDecimal.ZERO
+    val maxAmount = categories.map { it.amount }.maxOrNull() ?: java.math.BigDecimal.ZERO
 
-    PennyWiseCard(
+    PennyWiseCardV2(
         modifier = modifier.fillMaxWidth()
     ) {
         Column(
             verticalArrangement = Arrangement.spacedBy(Spacing.md)
         ) {
             Text(
-                text = "Spending by Category",
+                text = stringResource(R.string.analytics_spending_by_category),
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.Medium
             )
@@ -77,10 +81,8 @@ private fun CategoryBar(
         label = "category_bar_${category.name}"
     )
 
-    // Get category-specific color
-    val categoryInfo = CategoryMapping.categories[category.name]
-        ?: CategoryMapping.categories["Others"]!!
-    val categoryColor = categoryInfo.color
+    // Category color: user's assigned color, else built-in palette, else gray (#586)
+    val categoryColor = CategoryMapping.colorFor(category.name, category.color)
 
     Column(
         modifier = Modifier
@@ -96,7 +98,7 @@ private fun CategoryBar(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
-                text = category.name,
+                text = categoryLabel(category.name),
                 style = MaterialTheme.typography.bodyMedium,
                 modifier = Modifier.weight(1f),
                 maxLines = 1,
@@ -107,7 +109,7 @@ private fun CategoryBar(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = "${category.percentage.toInt()}%",
+                    text = stringResource(R.string.analytics_percent, category.percentage.toInt()),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )

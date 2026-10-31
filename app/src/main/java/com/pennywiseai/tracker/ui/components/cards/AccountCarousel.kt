@@ -1,5 +1,7 @@
 package com.pennywiseai.tracker.ui.components.cards
 
+import com.pennywiseai.tracker.R
+import androidx.compose.ui.res.stringResource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -109,9 +111,18 @@ private fun AccountCarouselCard(
     hazeState: HazeState? = null
 ) {
     var isAmountHidden by remember { mutableStateOf(true) }
-    val containerColor = if (blurEffects)
-        MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.5f)
-    else MaterialTheme.colorScheme.surfaceContainerLow
+    // Low-balance alert: tint the home card red when a non-credit account's balance
+    // is at or below its user-set threshold (matches Manage Accounts). #509
+    val isLowBalance = !isCreditCard &&
+        account.lowBalanceThreshold != null &&
+        account.balance <= account.lowBalanceThreshold
+    val containerColor = when {
+        isLowBalance -> MaterialTheme.colorScheme.errorContainer.copy(
+            alpha = if (blurEffects) 0.5f else 0.7f
+        )
+        blurEffects -> MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.5f)
+        else -> MaterialTheme.colorScheme.surfaceContainerLow
+    }
 
     val cardShape = RoundedCornerShape(16.dp)
 
@@ -161,12 +172,15 @@ private fun AccountCarouselCard(
                 modifier = Modifier.weight(1f, fill = false)
             )
 
-            Text(
-                text = "ÔÇóÔÇó${account.accountLast4}",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
-                maxLines = 1
-            )
+            // Mobile-money wallets have no account number — show just the service name.
+            if (account.accountLast4 != AccountBalanceEntity.WALLET_ACCOUNT_MARKER) {
+                Text(
+                    text = "••${account.accountLast4}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+                    maxLines = 1
+                )
+            }
 
             // Account type chip
             Surface(
@@ -174,7 +188,7 @@ private fun AccountCarouselCard(
                 color = MaterialTheme.colorScheme.secondaryContainer
             ) {
                 Text(
-                    text = if (isCreditCard) "Credit" else "Savings",
+                    text = if (isCreditCard) stringResource(R.string.account_card_type_credit) else stringResource(R.string.account_card_type_savings),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSecondaryContainer,
                     fontWeight = FontWeight.Medium,
@@ -192,9 +206,18 @@ private fun AccountCarouselCard(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
-                text = if (isCreditCard) "Outstanding" else "Balance",
+                text = when {
+                    isLowBalance -> stringResource(R.string.account_card_low_balance)
+                    isCreditCard -> stringResource(R.string.account_card_outstanding)
+                    else -> stringResource(R.string.account_card_balance)
+                },
                 style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                fontWeight = if (isLowBalance) FontWeight.Medium else null,
+                color = if (isLowBalance) {
+                    MaterialTheme.colorScheme.error
+                } else {
+                    MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                }
             )
 
             Row(
@@ -205,8 +228,11 @@ private fun AccountCarouselCard(
                     // The label above is "Outstanding" for credit cards; that is the
                     // amount owed (account.balance), NOT the total creditLimit. Mirrors
                     // CreditCardsCard / AccountDetailScreen, which already do this.
-                    text = if (isAmountHidden) "ÔÇóÔÇóÔÇóÔÇóÔÇóÔÇó"
-                           else if (isUnifiedMode) CurrencyFormatter.formatCurrency(account.balance, selectedCurrency)
+                    // The entity is already pre-converted in unified mode (its currency
+                    // is the display currency when a rate was found), so format with the
+                    // account's own currency. This keeps an un-convertible balance honest
+                    // (shows "$400", not "MZN400") instead of forcing the display label.
+                    text = if (isAmountHidden) "••••••"
                            else account.formatBalance(),
                     style = MaterialTheme.typography.titleLarge,
                     fontWeight = FontWeight.Bold,
@@ -223,7 +249,7 @@ private fun AccountCarouselCard(
                     Icon(
                         imageVector = if (isAmountHidden) Icons.Default.VisibilityOff
                                       else Icons.Default.Visibility,
-                        contentDescription = if (isAmountHidden) "Show balance" else "Hide balance",
+                        contentDescription = if (isAmountHidden) stringResource(R.string.balance_show) else stringResource(R.string.balance_hide),
                         modifier = Modifier.size(Dimensions.Icon.small),
                         tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
                     )

@@ -1,5 +1,10 @@
 package com.pennywiseai.tracker.presentation.transactions
 
+import com.pennywiseai.tracker.utils.AppDates
+
+import com.pennywiseai.tracker.R
+import androidx.compose.ui.res.pluralStringResource
+import androidx.compose.ui.res.stringResource
 import android.content.Intent
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
@@ -11,13 +16,17 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
-import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
+import androidx.hilt.navigation.compose.hiltViewModel
 import kotlinx.coroutines.launch
+import com.pennywiseai.tracker.BuildConfig
 import com.pennywiseai.tracker.data.database.entity.TransactionEntity
 import com.pennywiseai.tracker.data.export.ExportResult
+import com.pennywiseai.tracker.ui.components.SupportDevelopmentDialog
+import com.pennywiseai.tracker.ui.components.SupportNudgeCard
 import com.pennywiseai.tracker.ui.components.cards.PennyWiseCardV2
 import com.pennywiseai.tracker.ui.theme.Dimensions
 import com.pennywiseai.tracker.ui.theme.Spacing
@@ -34,6 +43,29 @@ fun ExportTransactionsDialog(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var exportState by remember { mutableStateOf<ExportState>(ExportState.Ready) }
+    val isProEntitled by viewModel.isProEntitled.collectAsState()
+    var showUpgradeSheet by remember { mutableStateOf(false) }
+    // F-Droid support nudge: on the open build there's no Pro to sell, so a
+    // successful export (a Pro-equivalent power feature) is a natural, capped
+    // moment to invite a tip. Never shown on Play builds.
+    var showSupportNudge by remember { mutableStateOf(false) }
+    var showSupportDialog by remember { mutableStateOf(false) }
+    LaunchedEffect(exportState) {
+        if (exportState is ExportState.Success &&
+            BuildConfig.IS_FDROID_BUILD &&
+            viewModel.claimSupportNudge()
+        ) {
+            showSupportNudge = true
+        }
+    }
+    val csvLimit = com.pennywiseai.tracker.billing.FreeTierLimits.MAX_CSV_EXPORT_ROWS_PER_MONTH
+    // Free users get the FIRST `csvLimit` rows on every export — never a
+    // hard block. The advertised free tier is "first 100 rows," so we
+    // actually deliver them when the selection exceeds the limit. Pro is
+    // unlimited. Truncation is surfaced in the summary card + CTA label so
+    // it's never a silent surprise.
+    val willTruncate = !isProEntitled && transactions.size > csvLimit
+    val transactionsToExport = if (willTruncate) transactions.take(csvLimit) else transactions
     
     Dialog(onDismissRequest = {
         if (exportState !is ExportState.Exporting) {
@@ -75,10 +107,10 @@ fun ExportTransactionsDialog(
                 // Title
                 Text(
                     text = when (exportState) {
-                        is ExportState.Ready -> "Export Transactions"
-                        is ExportState.Exporting -> "Exporting..."
-                        is ExportState.Success -> "Export Complete!"
-                        is ExportState.Error -> "Export Failed"
+                        is ExportState.Ready -> stringResource(R.string.txn_export_title_ready)
+                        is ExportState.Exporting -> stringResource(R.string.txn_export_title_exporting)
+                        is ExportState.Success -> stringResource(R.string.txn_export_title_success)
+                        is ExportState.Error -> stringResource(R.string.txn_export_title_error)
                     },
                     style = MaterialTheme.typography.headlineSmall,
                     textAlign = TextAlign.Center
@@ -90,7 +122,7 @@ fun ExportTransactionsDialog(
                 when (val state = exportState) {
                     is ExportState.Ready -> {
                         Text(
-                            text = "Export ${transactions.size} transactions to CSV format",
+                            text = pluralStringResource(R.plurals.txn_export_ready_message, transactions.size, transactions.size),
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             textAlign = TextAlign.Center
@@ -112,7 +144,7 @@ fun ExportTransactionsDialog(
                                     horizontalArrangement = Arrangement.SpaceBetween
                                 ) {
                                     Text(
-                                        text = "Total transactions:",
+                                        text = stringResource(R.string.txn_export_total_transactions),
                                         style = MaterialTheme.typography.bodySmall
                                     )
                                     Text(
@@ -125,26 +157,56 @@ fun ExportTransactionsDialog(
                                 // Date range in column layout to prevent wrapping
                                 if (transactions.isNotEmpty()) {
                                     Spacer(modifier = Modifier.height(8.dp))
-                                    
-                                    val dateFormatter = DateTimeFormatter.ofPattern("MMM d, yyyy")
+
+                                    val dateFormatter = AppDates.dateFormatter()
                                     val startDate = transactions.last().dateTime.format(dateFormatter)
                                     val endDate = transactions.first().dateTime.format(dateFormatter)
-                                    
+
                                     Column(
                                         modifier = Modifier.fillMaxWidth()
                                     ) {
                                         Text(
-                                            text = "Date range:",
+                                            text = stringResource(R.string.txn_export_date_range),
                                             style = MaterialTheme.typography.bodySmall,
                                             color = MaterialTheme.colorScheme.onSurfaceVariant
                                         )
                                         Text(
-                                            text = "$startDate - $endDate",
+                                            text = stringResource(R.string.txn_export_date_range_value, startDate, endDate),
                                             style = MaterialTheme.typography.bodySmall,
                                             color = MaterialTheme.colorScheme.primary
                                         )
                                     }
                                 }
+                        }
+
+                        // Free-tier truncation notice. Shown ONLY when we're
+                        // about to truncate; surfaces what the user will
+                        // actually receive and offers a one-tap upgrade.
+                        if (willTruncate) {
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text(
+                                    text = stringResource(R.string.txn_export_free_limit_notice, csvLimit, transactions.size),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.weight(1f),
+                                )
+                                TextButton(
+                                    onClick = { showUpgradeSheet = true },
+                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                                ) {
+                                    Text(
+                                        text = stringResource(R.string.txn_export_unlock_all),
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.primary,
+                                        fontWeight = FontWeight.Medium,
+                                    )
+                                }
+                            }
                         }
                     }
 
@@ -165,7 +227,7 @@ fun ExportTransactionsDialog(
                     
                     is ExportState.Success -> {
                         Text(
-                            text = "Successfully exported ${state.transactionCount} transactions",
+                            text = pluralStringResource(R.plurals.txn_export_success_message, state.transactionCount, state.transactionCount),
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             textAlign = TextAlign.Center
@@ -201,14 +263,20 @@ fun ExportTransactionsDialog(
                                     )
                                 }
                                 Text(
-                                    text = "Size: ${formatFileSize(state.fileSizeBytes)}",
+                                    text = stringResource(R.string.txn_export_file_size, formatFileSize(state.fileSizeBytes)),
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f)
                                 )
                             }
                         }
+
+                        // F-Droid-only, frequency-capped tip-jar nudge.
+                        if (showSupportNudge) {
+                            Spacer(modifier = Modifier.height(12.dp))
+                            SupportNudgeCard(onClick = { showSupportDialog = true })
+                        }
                     }
-                    
+
                     is ExportState.Error -> {
                         Text(
                             text = state.message,
@@ -232,13 +300,18 @@ fun ExportTransactionsDialog(
                                 onClick = onDismiss,
                                 modifier = Modifier.weight(1f)
                             ) {
-                                Text("Cancel")
+                                Text(stringResource(R.string.txn_export_action_cancel))
                             }
                             
                             Button(
                                 onClick = {
+                                    // Always export the (possibly truncated)
+                                    // list — never hard-block free users.
+                                    // Truncation case still surfaces the
+                                    // paywall via the link beside this
+                                    // button so they can unlock the rest.
                                     scope.launch {
-                                        viewModel.exportTransactions(transactions).collect { result ->
+                                        viewModel.exportTransactions(transactionsToExport).collect { result ->
                                             when (result) {
                                                 is ExportResult.Progress -> {
                                                     exportState = ExportState.Exporting(
@@ -265,7 +338,9 @@ fun ExportTransactionsDialog(
                                 },
                                 modifier = Modifier.weight(1f)
                             ) {
-                                Text("Export")
+                                Text(
+                                    if (willTruncate) stringResource(R.string.txn_export_action_export_first, csvLimit) else stringResource(R.string.txn_export_action_export)
+                                )
                             }
                         }
                         
@@ -278,7 +353,7 @@ fun ExportTransactionsDialog(
                                 onClick = onDismiss,
                                 modifier = Modifier.weight(1f)
                             ) {
-                                Text("Done")
+                                Text(stringResource(R.string.txn_export_action_done))
                             }
                             
                             Button(
@@ -287,10 +362,10 @@ fun ExportTransactionsDialog(
                                     val shareIntent = Intent(Intent.ACTION_SEND).apply {
                                         type = "text/csv"
                                         putExtra(Intent.EXTRA_STREAM, (exportState as ExportState.Success).uri)
-                                        putExtra(Intent.EXTRA_SUBJECT, "PennyWise Transactions Export")
+                                        putExtra(Intent.EXTRA_SUBJECT, context.getString(R.string.txn_export_share_subject))
                                         addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                                     }
-                                    context.startActivity(Intent.createChooser(shareIntent, "Share CSV"))
+                                    context.startActivity(Intent.createChooser(shareIntent, context.getString(R.string.txn_export_share_chooser_title)))
                                 },
                                 modifier = Modifier.weight(1f)
                             ) {
@@ -300,7 +375,7 @@ fun ExportTransactionsDialog(
                                     modifier = Modifier.size(Dimensions.Icon.small)
                                 )
                                 Spacer(modifier = Modifier.width(4.dp))
-                                Text("Share")
+                                Text(stringResource(R.string.txn_export_action_share))
                             }
                         }
                         
@@ -309,7 +384,7 @@ fun ExportTransactionsDialog(
                                 onClick = onDismiss,
                                 modifier = Modifier.weight(1f)
                             ) {
-                                Text("Close")
+                                Text(stringResource(R.string.txn_export_action_close))
                             }
                             
                             Button(
@@ -318,13 +393,23 @@ fun ExportTransactionsDialog(
                                 },
                                 modifier = Modifier.weight(1f)
                             ) {
-                                Text("Retry")
+                                Text(stringResource(R.string.txn_export_action_retry))
                             }
                         }
                     }
                 }
             }
         }
+    }
+
+    if (showUpgradeSheet) {
+        com.pennywiseai.tracker.presentation.paywall.UpgradeSheet(
+            onDismiss = { showUpgradeSheet = false },
+        )
+    }
+
+    if (showSupportDialog) {
+        SupportDevelopmentDialog(onDismiss = { showSupportDialog = false })
     }
 }
 

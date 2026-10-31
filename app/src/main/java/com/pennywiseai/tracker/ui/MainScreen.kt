@@ -1,24 +1,28 @@
 package com.pennywiseai.tracker.ui
 
+import com.pennywiseai.tracker.R
+import androidx.compose.ui.res.stringResource
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.imePadding
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.background
-import androidx.compose.material3.*
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
-import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
+import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.navigation.NavBackStackEntry
 import androidx.navigation.NavHostController
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
@@ -26,36 +30,45 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
-import androidx.compose.runtime.CompositionLocalProvider
-import androidx.compose.runtime.derivedStateOf
 import com.pennywiseai.tracker.data.contacts.LocalMerchantDisplay
 import com.pennywiseai.tracker.data.contacts.displayMerchantName
+import com.pennywiseai.tracker.navigation.safePopBackStack
+import com.pennywiseai.tracker.presentation.navigation.BottomNavItem
+import com.pennywiseai.tracker.presentation.accounts.AddAccountScreen
+import com.pennywiseai.tracker.presentation.accounts.ManageAccountsScreen
+import com.pennywiseai.tracker.presentation.accounts.ManageAccountsViewModel
 import com.pennywiseai.tracker.presentation.home.HomeScreen
+import com.pennywiseai.tracker.presentation.statement.ImportStatementScreen
+import com.pennywiseai.tracker.presentation.statement.ImportStatementViewModel
 import com.pennywiseai.tracker.presentation.subscriptions.SubscriptionsScreen
 import com.pennywiseai.tracker.presentation.transactions.TransactionsScreen
 import com.pennywiseai.tracker.ui.components.PennyWiseBottomNavigation
 import com.pennywiseai.tracker.ui.components.SpotlightTutorial
 import com.pennywiseai.tracker.ui.components.WhatsNewDialog
 import com.pennywiseai.tracker.ui.screens.settings.AppearanceScreen
+import com.pennywiseai.tracker.ui.screens.settings.FAQScreen
 import com.pennywiseai.tracker.ui.screens.settings.SettingsScreen
 import com.pennywiseai.tracker.ui.viewmodel.MainViewModel
-import com.pennywiseai.tracker.ui.viewmodel.ThemeViewModel
 import com.pennywiseai.tracker.ui.viewmodel.SpotlightViewModel
-import com.pennywiseai.tracker.navigation.safePopBackStack
+import com.pennywiseai.tracker.ui.viewmodel.ThemeViewModel
 import dev.chrisbanes.haze.HazeState
 import dev.chrisbanes.haze.hazeSource
 
 @Composable
 fun MainScreen(
     rootNavController: NavHostController? = null,
-    navController: NavHostController = rememberNavController(),
-    themeViewModel: ThemeViewModel = hiltViewModel(),
-    spotlightViewModel: SpotlightViewModel = hiltViewModel(),
-    mainViewModel: MainViewModel = hiltViewModel(),
+    navController: NavHostController? = null,
+    themeViewModel: ThemeViewModel? = null,
+    spotlightViewModel: SpotlightViewModel? = null,
+    mainViewModel: MainViewModel? = null,
     initialCategory: String? = null,
     initialPeriod: String? = null,
     initialCurrency: String? = null
 ) {
+    val navController = navController ?: rememberNavController()
+    val themeViewModel = themeViewModel ?: hiltViewModel()
+    val spotlightViewModel = spotlightViewModel ?: hiltViewModel()
+    val mainViewModel = mainViewModel ?: hiltViewModel()
     val navBackStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = navBackStackEntry?.destination?.route
     val baseRoute = currentRoute?.substringBefore("?") ?: ""
@@ -71,8 +84,11 @@ fun MainScreen(
     // (TransactionItem, TransactionDetailScreen header, etc.) can apply the
     // same rule without prop-drilling the resolver everywhere.
     val useContactsForVpa by mainViewModel.useContactsForVpa.collectAsState()
-    val merchantDisplay = remember(useContactsForVpa) {
-        { raw: String? -> displayMerchantName(raw, useContactsForVpa, mainViewModel.contactsResolver) }
+    val merchantAliases by mainViewModel.merchantAliases.collectAsState()
+    val merchantDisplay = remember(useContactsForVpa, merchantAliases) {
+        { raw: String? ->
+            displayMerchantName(raw, useContactsForVpa, mainViewModel.contactsResolver, merchantAliases)
+        }
     }
 
     // Haze state for blur effects
@@ -88,6 +104,30 @@ fun MainScreen(
             }
             launchSingleTop = true
             restoreState = true
+        }
+    }
+
+    // Hiding the tab you're on (or the one under Settings) sends you Home, once,
+    // on the next tab you land on. Other ways into a hidden tab's screen (e.g.
+    // Home cards) keep working afterwards. Saveable so a rotation between
+    // hiding and going back doesn't drop the redirect. (#912)
+    val hiddenTabs = themeState.hiddenNavTabs
+    val chatHidden = BottomNavItem.Chat.route in hiddenTabs
+    var lastHiddenTabs by rememberSaveable { mutableStateOf<ArrayList<String>?>(null) }
+    var fallBackPending by rememberSaveable { mutableStateOf(false) }
+    LaunchedEffect(themeState.isLoading, hiddenTabs) {
+        if (themeState.isLoading) return@LaunchedEffect
+        if (lastHiddenTabs?.containsAll(hiddenTabs) == false) fallBackPending = true
+        lastHiddenTabs = ArrayList(hiddenTabs)
+    }
+    LaunchedEffect(fallBackPending, baseRoute) {
+        if (!fallBackPending || BottomNavItem.all.none { it.route == baseRoute }) return@LaunchedEffect
+        fallBackPending = false
+        BottomNavItem.fallbackFor(baseRoute, hiddenTabs)?.let { home ->
+            navController.navigate(home) {
+                popUpTo(navController.graph.startDestinationId)
+                launchSingleTop = true
+            }
         }
     }
 
@@ -113,183 +153,309 @@ fun MainScreen(
     }
 
     CompositionLocalProvider(LocalMerchantDisplay provides merchantDisplay) {
-    Box(modifier = Modifier
-        .fillMaxSize()
-        .background(MaterialTheme.colorScheme.background)
-    ) {
-        // What's New Dialog
-        whatsNewVersion?.let { version ->
-            WhatsNewDialog(
-                version = version,
-                onDismiss = { mainViewModel.dismissWhatsNew() }
-            )
-        }
-
-        // NavHost — NO padding, fills the full screen
-        NavHost(
-            navController = navController,
-            startDestination = "home",
+        Box(
             modifier = Modifier
                 .fillMaxSize()
-                .hazeSource(hazeState),
-            enterTransition = { EnterTransition.None },
-            exitTransition = { ExitTransition.None },
-            popEnterTransition = { EnterTransition.None },
-            popExitTransition = { ExitTransition.None }
+                .background(MaterialTheme.colorScheme.background)
         ) {
-            composable("home") {
-                val homeViewModel: com.pennywiseai.tracker.presentation.home.HomeViewModel = hiltViewModel()
-                HomeScreen(
-                    viewModel = homeViewModel,
-                    navController = rootNavController ?: navController,
-                    coverStyle = themeState.coverStyle,
-                    blurEffects = themeState.blurEffectsEnabled,
-                    onNavigateToSettings = {
-                        navController.navigate("settings") {
-                            launchSingleTop = true
-                        }
-                    },
-                    onNavigateToTransactions = {
-                        navController.navigate("transactions") {
-                            launchSingleTop = true
-                        }
-                    },
-                    onNavigateToTransactionsWithSearch = {
-                        navController.navigate("transactions?focusSearch=true") {
-                            launchSingleTop = true
-                        }
-                    },
-                    onNavigateToSubscriptions = {
-                        navController.navigate("subscriptions") {
-                            launchSingleTop = true
-                        }
-                    },
-                    onNavigateToBudgets = {
-                        rootNavController?.navigate(
-                            com.pennywiseai.tracker.navigation.BudgetGroups
-                        ) { launchSingleTop = true }
-                    },
-                    onNavigateToLoans = {
-                        rootNavController?.navigate(
-                            com.pennywiseai.tracker.navigation.Loans
-                        ) { launchSingleTop = true }
-                    },
-                    onLoanClick = { loanId ->
-                        rootNavController?.navigate(
-                            com.pennywiseai.tracker.navigation.LoanDetail(loanId)
-                        ) { launchSingleTop = true }
-                    },
-                    onNavigateToManageAccounts = {
-                        navController.navigate("manage_accounts") {
-                            launchSingleTop = true
-                        }
-                    },
-                    onNavigateToAddScreen = {
-                        rootNavController?.navigate(
-                            com.pennywiseai.tracker.navigation.AddTransaction
-                        ) { launchSingleTop = true }
-                    },
-                    onTransactionClick = { transactionId ->
-                        rootNavController?.navigate(
-                            com.pennywiseai.tracker.navigation.TransactionDetail(transactionId)
-                        ) { launchSingleTop = true }
-                    },
-                    onGroupClick = { groupId ->
-                        rootNavController?.navigate(
-                            com.pennywiseai.tracker.navigation.TransactionGroupDetail(groupId)
-                        ) { launchSingleTop = true }
-                    },
-                    onTransactionTypeClick = { type ->
-                        val route = if (type != null) {
-                            "transactions?type=$type"
-                        } else {
-                            "transactions"
-                        }
-                        navController.navigate(route) {
-                            launchSingleTop = true
-                        }
-                    },
-                    onFabPositioned = { position ->
-                        spotlightViewModel.updateFabPosition(position)
-                    }
+            // What's New Dialog
+            whatsNewVersion?.let { version ->
+                WhatsNewDialog(
+                    version = version,
+                    onDismiss = { mainViewModel.dismissWhatsNew() }
                 )
             }
 
-            composable(
-                route = "transactions?category={category}&merchant={merchant}&period={period}&currency={currency}&focusSearch={focusSearch}&type={type}",
-                arguments = listOf(
-                    navArgument("category") {
-                        type = NavType.StringType
-                        nullable = true
-                        defaultValue = null
-                    },
-                    navArgument("merchant") {
-                        type = NavType.StringType
-                        nullable = true
-                        defaultValue = null
-                    },
-                    navArgument("period") {
-                        type = NavType.StringType
-                        nullable = true
-                        defaultValue = null
-                    },
-                    navArgument("currency") {
-                        type = NavType.StringType
-                        nullable = true
-                        defaultValue = null
-                    },
-                    navArgument("focusSearch") {
-                        type = NavType.BoolType
-                        defaultValue = false
-                    },
-                    navArgument("type") {
-                        type = NavType.StringType
-                        nullable = true
-                        defaultValue = null
+            // NavHost — NO padding, fills the full screen
+            NavHost(
+                navController = navController,
+                startDestination = "home",
+                modifier = Modifier
+                    .fillMaxSize()
+                    .hazeSource(hazeState),
+                enterTransition = { EnterTransition.None },
+                exitTransition = { ExitTransition.None },
+                popEnterTransition = { EnterTransition.None },
+                popExitTransition = { ExitTransition.None }
+            ) {
+                composable(
+                    route = "home",
+                    content = { _: NavBackStackEntry ->
+                        val homeViewModel: com.pennywiseai.tracker.presentation.home.HomeViewModel = hiltViewModel()
+                        HomeScreen(
+                            viewModel = homeViewModel,
+                            navController = rootNavController ?: navController,
+                            coverStyle = themeState.coverStyle,
+                            blurEffects = themeState.blurEffectsEnabled,
+                            onNavigateToSettings = {
+                                navController.navigate("settings") {
+                                    launchSingleTop = true
+                                }
+                            },
+                            onNavigateToTransactions = {
+                                navController.navigate("transactions") {
+                                    launchSingleTop = true
+                                }
+                            },
+                            onNavigateToTransactionsWithSearch = {
+                                navController.navigate("transactions?focusSearch=true") {
+                                    launchSingleTop = true
+                                }
+                            },
+                            onNavigateToSubscriptions = {
+                                navController.navigate("subscriptions") {
+                                    launchSingleTop = true
+                                }
+                            },
+                            onNavigateToBudgets = {
+                                rootNavController?.navigate(
+                                    com.pennywiseai.tracker.navigation.BudgetGroups()
+                                ) { launchSingleTop = true }
+                            },
+                            onNavigateToLoans = {
+                                rootNavController?.navigate(
+                                    com.pennywiseai.tracker.navigation.Loans
+                                ) { launchSingleTop = true }
+                            },
+                            onLoanClick = { loanId ->
+                                rootNavController?.navigate(
+                                    com.pennywiseai.tracker.navigation.LoanDetail(loanId)
+                                ) { launchSingleTop = true }
+                            },
+                            onNavigateToManageAccounts = {
+                                navController.navigate("manage_accounts") {
+                                    launchSingleTop = true
+                                }
+                            },
+                            onNavigateToAddScreen = {
+                                rootNavController?.navigate(
+                                    com.pennywiseai.tracker.navigation.AddTransaction()
+                                ) { launchSingleTop = true }
+                            },
+                            onTransactionClick = { transactionId ->
+                                rootNavController?.navigate(
+                                    com.pennywiseai.tracker.navigation.TransactionDetail(transactionId)
+                                ) { launchSingleTop = true }
+                            },
+                            onNavigateToTransactionGroups = {
+                                rootNavController?.navigate(
+                                    com.pennywiseai.tracker.navigation.TransactionGroups
+                                ) { launchSingleTop = true }
+                            },
+                            onGroupClick = { groupId ->
+                                rootNavController?.navigate(
+                                    com.pennywiseai.tracker.navigation.TransactionGroupDetail(groupId)
+                                ) { launchSingleTop = true }
+                            },
+                            onGoalClick = { goalId ->
+                                rootNavController?.navigate(
+                                    com.pennywiseai.tracker.navigation.GoalDetail(goalId)
+                                ) { launchSingleTop = true }
+                            },
+                            onTransactionTypeClick = { type ->
+                                val route = if (type != null) {
+                                    "transactions?type=$type"
+                                } else {
+                                    "transactions"
+                                }
+                                navController.navigate(route) {
+                                    launchSingleTop = true
+                                }
+                            },
+                            onFabPositioned = { position ->
+                                spotlightViewModel.updateFabPosition(position)
+                            }
+                        )
                     }
                 )
-            ) { backStackEntry ->
-                val category = backStackEntry.arguments?.getString("category")
-                val merchant = backStackEntry.arguments?.getString("merchant")
-                val period = backStackEntry.arguments?.getString("period")
-                val currency = backStackEntry.arguments?.getString("currency")
-                val focusSearch = backStackEntry.arguments?.getBoolean("focusSearch") ?: false
-                val transactionType = backStackEntry.arguments?.getString("type")
 
-                TransactionsScreen(
-                    modifier = Modifier.imePadding(),
-                    initialCategory = category,
-                    initialMerchant = merchant,
-                    initialPeriod = period,
-                    initialCurrency = currency,
-                    focusSearch = focusSearch,
-                    initialTransactionType = transactionType,
-                    onNavigateBack = {
-                        navController.safePopBackStack()
-                    },
-                    onTransactionClick = { transactionId ->
-                        rootNavController?.navigate(
-                            com.pennywiseai.tracker.navigation.TransactionDetail(transactionId)
-                        ) { launchSingleTop = true }
-                    },
-                    onAddTransactionClick = {
-                        rootNavController?.navigate(
-                            com.pennywiseai.tracker.navigation.AddTransaction
-                        ) { launchSingleTop = true }
-                    },
-                    onNavigateToSettings = {
-                        navController.navigate("settings") {
-                            launchSingleTop = true
+                composable(
+                    route = "transactions?category={category}&merchant={merchant}&period={period}&currency={currency}&focusSearch={focusSearch}&type={type}&startDate={startDate}&endDate={endDate}&account={account}&tag={tag}",
+                    arguments = listOf(
+                        navArgument("category") {
+                            type = NavType.StringType
+                            nullable = true
+                            defaultValue = null
+                        },
+                        navArgument("merchant") {
+                            type = NavType.StringType
+                            nullable = true
+                            defaultValue = null
+                        },
+                        navArgument("period") {
+                            type = NavType.StringType
+                            nullable = true
+                            defaultValue = null
+                        },
+                        navArgument("currency") {
+                            type = NavType.StringType
+                            nullable = true
+                            defaultValue = null
+                        },
+                        navArgument("focusSearch") {
+                            type = NavType.BoolType
+                            defaultValue = false
+                        },
+                        navArgument("type") {
+                            type = NavType.StringType
+                            nullable = true
+                            defaultValue = null
+                        },
+                        navArgument("startDate") {
+                            type = NavType.StringType
+                            nullable = true
+                            defaultValue = null
+                        },
+                        navArgument("endDate") {
+                            type = NavType.StringType
+                            nullable = true
+                            defaultValue = null
+                        },
+                        navArgument("account") {
+                            type = NavType.StringType
+                            nullable = true
+                            defaultValue = null
+                        },
+                        navArgument("tag") {
+                            type = NavType.StringType
+                            nullable = true
+                            defaultValue = null
                         }
+                    ),
+                    content = { backStackEntry: NavBackStackEntry ->
+                        val category = backStackEntry.arguments?.getString("category")
+                        val merchant = backStackEntry.arguments?.getString("merchant")
+                        val period = backStackEntry.arguments?.getString("period")
+                        val currency = backStackEntry.arguments?.getString("currency")
+                        val focusSearch = backStackEntry.arguments?.getBoolean("focusSearch") ?: false
+                        val transactionType = backStackEntry.arguments?.getString("type")
+                        val startDate = backStackEntry.arguments?.getString("startDate")?.toLongOrNull()
+                        val endDate = backStackEntry.arguments?.getString("endDate")?.toLongOrNull()
+                        val account = backStackEntry.arguments?.getString("account")
+                        val tag = backStackEntry.arguments?.getString("tag")
+
+                        TransactionsScreen(
+                            modifier = Modifier.imePadding(),
+                            initialCategory = category,
+                            initialMerchant = merchant,
+                            initialPeriod = period,
+                            initialCurrency = currency,
+                            initialCustomStartEpochDay = startDate,
+                            initialCustomEndEpochDay = endDate,
+                            initialAccount = account,
+                            initialTag = tag,
+                            focusSearch = focusSearch,
+                            initialTransactionType = transactionType,
+                            // No back arrow for a plain tab tap; show it for a filtered
+                            // drill-down (Home category/search) so the user can return. (#635)
+                            showBackButton = category != null || merchant != null ||
+                                period != null || currency != null || focusSearch ||
+                                transactionType != null || startDate != null || endDate != null ||
+                                account != null || tag != null,
+                            // The bottom nav is overlaid on this route — always reserve clearance.
+                            reserveBottomBarSpace = true,
+                            onNavigateBack = {
+                                navController.safePopBackStack()
+                            },
+                            onTransactionClick = { transactionId ->
+                                rootNavController?.navigate(
+                                    com.pennywiseai.tracker.navigation.TransactionDetail(transactionId)
+                                ) { launchSingleTop = true }
+                            },
+                            onAddTransactionClick = {
+                                rootNavController?.navigate(
+                                    com.pennywiseai.tracker.navigation.AddTransaction()
+                                ) { launchSingleTop = true }
+                            },
+                            onNavigateToSettings = {
+                                navController.navigate("settings") {
+                                    launchSingleTop = true
+                                }
+                            }
+                        )
                     }
                 )
-            }
 
-            composable("subscriptions") {
-                SubscriptionsScreen(
-                    onNavigateBack = {
-                        if (navController.currentBackStackEntry?.lifecycle?.currentState == androidx.lifecycle.Lifecycle.State.RESUMED) {
-                            if (!navController.popBackStack()) {
+                composable(
+                    route = "subscriptions",
+                    content = { _: NavBackStackEntry ->
+                        SubscriptionsScreen(
+                            onNavigateBack = {
+                                if (navController.currentBackStackEntry?.lifecycle?.currentState == androidx.lifecycle.Lifecycle.State.RESUMED) {
+                                    if (!navController.popBackStack()) {
+                                        navController.navigate("home") {
+                                            popUpTo(navController.graph.startDestinationId) {
+                                                saveState = true
+                                            }
+                                            launchSingleTop = true
+                                            restoreState = true
+                                        }
+                                    }
+                                }
+                            },
+                            onAddSubscriptionClick = {
+                                rootNavController?.navigate(
+                                    com.pennywiseai.tracker.navigation.AddTransaction()
+                                ) { launchSingleTop = true }
+                            }
+                        )
+                    }
+                )
+
+                composable(
+                    route = "analytics",
+                    content = { _: NavBackStackEntry ->
+                        com.pennywiseai.tracker.ui.screens.analytics.AnalyticsScreen(
+                            onNavigateToChat = {
+                                if (!chatHidden) {
+                                    navController.navigate("chat") {
+                                        launchSingleTop = true
+                                    }
+                                }
+                            },
+                            onNavigateToTransactions = { drill ->
+                                val route = buildString {
+                                    append("transactions")
+                                    val params = mutableListOf<String>()
+                                    drill.category?.let {
+                                        val encoded = java.net.URLEncoder.encode(it, "UTF-8")
+                                        params.add("category=$encoded")
+                                    }
+                                    drill.merchant?.let {
+                                        val encoded = java.net.URLEncoder.encode(it, "UTF-8")
+                                        params.add("merchant=$encoded")
+                                    }
+                                    drill.period?.let {
+                                        params.add("period=$it")
+                                    }
+                                    drill.currency?.let {
+                                        params.add("currency=$it")
+                                    }
+                                    drill.startDateEpochDay?.let {
+                                        params.add("startDate=$it")
+                                    }
+                                    drill.endDateEpochDay?.let {
+                                        params.add("endDate=$it")
+                                    }
+                                    drill.account?.let {
+                                        params.add("account=${android.net.Uri.encode(it)}")
+                                    }
+                                    drill.tag?.let {
+                                        params.add("tag=${android.net.Uri.encode(it)}")
+                                    }
+                                    drill.type?.let {
+                                        params.add("type=$it")
+                                    }
+                                    if (params.isNotEmpty()) {
+                                        append("?")
+                                        append(params.joinToString("&"))
+                                    }
+                                }
+                                navController.navigate(route) {
+                                    launchSingleTop = true
+                                }
+                            },
+                            onNavigateToHome = {
                                 navController.navigate("home") {
                                     popUpTo(navController.graph.startDestinationId) {
                                         saveState = true
@@ -298,240 +464,256 @@ fun MainScreen(
                                     restoreState = true
                                 }
                             }
-                        }
-                    },
-                    onAddSubscriptionClick = {
-                        rootNavController?.navigate(
-                            com.pennywiseai.tracker.navigation.AddTransaction
-                        ) { launchSingleTop = true }
+                        )
                     }
                 )
-            }
 
-            composable("analytics") {
-                com.pennywiseai.tracker.ui.screens.analytics.AnalyticsScreen(
-                    onNavigateToChat = {
-                        navController.navigate("chat") {
-                            launchSingleTop = true
+                composable(
+                    route = "chat",
+                    content = { _: NavBackStackEntry ->
+                        // Hidden AI tab: don't start the chat (and its model) for
+                        // the frame before the fallback to Home lands.
+                        if (!chatHidden) {
+                            com.pennywiseai.tracker.ui.screens.chat.ChatScreen(
+                                modifier = Modifier.imePadding(),
+                                onNavigateToSettings = {
+                                    navController.navigate("settings") {
+                                        launchSingleTop = true
+                                    }
+                                }
+                            )
                         }
-                    },
-                    onNavigateToTransactions = { category, merchant, period, currency ->
-                        val route = buildString {
-                            append("transactions")
-                            val params = mutableListOf<String>()
-                            category?.let {
-                                val encoded = java.net.URLEncoder.encode(it, "UTF-8")
-                                params.add("category=$encoded")
+                    }
+                )
+
+                composable(
+                    route = "settings",
+                    content = { _: NavBackStackEntry ->
+                        SettingsScreen(
+                            themeViewModel = themeViewModel,
+                            onNavigateBack = {
+                                navController.safePopBackStack()
+                            },
+                            onNavigateToCategories = {
+                                navController.navigate("categories") {
+                                    launchSingleTop = true
+                                }
+                            },
+                            onNavigateToUnrecognizedSms = {
+                                navController.navigate("unrecognized_sms") {
+                                    launchSingleTop = true
+                                }
+                            },
+                            onNavigateToManageAccounts = {
+                                navController.navigate("manage_accounts") {
+                                    launchSingleTop = true
+                                }
+                            },
+                            onNavigateToFaq = {
+                                navController.navigate("faq") {
+                                    launchSingleTop = true
+                                }
+                            },
+                            onNavigateToRules = {
+                                rootNavController?.navigate(
+                                    com.pennywiseai.tracker.navigation.Rules
+                                ) { launchSingleTop = true }
+                            },
+                            onNavigateToBudgets = {
+                                rootNavController?.navigate(
+                                    com.pennywiseai.tracker.navigation.BudgetGroups()
+                                ) { launchSingleTop = true }
+                            },
+                            onNavigateToLoans = {
+                                rootNavController?.navigate(
+                                    com.pennywiseai.tracker.navigation.Loans
+                                ) { launchSingleTop = true }
+                            },
+                            onNavigateToRecurring = {
+                                rootNavController?.navigate(
+                                    com.pennywiseai.tracker.navigation.RecurringTransactions
+                                ) { launchSingleTop = true }
+                            },
+                            onNavigateToExchangeRates = {
+                                rootNavController?.navigate(
+                                    com.pennywiseai.tracker.navigation.ExchangeRates
+                                ) { launchSingleTop = true }
+                            },
+                            onNavigateToAppearance = {
+                                navController.navigate("appearance") {
+                                    launchSingleTop = true
+                                }
+                            },
+                            onNavigateToImportStatement = {
+                                navController.navigate("import_statement") {
+                                    launchSingleTop = true
+                                }
+                            },
+                            onNavigateToTransactionGroups = {
+                                rootNavController?.navigate(
+                                    com.pennywiseai.tracker.navigation.TransactionGroups
+                                ) { launchSingleTop = true }
+                            },
+                            onNavigateToWebhooks = {
+                                rootNavController?.navigate(
+                                    com.pennywiseai.tracker.navigation.Webhooks
+                                ) { launchSingleTop = true }
+                            },
+                            onNavigateToAiAccess = {
+                                rootNavController?.navigate(
+                                    com.pennywiseai.tracker.navigation.AiAccess
+                                ) { launchSingleTop = true }
                             }
-                            merchant?.let {
-                                val encoded = java.net.URLEncoder.encode(it, "UTF-8")
-                                params.add("merchant=$encoded")
+                        )
+                    }
+                )
+
+                composable(
+                    route = "appearance",
+                    content = { _: NavBackStackEntry ->
+                        AppearanceScreen(
+                            onNavigateBack = {
+                                navController.safePopBackStack()
+                            },
+                            themeViewModel = themeViewModel
+                        )
+                    }
+                )
+
+                composable(
+                    route = "categories",
+                    content = { _: NavBackStackEntry ->
+                        com.pennywiseai.tracker.presentation.categories.CategoriesScreen(
+                            onNavigateBack = {
+                                navController.safePopBackStack()
                             }
-                            period?.let {
-                                params.add("period=$it")
+                        )
+                    }
+                )
+
+                composable(
+                    route = "unrecognized_sms",
+                    content = { _: NavBackStackEntry ->
+                        com.pennywiseai.tracker.ui.screens.unrecognized.UnrecognizedSmsScreen(
+                            onNavigateBack = {
+                                navController.safePopBackStack()
+                            },
+                            onAddSuggestion = { draft ->
+                                rootNavController?.navigate(draft) { launchSingleTop = true }
                             }
-                            currency?.let {
-                                params.add("currency=$it")
+                        )
+                    }
+                )
+
+                composable(
+                    route = "faq",
+                    content = { _: NavBackStackEntry ->
+                        FAQScreen(
+                            onNavigateBack = {
+                                navController.safePopBackStack()
                             }
-                            if (params.isNotEmpty()) {
-                                append("?")
-                                append(params.joinToString("&"))
+                        )
+                    }
+                )
+
+                composable(
+                    route = "manage_accounts",
+                    content = { _: NavBackStackEntry ->
+                        val viewModel: ManageAccountsViewModel = hiltViewModel()
+                        ManageAccountsScreen(
+                            viewModel = viewModel,
+                            onNavigateBack = {
+                                navController.safePopBackStack()
+                            },
+                            onNavigateToAddAccount = {
+                                navController.navigate("add_account") {
+                                    launchSingleTop = true
+                                }
+                            },
+                            onNavigateToBalanceHistory = { bankName, accountLast4 ->
+                                navController.navigate(
+                                    "balance_history/${android.net.Uri.encode(bankName)}/${android.net.Uri.encode(accountLast4)}"
+                                ) {
+                                    launchSingleTop = true
+                                }
                             }
-                        }
-                        navController.navigate(route) {
-                            launchSingleTop = true
-                        }
-                    },
-                    onNavigateToHome = {
-                        navController.navigate("home") {
-                            popUpTo(navController.graph.startDestinationId) {
-                                saveState = true
+                        )
+                    }
+                )
+
+                composable(
+                    route = "balance_history/{bankName}/{accountLast4}",
+                    arguments = listOf(
+                        androidx.navigation.navArgument("bankName") { type = androidx.navigation.NavType.StringType },
+                        androidx.navigation.navArgument("accountLast4") { type = androidx.navigation.NavType.StringType }
+                    ),
+                    content = { _: NavBackStackEntry ->
+                        com.pennywiseai.tracker.presentation.accounts.BalanceHistoryScreen(
+                            onNavigateBack = {
+                                navController.safePopBackStack()
                             }
-                            launchSingleTop = true
-                            restoreState = true
-                        }
+                        )
+                    }
+                )
+
+                composable(
+                    route = "import_statement",
+                    content = { _: NavBackStackEntry ->
+                        val viewModel: ImportStatementViewModel = hiltViewModel()
+                        ImportStatementScreen(
+                            viewModel = viewModel,
+                            onNavigateBack = {
+                                navController.safePopBackStack()
+                            }
+                        )
+                    }
+                )
+
+                composable(
+                    route = "add_account",
+                    content = { _: NavBackStackEntry ->
+                        val viewModel: ManageAccountsViewModel = hiltViewModel()
+                        AddAccountScreen(
+                            viewModel = viewModel,
+                            onNavigateBack = {
+                                navController.safePopBackStack()
+                            }
+                        )
                     }
                 )
             }
 
-            composable("chat") {
-                com.pennywiseai.tracker.ui.screens.chat.ChatScreen(
-                    modifier = Modifier.imePadding(),
-                    onNavigateToSettings = {
-                        navController.navigate("settings") {
-                            launchSingleTop = true
-                        }
+            // Bottom navigation OVERLAID on content
+            // Wait for prefs so a hidden tab never flashes in on launch.
+            if (!themeState.isLoading && baseRoute in listOf("home", "transactions", "analytics", "chat")) {
+                PennyWiseBottomNavigation(
+                    navController = navController,
+                    currentDestination = navBackStackEntry?.destination,
+                    navBarStyle = themeState.navBarStyle,
+                    hiddenTabs = hiddenTabs,
+                    blurEffects = themeState.blurEffectsEnabled,
+                    hazeState = hazeState,
+                    modifier = Modifier.align(Alignment.BottomCenter)
+                )
+            }
+
+            // Spotlight Tutorial overlay - outside Scaffold to overlay everything
+            if (baseRoute == "home" && spotlightState.showTutorial && spotlightState.fabPosition != null) {
+                val homeViewModel: com.pennywiseai.tracker.presentation.home.HomeViewModel? =
+                    navController.currentBackStackEntry?.let { hiltViewModel(it) }
+
+                SpotlightTutorial(
+                    isVisible = true,
+                    targetPosition = spotlightState.fabPosition,
+                    message = stringResource(R.string.spotlight_scan_sms),
+                    onDismiss = {
+                        spotlightViewModel.dismissTutorial()
+                    },
+                    onTargetClick = {
+                        homeViewModel?.scanSmsMessages()
                     }
                 )
             }
-
-            composable("settings") {
-                SettingsScreen(
-                    themeViewModel = themeViewModel,
-                    onNavigateBack = {
-                        navController.safePopBackStack()
-                    },
-                    onNavigateToCategories = {
-                        navController.navigate("categories") {
-                            launchSingleTop = true
-                        }
-                    },
-                    onNavigateToUnrecognizedSms = {
-                        navController.navigate("unrecognized_sms") {
-                            launchSingleTop = true
-                        }
-                    },
-                    onNavigateToManageAccounts = {
-                        navController.navigate("manage_accounts") {
-                            launchSingleTop = true
-                        }
-                    },
-                    onNavigateToFaq = {
-                        navController.navigate("faq") {
-                            launchSingleTop = true
-                        }
-                    },
-                    onNavigateToRules = {
-                        rootNavController?.navigate(
-                            com.pennywiseai.tracker.navigation.Rules
-                        ) { launchSingleTop = true }
-                    },
-                    onNavigateToBudgets = {
-                        rootNavController?.navigate(
-                            com.pennywiseai.tracker.navigation.BudgetGroups
-                        ) { launchSingleTop = true }
-                    },
-                    onNavigateToLoans = {
-                        rootNavController?.navigate(
-                            com.pennywiseai.tracker.navigation.Loans
-                        ) { launchSingleTop = true }
-                    },
-                    onNavigateToExchangeRates = {
-                        rootNavController?.navigate(
-                            com.pennywiseai.tracker.navigation.ExchangeRates
-                        ) { launchSingleTop = true }
-                    },
-                    onNavigateToAppearance = {
-                        navController.navigate("appearance") {
-                            launchSingleTop = true
-                        }
-                    },
-                    onNavigateToImportStatement = {
-                        navController.navigate("import_statement") {
-                            launchSingleTop = true
-                        }
-                    },
-                    onNavigateToTransactionGroups = {
-                        rootNavController?.navigate(
-                            com.pennywiseai.tracker.navigation.TransactionGroups
-                        ) { launchSingleTop = true }
-                    },
-                    onNavigateToFireflyFailedSyncs = {
-                        rootNavController?.navigate(
-                            com.pennywiseai.tracker.navigation.FireflyFailedSyncs
-                        ) { launchSingleTop = true }
-                    },
-                    onNavigateToFireflySettings = {
-                        rootNavController?.navigate(
-                            com.pennywiseai.tracker.navigation.FireflySettings
-                        ) { launchSingleTop = true }
-                    }
-                )
-            }
-
-            composable("appearance") {
-                AppearanceScreen(
-                    onNavigateBack = {
-                        navController.safePopBackStack()
-                    },
-                    themeViewModel = themeViewModel
-                )
-            }
-
-            composable("categories") {
-                com.pennywiseai.tracker.presentation.categories.CategoriesScreen(
-                    onNavigateBack = {
-                        navController.safePopBackStack()
-                    }
-                )
-            }
-
-            composable("unrecognized_sms") {
-                com.pennywiseai.tracker.ui.screens.unrecognized.UnrecognizedSmsScreen(
-                    onNavigateBack = {
-                        navController.safePopBackStack()
-                    }
-                )
-            }
-
-            composable("faq") {
-                com.pennywiseai.tracker.ui.screens.settings.FAQScreen(
-                    onNavigateBack = {
-                        navController.safePopBackStack()
-                    }
-                )
-            }
-
-            composable("manage_accounts") {
-                com.pennywiseai.tracker.presentation.accounts.ManageAccountsScreen(
-                    onNavigateBack = {
-                        navController.safePopBackStack()
-                    },
-                    onNavigateToAddAccount = {
-                        navController.navigate("add_account") {
-                            launchSingleTop = true
-                        }
-                    },
-                    onNavigateToBalanceHistory = { _, _ -> /* TODO: navigate to balance history page if wired */ }
-                )
-            }
-
-            composable("import_statement") {
-                com.pennywiseai.tracker.presentation.statement.ImportStatementScreen(
-                    onNavigateBack = {
-                        navController.safePopBackStack()
-                    }
-                )
-            }
-
-            composable("add_account") {
-                com.pennywiseai.tracker.presentation.accounts.AddAccountScreen(
-                    onNavigateBack = {
-                        navController.safePopBackStack()
-                    }
-                )
-            }
-        }
-
-        // Bottom navigation OVERLAID on content
-        if (baseRoute in listOf("home", "analytics", "chat")) {
-            PennyWiseBottomNavigation(
-                navController = navController,
-                currentDestination = navBackStackEntry?.destination,
-                navBarStyle = themeState.navBarStyle,
-                blurEffects = themeState.blurEffectsEnabled,
-                hazeState = hazeState,
-                modifier = Modifier.align(Alignment.BottomCenter)
-            )
-        }
-
-        // Spotlight Tutorial overlay - outside Scaffold to overlay everything
-        if (baseRoute == "home" && spotlightState.showTutorial && spotlightState.fabPosition != null) {
-            val homeViewModel: com.pennywiseai.tracker.presentation.home.HomeViewModel? =
-                navController.currentBackStackEntry?.let { hiltViewModel(it) }
-
-            SpotlightTutorial(
-                isVisible = true,
-                targetPosition = spotlightState.fabPosition,
-                message = "Tap here to scan your SMS messages for transactions",
-                onDismiss = {
-                    spotlightViewModel.dismissTutorial()
-                },
-                onTargetClick = {
-                    homeViewModel?.scanSmsMessages()
-                }
-            )
         }
     }
-    } // CompositionLocalProvider
 }

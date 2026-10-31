@@ -1,5 +1,8 @@
 package com.pennywiseai.tracker.ui.screens.analytics
 
+import com.pennywiseai.tracker.R
+import androidx.compose.ui.res.stringResource
+import java.math.BigDecimal
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -21,14 +24,16 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.pennywiseai.tracker.ui.components.CategoryIcon
 import com.pennywiseai.tracker.ui.effects.BlurredAnimatedVisibility
 import com.pennywiseai.tracker.ui.icons.CategoryMapping
 import com.pennywiseai.tracker.ui.theme.Spacing
 import com.pennywiseai.tracker.utils.CurrencyFormatter
+import com.pennywiseai.tracker.ui.theme.Dimensions
 import ir.ehsannarmani.compose_charts.PieChart
+import ir.ehsannarmani.compose_charts.models.LabelHelperProperties
 import ir.ehsannarmani.compose_charts.models.Pie
+import com.pennywiseai.tracker.ui.icons.categoryLabel
 
 @Composable
 fun CategoryPieChart(
@@ -39,17 +44,17 @@ fun CategoryPieChart(
 ) {
     if (categories.isEmpty()) return
 
-    val total = categories.sumOf { it.amount }.toDouble()
+    val total = categories.fold(BigDecimal.ZERO) { acc, cat -> acc + cat.amount }.toDouble()
     if (total == 0.0) return
 
     val pieData = remember(categories) {
         categories.map { category ->
+            val sliceColor = CategoryMapping.colorFor(category.name, category.color)
             Pie(
                 label = category.name,
                 data = category.amount.toDouble(),
-                color = CategoryMapping.categories[category.name]?.color ?: Color.Gray,
-                selectedColor = (CategoryMapping.categories[category.name]?.color
-                    ?: Color.Gray).copy(alpha = 0.8f),
+                color = sliceColor,
+                selectedColor = sliceColor.copy(alpha = 0.8f),
                 selected = false,
                 scaleAnimEnterSpec = tween(400),
                 colorAnimEnterSpec = tween(500)
@@ -87,6 +92,9 @@ fun CategoryPieChart(
                 selectedScale = 1.1f,
                 scaleAnimEnterSpec = tween(400),
                 colorAnimEnterSpec = tween(500),
+                // The built-in label helper repeats the legend beside us, truncated to
+                // "Groc…" / "Mobi…" — unreadable, and it squeezes the donut.
+                labelHelperProperties = LabelHelperProperties(enabled = false),
                 style = Pie.Style.Stroke(width = 12.dp)
             )
 
@@ -119,7 +127,7 @@ fun CategoryPieChart(
         ) {
             items(chartData.sortedByDescending { it.data }) { pie ->
                 PieLegendItem(
-                    label = pie.label ?: "Unknown",
+                    label = pie.label ?: stringResource(R.string.analytics_pie_unknown),
                     value = pie.data,
                     color = pie.color,
                     isSelected = pie.selected,
@@ -161,20 +169,32 @@ private fun PieLegendItem(
                 if (isSelected) MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
                 else Color.Transparent
             )
-            .padding(6.dp)
+            .padding(Spacing.xs)
             .clickable(onClick = onClick),
         verticalAlignment = Alignment.CenterVertically
     ) {
+        // The category's own icon rather than a bare swatch (#827), in a disc of
+        // the slice colour so the row still maps to the chart. The disc carries
+        // the colour rather than the glyph, because a custom emoji (#760) can't
+        // be tinted and would otherwise leave the row with no slice marker at
+        // all. Same treatment as the category list below the chart.
         Box(
             modifier = Modifier
-                .size(10.dp)
+                .size(Dimensions.Icon.medium)
                 .clip(CircleShape)
-                .background(color)
-        )
+                .background(color.copy(alpha = 0.18f)),
+            contentAlignment = Alignment.Center
+        ) {
+            CategoryIcon(
+                category = label,
+                size = Dimensions.Icon.small,
+                tint = color
+            )
+        }
         Spacer(modifier = Modifier.width(8.dp))
         Column(modifier = Modifier.weight(1f)) {
             Text(
-                text = label,
+                text = categoryLabel(label),
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurface,
                 maxLines = 1,
@@ -183,12 +203,12 @@ private fun PieLegendItem(
             Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text(
                     text = CurrencyFormatter.formatAbbreviated(value, currency),
-                    style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                    style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 Text(
-                    text = "($percentage%)",
-                    style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                    text = stringResource(R.string.analytics_pie_percent, percentage),
+                    style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.primary
                 )
             }

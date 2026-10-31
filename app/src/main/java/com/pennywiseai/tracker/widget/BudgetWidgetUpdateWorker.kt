@@ -12,13 +12,15 @@ import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import com.pennywiseai.tracker.data.currency.CurrencyConversionService
 import com.pennywiseai.tracker.data.database.entity.BudgetGroupType
+import com.pennywiseai.tracker.data.database.entity.BudgetWithCategories
 import com.pennywiseai.tracker.data.database.entity.BudgetImpactType
 import com.pennywiseai.tracker.data.database.entity.TransactionType
 import com.pennywiseai.tracker.data.preferences.UserPreferencesRepository
 import com.pennywiseai.tracker.data.repository.BudgetCategorySpending
 import com.pennywiseai.tracker.data.repository.BudgetGroupRepository
-import com.pennywiseai.tracker.data.repository.BudgetGroupRepository.Companion.aggregateBudgetCategorySpending
+import com.pennywiseai.tracker.data.repository.aggregateBudgetCategorySpending
 import com.pennywiseai.tracker.data.repository.BudgetGroupSpending
+import com.pennywiseai.tracker.domain.model.BudgetCycle
 import java.math.BigDecimal
 import java.math.RoundingMode
 import dagger.assisted.Assisted
@@ -70,10 +72,30 @@ class BudgetWidgetUpdateWorker @AssistedInject constructor(
             val currency = if (isUnifiedMode) displayCurrency else baseCurrency
 
             val today = java.time.LocalDate.now()
+            val startDay = userPreferencesRepository.getBudgetCycleStartDay()
+            // Use today's calendar month, not the cycle's start month —
+            // same fix as the home viewmodel. For a user on startDay=25
+            // viewing today=Jul 1, cycleStartYm was June, which made
+            // isCurrentMonth=false in the repo and the widget treated
+            // the current cycle as historical (daysRemaining=0, no
+            // daily allowance). The per-budget current window is
+            // resolved by resolveBudgetWindow inside the repo
+            // regardless of which calendar month the page is on.
+            val todayYm = java.time.YearMonth.of(today.year, today.monthValue)
+            val prevCycle = BudgetCycle.previousCycle(
+                BudgetCycle.currentCycle(today, startDay), startDay
+            )
+            // Use the end date of the previous cycle to derive the display month.
+            // Using prevCycle.first is wrong for non-default start days: e.g.
+            // startDay=25 → prevCycle = May 25–Jun 24, first = May, but
+            // getGroupSpending(May) resolves to Apr 25–May 24 (two cycles ago).
+            // prevCycle.second = Jun 24 → June → getGroupSpending(June) correctly
+            // resolves to May 25–Jun 24.
+            val prevCycleStartYm = java.time.YearMonth.from(prevCycle.second)
 
             val summary = if (isUnifiedMode) {
                 val raw = budgetGroupRepository.getGroupSpendingAllCurrencies(
-                    today.year, today.monthValue
+                    todayYm.year, todayYm.monthValue
                 ).first()
 
                 // Reuse the same aggregator the Budgets screen uses so the widget
@@ -81,15 +103,17 @@ class BudgetWidgetUpdateWorker @AssistedInject constructor(
                 // identically. Refunds shrink categoryAmounts (floored at zero) and
                 // are excluded from totalIncome; Extra budget bumps the displayed
                 // category budget via categoryLimitBoosts and stays in income.
-                val convertSplit: suspend (String, BigDecimal) -> BigDecimal =
+                // Null = no rate for this pair; the aggregator leaves the row out
+                // rather than counting a face-value foreign amount (#670).
+                val convertSplit: suspend (String, BigDecimal) -> BigDecimal? =
                     { fromCurrency, amount ->
-                        currencyConversionService.convertAmount(amount, fromCurrency, displayCurrency)
+                        currencyConversionService.convertAmountOrNull(amount, fromCurrency, displayCurrency)
                     }
-                val (categoryAmounts, categoryLimitBoosts) = aggregateBudgetCategorySpending(
+                val (categoryAmounts, categoryLimitBoosts, typeAmounts) = aggregateBudgetCategorySpending(
                     transactions = raw.allTransactions,
                     convertSplit = convertSplit,
                     convertIncome = { tx ->
-                        currencyConversionService.convertAmount(tx.amount, tx.currency, displayCurrency)
+                        currencyConversionService.convertAmountOrNull(tx.amount, tx.currency, displayCurrency)
                     }
                 )
 
@@ -105,19 +129,25 @@ class BudgetWidgetUpdateWorker @AssistedInject constructor(
                     if (tx.budgetImpactType == BudgetImpactType.DEDUCT_SPENT &&
                         tx.budgetCategory != null
                     ) continue
-                    totalIncome += currencyConversionService.convertAmount(
+                    // Skip unconvertible income so it doesn't inflate netSavings
+                    // at face value (#670).
+                    totalIncome += currencyConversionService.convertAmountOrNull(
                         tx.amount, tx.currency, displayCurrency
-                    )
+                    ) ?: continue
                 }
 
                 val groupSpendingList = raw.budgetsWithCategories.map { group ->
                     val isTrackingAll = group.categories.isEmpty()
                     val catSpending = group.categories.map { cat ->
-                        val actual = categoryAmounts[cat.categoryName] ?: BigDecimal.ZERO
+                        val actual = if (cat.matchType != null) {
+                            typeAmounts[cat.matchType] ?: BigDecimal.ZERO
+                        } else {
+                            categoryAmounts[cat.categoryName] ?: BigDecimal.ZERO
+                        }
                         val convertedBudget = currencyConversionService.convertAmount(cat.budgetAmount, baseCurrency, displayCurrency)
-                        val effectiveBudget = convertedBudget +
-                            (categoryLimitBoosts[cat.categoryName] ?: BigDecimal.ZERO)
-                        BudgetCategorySpending(cat.categoryName, effectiveBudget, actual, 0f, BigDecimal.ZERO)
+                        val boost = if (cat.matchType != null) BigDecimal.ZERO
+                            else categoryLimitBoosts[cat.categoryName] ?: BigDecimal.ZERO
+                        BudgetCategorySpending(cat.categoryName, convertedBudget + boost, actual, 0f, BigDecimal.ZERO)
                     }
                     val convertedGroupLimit = currencyConversionService.convertAmount(
                         group.budget.limitAmount, baseCurrency, displayCurrency
@@ -167,34 +197,40 @@ class BudgetWidgetUpdateWorker @AssistedInject constructor(
 
                 // Previous month savings for delta — same aggregator, same currency
                 // converters, so the delta isn't skewed by stale logic on either side.
-                val (prevCategoryAmounts, _) = aggregateBudgetCategorySpending(
-                    transactions = raw.prevTransactions,
+                val (prevCategoryAmounts, _, prevTypeAmounts) = aggregateBudgetCategorySpending(
+                    transactions = raw.prevCycleTransactions,
                     convertSplit = convertSplit,
                     convertIncome = { tx ->
-                        currencyConversionService.convertAmount(tx.amount, tx.currency, displayCurrency)
+                        currencyConversionService.convertAmountOrNull(tx.amount, tx.currency, displayCurrency)
                     }
                 )
 
-                val limitCategoryNames = raw.budgetsWithCategories
+                // Split LIMIT-group buckets into category vs type buckets so the
+                // previous-month spend picks up type-bucket amounts too (they live
+                // in prevTypeAmounts, not prevCategoryAmounts).
+                val limitBuckets = raw.budgetsWithCategories
                     .filter { it.budget.groupType == BudgetGroupType.LIMIT }
                     .flatMap { it.categories }
-                    .map { it.categoryName }
-                    .toSet()
+                val limitCategoryNames = limitBuckets.filter { it.matchType == null }
+                    .map { it.categoryName }.toSet()
+                val limitMatchTypes = limitBuckets.mapNotNull { it.matchType }.toSet()
 
                 val prevLimitSpent = limitCategoryNames.fold(BigDecimal.ZERO) { acc, catName ->
                     acc + (prevCategoryAmounts[catName] ?: BigDecimal.ZERO)
+                } + limitMatchTypes.fold(BigDecimal.ZERO) { acc, t ->
+                    acc + (prevTypeAmounts[t] ?: BigDecimal.ZERO)
                 }
 
                 var prevIncome = BigDecimal.ZERO
-                for (txWithSplits in raw.prevTransactions) {
+                for (txWithSplits in raw.prevCycleTransactions) {
                     val tx = txWithSplits.transaction
                     if (tx.transactionType != TransactionType.INCOME) continue
                     if (tx.budgetImpactType == BudgetImpactType.DEDUCT_SPENT &&
                         tx.budgetCategory != null
                     ) continue
-                    prevIncome += currencyConversionService.convertAmount(
+                    prevIncome += currencyConversionService.convertAmountOrNull(
                         tx.amount, tx.currency, displayCurrency
-                    )
+                    ) ?: continue
                 }
 
                 val prevSavings = prevIncome - prevLimitSpent
@@ -214,13 +250,12 @@ class BudgetWidgetUpdateWorker @AssistedInject constructor(
                 )
             } else {
                 val spending = budgetGroupRepository.getGroupSpending(
-                    today.year, today.monthValue, currency
+                    todayYm.year, todayYm.monthValue, currency
                 ).first()
 
                 // Get previous month spending for delta calculation
-                val prevYearMonth = java.time.YearMonth.of(today.year, today.monthValue).minusMonths(1)
                 val prevSpending = budgetGroupRepository.getGroupSpending(
-                    prevYearMonth.year, prevYearMonth.monthValue, currency
+                    prevCycleStartYm.year, prevCycleStartYm.monthValue, currency
                 ).first()
 
                 val savingsDelta = spending.netSavings - prevSpending.netSavings
@@ -246,6 +281,8 @@ class BudgetWidgetUpdateWorker @AssistedInject constructor(
 
             BudgetWidgetDataStore.update(applicationContext, summary)
             BudgetWidget().updateAll(applicationContext)
+            // The summary widget leads with what's left of this budget.
+            SpendingSummaryWidget().updateAll(applicationContext)
 
             Result.success()
         } catch (e: Exception) {

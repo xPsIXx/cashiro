@@ -1,5 +1,7 @@
 package com.pennywiseai.tracker.presentation.accounts
 
+import com.pennywiseai.tracker.R
+import androidx.annotation.StringRes
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -97,11 +99,12 @@ class AccountDetailViewModel @Inject constructor(
 
                 filteredTransactions.forEach { transaction ->
                     val convertedAmount = if (transaction.currency != targetCurrency) {
-                        currencyConversionService.convertAmount(
+                        // Skip unconvertible rather than counting face value (#670).
+                        currencyConversionService.convertAmountOrNull(
                             amount = transaction.amount,
                             fromCurrency = transaction.currency,
                             toCurrency = targetCurrency
-                        ) ?: transaction.amount
+                        ) ?: return@forEach
                     } else {
                         transaction.amount
                     }
@@ -283,11 +286,11 @@ data class AccountDetailUiState(
     val unbilledOutstanding: BigDecimal? = null
 )
 
-enum class DateRange(val label: String) {
-    LAST_7_DAYS("Last 7 Days"),
-    LAST_30_DAYS("Last 30 Days"),
-    LAST_3_MONTHS("Last 3 Months"),
-    LAST_6_MONTHS("Last 6 Months"),
-    LAST_YEAR("Last Year"),
-    ALL_TIME("All Time")
+enum class DateRange(@StringRes val labelRes: Int) {
+    LAST_7_DAYS(R.string.account_detail_range_last_7_days),
+    LAST_30_DAYS(R.string.account_detail_range_last_30_days),
+    LAST_3_MONTHS(R.string.account_detail_range_last_3_months),
+    LAST_6_MONTHS(R.string.account_detail_range_last_6_months),
+    LAST_YEAR(R.string.account_detail_range_last_year),
+    ALL_TIME(R.string.account_detail_range_all_time)
 }

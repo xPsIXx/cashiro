@@ -1,5 +1,11 @@
 package com.pennywiseai.tracker.presentation.accounts
 
+import com.pennywiseai.tracker.utils.AppDates
+
+import com.pennywiseai.tracker.domain.model.icon
+
+import com.pennywiseai.tracker.R
+import androidx.compose.ui.res.stringResource
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.shrinkVertically
@@ -30,10 +36,12 @@ import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
+import androidx.hilt.navigation.compose.hiltViewModel
+import com.pennywiseai.tracker.data.database.entity.AccountBalanceEntity
 import com.pennywiseai.tracker.data.database.entity.TransactionEntity
 import com.pennywiseai.tracker.data.database.entity.TransactionType
 import com.pennywiseai.tracker.ui.components.*
+import com.pennywiseai.tracker.ui.components.cards.PennyWiseCardV2
 import com.pennywiseai.tracker.ui.components.cards.SectionHeaderV2
 import com.pennywiseai.tracker.ui.components.skeleton.TransactionItemSkeleton
 import com.pennywiseai.tracker.ui.theme.*
@@ -64,12 +72,11 @@ fun AccountDetailScreen(
             CustomTitleTopAppBar(
                 scrollBehaviorSmall = scrollBehaviorSmall,
                 scrollBehaviorLarge = scrollBehaviorLarge,
-                title = "${uiState.bankName} ••${uiState.accountLast4}",
+                title = AccountBalanceEntity.accountLabel(uiState.bankName, uiState.accountLast4),
                 hasBackButton = true,
-                hasActionButton = true,
                 navigationContent = {
                     IconButton(onClick = onNavigateBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(R.string.accounts_back))
                     }
                 },
                 hazeState = hazeState
@@ -98,6 +105,7 @@ fun AccountDetailScreen(
                 CurrentBalanceCard(
                     balance = uiState.currentBalance?.balance ?: BigDecimal.ZERO,
                     creditLimit = uiState.currentBalance?.creditLimit,
+                    isLoan = uiState.currentBalance?.isLoan == true,
                     bankName = uiState.bankName,
                     accountLast4 = uiState.accountLast4,
                     primaryCurrency = uiState.primaryCurrency,
@@ -120,7 +128,7 @@ fun AccountDetailScreen(
                     ExpandableBalanceChart(
                         primaryCurrency = uiState.primaryCurrency,
                         balanceHistory = uiState.balanceChartData,
-                        selectedTimeframe = selectedDateRange.label
+                        selectedTimeframe = stringResource(selectedDateRange.labelRes)
                     )
                 }
             }
@@ -131,7 +139,7 @@ fun AccountDetailScreen(
                     totalIncome = uiState.totalIncome,
                     totalExpenses = uiState.totalExpenses,
                     netBalance = uiState.netBalance,
-                    period = selectedDateRange.label,
+                    period = stringResource(selectedDateRange.labelRes),
                     primaryCurrency = uiState.primaryCurrency,
                     hasMultipleCurrencies = uiState.hasMultipleCurrencies
                 )
@@ -140,7 +148,7 @@ fun AccountDetailScreen(
             // Transactions Header
             item {
                 SectionHeaderV2(
-                    title = "Transactions (${uiState.transactions.size})"
+                    title = stringResource(R.string.account_detail_transactions_header, uiState.transactions.size)
                 )
             }
             
@@ -149,8 +157,8 @@ fun AccountDetailScreen(
                 item {
                     PennyWiseEmptyState(
                         icon = Icons.Outlined.Receipt,
-                        headline = "No transactions",
-                        description = "Transactions for this account will appear here"
+                        headline = stringResource(R.string.account_detail_empty_title),
+                        description = stringResource(R.string.account_detail_empty_description)
                     )
                 }
             } else {
@@ -158,7 +166,7 @@ fun AccountDetailScreen(
                     items = uiState.transactions,
                     key = { it.id }
                 ) { transaction ->
-                    TransactionItem(
+                    AccountTransactionItem(
                         transaction = transaction,
                         primaryCurrency = uiState.primaryCurrency,
                         onClick = { onTransactionClick(transaction.id) }
@@ -190,7 +198,7 @@ private fun ExpandableBalanceChart(
 ) {
     var isExpanded by remember { mutableStateOf(false) }
     
-    PennyWiseCard(
+    PennyWiseCardV2(
         modifier = Modifier
             .fillMaxWidth()
             .clickable { isExpanded = !isExpanded }
@@ -217,7 +225,7 @@ private fun ExpandableBalanceChart(
                             modifier = Modifier.size(Dimensions.Icon.medium)
                         )
                         Text(
-                            text = "Balance Trend",
+                            text = stringResource(R.string.account_detail_balance_trend),
                             style = MaterialTheme.typography.titleSmall,
                             fontWeight = FontWeight.Bold
                         )
@@ -232,7 +240,7 @@ private fun ExpandableBalanceChart(
                 
                 Icon(
                     imageVector = Icons.Default.KeyboardArrowDown,
-                    contentDescription = if (isExpanded) "Collapse" else "Expand",
+                    contentDescription = if (isExpanded) stringResource(R.string.accounts_collapse) else stringResource(R.string.accounts_expand),
                     modifier = Modifier
                         .size(Dimensions.Icon.medium)
                         .rotate(if (isExpanded) 180f else 0f),
@@ -262,15 +270,17 @@ private fun ExpandableBalanceChart(
 private fun CurrentBalanceCard(
     balance: BigDecimal,
     creditLimit: BigDecimal? = null,
+    isLoan: Boolean = false,
     bankName: String,
     accountLast4: String,
     primaryCurrency: String,
     billedOutstanding: BigDecimal? = null,
     unbilledOutstanding: BigDecimal? = null
 ) {
-    val isCreditCard = creditLimit != null
+    // A limit left over from an account re-typed from credit card to loan is ignored (#792).
+    val isCreditCard = creditLimit != null && !isLoan
     
-    PennyWiseCard(
+    PennyWiseCardV2(
         modifier = Modifier.fillMaxWidth()
     ) {
         Column(
@@ -282,7 +292,7 @@ private fun CurrentBalanceCard(
             if (isCreditCard) {
                 // Credit card layout
                 Text(
-                    text = "Available Credit",
+                    text = stringResource(R.string.account_detail_available_credit),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -297,7 +307,7 @@ private fun CurrentBalanceCard(
                 if (balance > BigDecimal.ZERO) {
                     Spacer(modifier = Modifier.height(Spacing.xs))
                     Text(
-                        text = "Outstanding: ${CurrencyFormatter.formatCurrency(balance, primaryCurrency)}",
+                        text = stringResource(R.string.account_detail_outstanding, CurrencyFormatter.formatCurrency(balance, primaryCurrency)),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.error
                     )
@@ -316,7 +326,7 @@ private fun CurrentBalanceCard(
                                     color = MaterialTheme.colorScheme.error
                                 )
                                 Text(
-                                    text = "Billed",
+                                    text = stringResource(R.string.account_detail_billed),
                                     style = MaterialTheme.typography.labelSmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -329,7 +339,7 @@ private fun CurrentBalanceCard(
                                     color = MaterialTheme.colorScheme.tertiary
                                 )
                                 Text(
-                                    text = "Unbilled",
+                                    text = stringResource(R.string.account_detail_unbilled),
                                     style = MaterialTheme.typography.labelSmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -340,7 +350,8 @@ private fun CurrentBalanceCard(
             } else {
                 // Regular account layout
                 Text(
-                    text = "Current Balance",
+                    text = if (isLoan) stringResource(R.string.manage_accounts_outstanding)
+                           else stringResource(R.string.account_detail_current_balance),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -359,13 +370,17 @@ private fun CurrentBalanceCard(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Icon(
-                    imageVector = if (isCreditCard) Icons.Default.CreditCard else Icons.Default.AccountBalance,
+                    imageVector = when {
+                        isCreditCard -> Icons.Default.CreditCard
+                        isLoan -> AccountType.LOAN.icon
+                        else -> Icons.Default.AccountBalance
+                    },
                     contentDescription = null,
                     modifier = Modifier.size(Dimensions.Icon.small),
                     tint = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 Text(
-                    text = "$bankName ••$accountLast4",
+                    text = AccountBalanceEntity.accountLabel(bankName, accountLast4),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -383,7 +398,7 @@ private fun SummaryStatistics(
     primaryCurrency: String,
     hasMultipleCurrencies: Boolean = false
 ) {
-    PennyWiseCard(
+    PennyWiseCardV2(
         modifier = Modifier.fillMaxWidth()
     ) {
         Column(
@@ -403,19 +418,19 @@ private fun SummaryStatistics(
                 horizontalArrangement = Arrangement.SpaceEvenly
             ) {
                 StatisticItem(
-                    label = "Income",
+                    label = stringResource(R.string.account_detail_income),
                     value = formatWithEstimatedDisplay(totalIncome, primaryCurrency, hasMultipleCurrencies),
                     icon = Icons.AutoMirrored.Filled.TrendingUp,
                     color = if (!isSystemInDarkTheme()) income_light else income_dark
                 )
                 StatisticItem(
-                    label = "Expenses",
+                    label = stringResource(R.string.account_detail_expenses),
                     value = formatWithEstimatedDisplay(totalExpenses, primaryCurrency, hasMultipleCurrencies),
                     icon = Icons.AutoMirrored.Filled.TrendingDown,
                     color = if (!isSystemInDarkTheme()) expense_light else expense_dark
                 )
                 StatisticItem(
-                    label = "Net",
+                    label = stringResource(R.string.account_detail_net),
                     value = formatWithEstimatedDisplay(netBalance, primaryCurrency, hasMultipleCurrencies),
                     icon = Icons.Default.AccountBalanceWallet,
                     color = if (netBalance >= BigDecimal.ZERO) {
@@ -432,6 +447,7 @@ private fun SummaryStatistics(
 /**
  * Formats currency with estimated display for multi-currency accounts
  */
+@Composable
 private fun formatWithEstimatedDisplay(
     amount: BigDecimal,
     currency: String,
@@ -439,7 +455,7 @@ private fun formatWithEstimatedDisplay(
 ): String {
     val formattedAmount = CurrencyFormatter.formatCurrency(amount, currency)
     return if (hasMultipleCurrencies) {
-        "est. $formattedAmount"
+        stringResource(R.string.account_detail_estimated_amount, formattedAmount)
     } else {
         formattedAmount
     }
@@ -491,7 +507,7 @@ private fun DateRangeFilter(
             FilterChip(
                 selected = selectedRange == range,
                 onClick = { onRangeSelected(range) },
-                label = { Text(range.label) },
+                label = { Text(stringResource(range.labelRes)) },
                 colors = FilterChipDefaults.filterChipColors(
                     selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
                     selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
@@ -502,7 +518,7 @@ private fun DateRangeFilter(
 }
 
 @Composable
-private fun TransactionItem(
+private fun AccountTransactionItem(
     transaction: TransactionEntity,
     primaryCurrency: String,
     onClick: () -> Unit
@@ -537,6 +553,7 @@ private fun TransactionItem(
             ) {
                 BrandIcon(
                     merchantName = transaction.merchantName,
+                    category = transaction.category,
                     size = 48.dp,
                     showBackground = true
                 )
@@ -557,7 +574,7 @@ private fun TransactionItem(
                     ) {
                         Text(
                             text = transaction.dateTime.format(
-                                DateTimeFormatter.ofPattern("MMM d, h:mm a")
+                                AppDates.dayMonthTimeFormatter()
                             ),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -566,7 +583,7 @@ private fun TransactionItem(
                         // Show balance after if available
                         transaction.balanceAfter?.let { balance ->
                             Text(
-                                text = "• Bal: ${CurrencyFormatter.formatCurrency(balance, primaryCurrency)}",
+                                text = stringResource(R.string.account_detail_balance_after, CurrencyFormatter.formatCurrency(balance, primaryCurrency)),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -589,19 +606,19 @@ private fun TransactionItem(
                 when (transaction.transactionType) {
                     TransactionType.CREDIT -> Icon(
                         Icons.Default.CreditCard,
-                        contentDescription = "Credit",
+                        contentDescription = stringResource(R.string.account_detail_type_credit),
                         modifier = Modifier.size(Dimensions.Icon.small),
                         tint = amountColor
                     )
                     TransactionType.TRANSFER -> Icon(
                         Icons.Default.SwapHoriz,
-                        contentDescription = "Transfer",
+                        contentDescription = stringResource(R.string.account_detail_type_transfer),
                         modifier = Modifier.size(Dimensions.Icon.small),
                         tint = amountColor
                     )
                     TransactionType.INVESTMENT -> Icon(
                         Icons.AutoMirrored.Filled.ShowChart,
-                        contentDescription = "Investment",
+                        contentDescription = stringResource(R.string.account_detail_type_investment),
                         modifier = Modifier.size(Dimensions.Icon.small),
                         tint = amountColor
                     )

@@ -2,11 +2,11 @@
   "formatVersion": 1,
   "database": {
     "version": 52,
-    "identityHash": "a055fe280d3ddb19f45cda61ee0f718d",
+    "identityHash": "e0450e161c8ec2f78f3e0c4ae4c63fd7",
     "entities": [
       {
         "tableName": "transactions",
-        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `amount` TEXT NOT NULL, `merchant_name` TEXT NOT NULL, `category` TEXT NOT NULL, `transaction_type` TEXT NOT NULL, `date_time` TEXT NOT NULL, `description` TEXT, `sms_body` TEXT, `bank_name` TEXT, `sms_sender` TEXT, `account_number` TEXT, `balance_after` TEXT, `transaction_hash` TEXT NOT NULL DEFAULT '', `is_recurring` INTEGER NOT NULL, `is_deleted` INTEGER NOT NULL DEFAULT 0, `created_at` TEXT NOT NULL, `updated_at` TEXT NOT NULL, `currency` TEXT NOT NULL DEFAULT 'INR', `from_account` TEXT, `to_account` TEXT, `reference` TEXT, `loan_id` INTEGER DEFAULT NULL, `loan_contribution` TEXT DEFAULT NULL, `receipt_path` TEXT DEFAULT NULL, `budget_category` TEXT DEFAULT NULL, `budget_impact_type` TEXT DEFAULT NULL, `group_id` INTEGER DEFAULT NULL, `profile_id` INTEGER DEFAULT NULL, `excluded_from_analytics` INTEGER NOT NULL DEFAULT 0)",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `amount` TEXT NOT NULL, `merchant_name` TEXT NOT NULL, `category` TEXT NOT NULL, `transaction_type` TEXT NOT NULL, `date_time` TEXT NOT NULL, `description` TEXT, `sms_body` TEXT, `bank_name` TEXT, `sms_sender` TEXT, `account_number` TEXT, `balance_after` TEXT, `transaction_hash` TEXT NOT NULL DEFAULT '', `is_recurring` INTEGER NOT NULL, `is_deleted` INTEGER NOT NULL DEFAULT 0, `excluded_from_analytics` INTEGER NOT NULL DEFAULT 0, `created_at` TEXT NOT NULL, `updated_at` TEXT NOT NULL, `currency` TEXT NOT NULL DEFAULT 'INR', `from_account` TEXT, `to_account` TEXT, `reference` TEXT, `loan_id` INTEGER DEFAULT NULL, `loan_contribution` TEXT DEFAULT NULL, `receipt_path` TEXT DEFAULT NULL, `budget_category` TEXT DEFAULT NULL, `budget_impact_type` TEXT DEFAULT NULL, `group_id` INTEGER DEFAULT NULL, `profile_id` INTEGER DEFAULT NULL)",
         "fields": [
           {
             "fieldPath": "id",
@@ -95,6 +95,13 @@
             "defaultValue": "0"
           },
           {
+            "fieldPath": "excludedFromAnalytics",
+            "columnName": "excluded_from_analytics",
+            "affinity": "INTEGER",
+            "notNull": true,
+            "defaultValue": "0"
+          },
+          {
             "fieldPath": "createdAt",
             "columnName": "created_at",
             "affinity": "TEXT",
@@ -169,13 +176,6 @@
             "columnName": "profile_id",
             "affinity": "INTEGER",
             "defaultValue": "NULL"
-          },
-          {
-            "fieldPath": "excludedFromAnalytics",
-            "columnName": "excluded_from_analytics",
-            "affinity": "INTEGER",
-            "notNull": true,
-            "defaultValue": "0"
           }
         ],
         "primaryKey": {
@@ -1206,7 +1206,7 @@
       },
       {
         "tableName": "budget_categories",
-        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `budget_id` INTEGER NOT NULL, `category_name` TEXT NOT NULL, `budget_amount` TEXT NOT NULL DEFAULT '0', FOREIGN KEY(`budget_id`) REFERENCES `budgets`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `budget_id` INTEGER NOT NULL, `category_name` TEXT NOT NULL, `budget_amount` TEXT NOT NULL DEFAULT '0', `match_type` TEXT DEFAULT NULL, FOREIGN KEY(`budget_id`) REFERENCES `budgets`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
         "fields": [
           {
             "fieldPath": "id",
@@ -1232,6 +1232,12 @@
             "affinity": "TEXT",
             "notNull": true,
             "defaultValue": "'0'"
+          },
+          {
+            "fieldPath": "matchType",
+            "columnName": "match_type",
+            "affinity": "TEXT",
+            "defaultValue": "NULL"
           }
         ],
         "primaryKey": {
@@ -1353,7 +1359,7 @@
       },
       {
         "tableName": "budget_category_month_snapshots",
-        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `budget_id` INTEGER NOT NULL, `year` INTEGER NOT NULL, `month` INTEGER NOT NULL, `category_name` TEXT NOT NULL, `budget_amount` TEXT NOT NULL)",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `budget_id` INTEGER NOT NULL, `year` INTEGER NOT NULL, `month` INTEGER NOT NULL, `category_name` TEXT NOT NULL, `budget_amount` TEXT NOT NULL, `match_type` TEXT DEFAULT NULL)",
         "fields": [
           {
             "fieldPath": "id",
@@ -1390,6 +1396,12 @@
             "columnName": "budget_amount",
             "affinity": "TEXT",
             "notNull": true
+          },
+          {
+            "fieldPath": "matchType",
+            "columnName": "match_type",
+            "affinity": "TEXT",
+            "defaultValue": "NULL"
           }
         ],
         "primaryKey": {
@@ -1741,7 +1753,7 @@
     ],
     "setupQueries": [
       "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
-      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, 'a055fe280d3ddb19f45cda61ee0f718d')"
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, 'e0450e161c8ec2f78f3e0c4ae4c63fd7')"
     ]
   }
 }

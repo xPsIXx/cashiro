@@ -1,17 +1,17 @@
 # Privacy Policy
 
-**Last Updated: August 2025**
+**Last Updated: October 2026**
 
 ## Our Commitment to Privacy
 
 PennyWise AI is built with privacy as the core principle. We believe your financial data should remain yours alone.
 
-## 100% On-Device Processing
+## On-Device Processing
 
-**All data processing happens locally on your device.** We use MediaPipe's on-device LLM (Qwen 2.5) for AI features, ensuring:
+**Transaction processing and AI run locally on your device.** AI features use an on-device LLM (Qwen 2.5, via Google AI Edge LiteRT-LM). The only data that ever leaves your device goes through the explicit outbound requests listed under Internet Permission below:
 
-- ✅ **No cloud servers** - Your data never leaves your phone
-- ✅ **No data collection** - We don't collect, store, or transmit any user data
+- ✅ **On-device AI** - Parsing and AI processing run locally; your transaction database never uploads anywhere
+- ✅ **No data collection** - No analytics, telemetry, or accounts; the one exception is the parse-report flow (see Internet Permission)
 - ✅ **No tracking** - No analytics, no telemetry, no user tracking
 - ✅ **No ads** - No advertising networks or tracking pixels
 - ✅ **Offline AI** - Once downloaded, AI works completely offline
@@ -35,28 +35,36 @@ PennyWise AI is built with privacy as the core principle. We believe your financ
 
 ## Permissions
 
-### SMS Permission (Read-Only)
-- **Purpose**: To read bank transaction SMS messages
+### SMS Permissions (Read-Only)
+- **`READ_SMS` / `RECEIVE_SMS`**: to read bank transaction SMS as they arrive
 - **Scope**: Read-only access, we cannot send or modify messages
 - **Processing**: SMS parsing happens entirely on-device
-- **Storage**: Only transaction data is extracted and stored, not full messages
+- **Storage**: Only extracted transaction fields are stored, not full messages
+
+### Notifications (`POST_NOTIFICATIONS`)
+- Subscription due-date reminders and budget alerts
+
+### Biometrics (`USE_BIOMETRIC`)
+- Optional app lock via fingerprint or face unlock
+
+### Contacts (`READ_CONTACTS`, off by default)
+- PennyWise ships this permission for one opt-in feature: contact lookup, which can resolve a UPI VPA like `merchant@ybl` into a name from your address book so merchant lists read naturally
+- The lookup runs on-device and the feature stays dormant until you enable it in Settings
 
 ### Internet Permission
-- **Primary Purpose**: To download the AI model (Qwen 2.5) on first use
-- **Model Download**: One-time download of ~1.5GB model file from CloudFront CDN
+- **Model Download**: One-time download of the ~1.5GB Qwen 2.5 model from a public Cloudflare R2 bucket, verified against a SHA-256 checksum before use
+- **Exchange Rates**: Multi-currency features fetch current rates from open.er-api.com; only the currency code is sent
+- **Parse Reports**: The "report a parsing problem" action opens pennywise.zynth.dev with the SMS text and sender ID pre-filled. The link also carries an encrypted device identifier — your Android device ID plus a timestamp, RSA-encrypted on-device before it leaves. Opening the page sends these details to the server right away to generate a parsed preview; submitting the report itself remains a separate user action
+- **AI Access (optional, off by default)**: Only while you have started an AI session, answers to a connected AI app's questions travel from your phone through PennyWise's relay (see "Connected AI Apps" below)
 - **App Updates**: Google Play Store variant uses Play Services for app updates (F-Droid variant does not)
 - **After Model Download**: AI works completely offline, no internet required for core features
-- **Your Data**: Never transmitted over the internet, all processing remains on-device
 
-### No Other Permissions Required
-- No location tracking
-- No contact access
-- No camera or microphone access
+No location, camera, or microphone permission is requested.
 
 ## Third-Party Services
 
 PennyWise AI does **NOT** use:
-- ❌ Cloud services or APIs (except CDN for model download)
+- ❌ Cloud storage, backup, or sync of your transaction data
 - ❌ Analytics services (Google Analytics, Firebase, etc.)
 - ❌ Crash reporting services
 - ❌ Advertising networks
@@ -68,12 +76,22 @@ PennyWise AI does **NOT** use:
 ## AI Features
 
 ### On-Device AI Assistant
-- Uses MediaPipe's Qwen 2.5 model (1.5GB download)
-- Model runs entirely on your device using MediaPipe LLM Inference
+- Uses the Qwen 2.5 model (1.5GB download) via Google AI Edge LiteRT-LM
+- Model runs entirely on your device; inference needs no network
 - After initial download, no internet connection required
-- Conversations are not stored or transmitted
+- Chat history is saved locally in the app's database so conversations survive restarts; it's never transmitted
 - AI insights are generated locally from your local transaction data
 - Model file stored in app's private storage
+
+### Connected AI Apps (optional, Pro)
+You can connect Claude, ChatGPT or another app that supports MCP so it can answer questions about your spending. It is off until you set it up, and it only works while you have started a timed AI session on your phone.
+
+- **Your data stays on your phone.** The AI app sends questions to PennyWise's relay (a Cloudflare Worker at ai.pennywise.zynth.dev), which passes them to your phone over a connection your phone opened. Your phone answers from its local database and the answer goes back the same way. The relay never stores or logs questions or answers; its code is in this repository under `relay/`.
+- **What the relay stores**: a random ID for your phone, a hash of its secret, and your connected AI apps (their names and hashed sign-in tokens). Nothing about your money.
+- **What an AI app can read**: transactions (date, merchant or payee name, category, type, amount and currency, bank with the last 4 digits of the account), account balances and credit card dues, and active subscriptions. It can search your whole history, across all profiles, up to 200 transactions per request. Payee names can include people's names for transfers.
+- **What it never gets**: SMS text, full account numbers, UPI or reference numbers, notes, receipts, budgets, goals, loans or your settings. It cannot add, change or delete anything.
+- **The AI provider** (for example Anthropic or OpenAI) receives the answers it reads, under its own privacy policy.
+- **Control**: stop the session any time from the notification, disconnect one app or all of them in Settings → Connect Claude / ChatGPT. Disconnecting all also deletes your phone's ID from the relay.
 
 ## Data Export
 
@@ -108,13 +126,7 @@ For privacy concerns or questions:
 
 ## Summary
 
-**Your financial data stays on your phone. Period.**
-
-- No servers
-- No uploads
-- No tracking
-- No ads
-- Complete privacy
+**Your financial data lives on your phone.** Transactions, balances, budgets, and chat history all sit in a local database inside the app sandbox, and uninstalling removes everything. PennyWise has no analytics or cloud-sync backend; the outbound requests listed under Internet Permission are the complete list.
 
 ---
 

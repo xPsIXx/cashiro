@@ -1,5 +1,8 @@
 package com.pennywiseai.tracker.presentation.accounts
 
+import com.pennywiseai.tracker.R
+import androidx.compose.ui.res.pluralStringResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -7,6 +10,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -43,7 +47,7 @@ import com.pennywiseai.tracker.ui.theme.Spacing
  *  Step 1 — pick the **source** (account whose transactions will be moved).
  *  Step 2 — pick the **target** (account they'll be moved into). The list
  *           filters to accounts compatible with the source: same currency,
- *           same `isCreditCard` flag, not the source itself.
+ *           same `isCreditCard` and `isLoan` flags, not the source itself.
  *  Step 3 — a confirmation dialog showing the actual transaction count.
  *
  * On confirm the sheet fires [onConfirm] and dismisses; the parent
@@ -70,7 +74,15 @@ fun MergeAccountsSheet(
     }
 
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState) {
-        Column(
+        // A single LazyColumn drives the whole sheet so that, with many accounts,
+        // the source and target lists share one scroll surface — the second list
+        // stays reachable instead of being pushed off-screen (#624). Previously
+        // two nested LazyColumns competed for height inside a non-scrolling Column.
+        // No list-wide verticalArrangement: structural items (header, section
+        // labels) keep their own paddings, while account rows carry an xs top
+        // gap so the inter-row rhythm matches the original two-picker layout
+        // instead of spacing every item uniformly.
+        LazyColumn(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(
@@ -79,21 +91,26 @@ fun MergeAccountsSheet(
                     bottom = Spacing.lg
                 )
         ) {
-            Text(
-                text = "Merge accounts",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold
-            )
-            Text(
-                text = "Move all transactions from one account into another. The source account is removed when done.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(top = Spacing.xs, bottom = Spacing.md)
-            )
+            item(key = "header") {
+                Column {
+                    Text(
+                        text = stringResource(R.string.merge_accounts_title),
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Text(
+                        text = stringResource(R.string.merge_accounts_description),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = Spacing.xs, bottom = Spacing.md)
+                    )
+                }
+            }
 
             // Source picker
-            SectionLabel("Move from")
-            AccountPicker(
+            item(key = "from-label") { SectionLabel(stringResource(R.string.merge_accounts_move_from)) }
+            accountPickerItems(
+                idPrefix = "src",
                 accounts = accounts,
                 selected = source,
                 onSelect = { picked ->
@@ -107,31 +124,38 @@ fun MergeAccountsSheet(
             source?.let { src ->
                 val targets = accounts.filter { compatible(src, it) }
                 if (targets.isEmpty()) {
-                    Text(
-                        text = "No other accounts match this one's currency / type.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.error,
-                        modifier = Modifier.padding(top = Spacing.md)
-                    )
-                } else {
-                    SectionLabel("Into", modifier = Modifier.padding(top = Spacing.md))
-                    Row(
-                        modifier = Modifier.padding(bottom = Spacing.xs),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.ArrowDownward,
-                            contentDescription = null,
-                            modifier = Modifier.padding(end = Spacing.xs),
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
+                    item(key = "no-targets") {
                         Text(
-                            text = "${src.bankName} ••${src.accountLast4}",
+                            text = stringResource(R.string.merge_accounts_no_targets),
                             style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                            color = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.padding(top = Spacing.md)
                         )
                     }
-                    AccountPicker(
+                } else {
+                    item(key = "into-header") {
+                        Column(modifier = Modifier.padding(top = Spacing.md)) {
+                            SectionLabel(stringResource(R.string.merge_accounts_into))
+                            Row(
+                                modifier = Modifier.padding(bottom = Spacing.xs),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.ArrowDownward,
+                                    contentDescription = null,
+                                    modifier = Modifier.padding(end = Spacing.xs),
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Text(
+                                    text = AccountBalanceEntity.accountLabel(src.bankName, src.accountLast4),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+                    accountPickerItems(
+                        idPrefix = "tgt",
                         accounts = targets,
                         selected = target,
                         onSelect = { target = it }
@@ -148,21 +172,21 @@ fun MergeAccountsSheet(
     if (s != null && t != null) {
         AlertDialog(
             onDismissRequest = { target = null },
-            title = { Text("Merge accounts?") },
+            title = { Text(stringResource(R.string.merge_accounts_confirm_title)) },
             text = {
                 val n = sourceTxnCount
                 Text(
                     if (n != null)
-                        "Move $n transactions from ${s.bankName} ••${s.accountLast4} into ${t.bankName} ••${t.accountLast4}. The source account is removed after the move. This can't be undone."
+                        pluralStringResource(R.plurals.merge_accounts_confirm_message_count, n, n, AccountBalanceEntity.accountLabel(s.bankName, s.accountLast4), AccountBalanceEntity.accountLabel(t.bankName, t.accountLast4))
                     else
-                        "Move all transactions from ${s.bankName} ••${s.accountLast4} into ${t.bankName} ••${t.accountLast4}. The source account is removed after the move. This can't be undone."
+                        stringResource(R.string.merge_accounts_confirm_message_all, AccountBalanceEntity.accountLabel(s.bankName, s.accountLast4), AccountBalanceEntity.accountLabel(t.bankName, t.accountLast4))
                 )
             },
             confirmButton = {
-                TextButton(onClick = { onConfirm(s, t) }) { Text("Merge") }
+                TextButton(onClick = { onConfirm(s, t) }) { Text(stringResource(R.string.merge_accounts_confirm)) }
             },
             dismissButton = {
-                TextButton(onClick = { target = null }) { Text("Cancel") }
+                TextButton(onClick = { target = null }) { Text(stringResource(R.string.accounts_action_cancel)) }
             }
         )
     }
@@ -179,72 +203,86 @@ private fun SectionLabel(text: String, modifier: Modifier = Modifier) {
     )
 }
 
-@Composable
-private fun AccountPicker(
+/**
+ * Emits selectable account rows directly into the parent [LazyColumn] (rather
+ * than nesting its own scroll container), so both the source and target lists
+ * live on the sheet's single scroll surface. [idPrefix] keeps item keys unique
+ * across the two lists.
+ */
+private fun LazyListScope.accountPickerItems(
+    idPrefix: String,
     accounts: List<AccountBalanceEntity>,
     selected: AccountBalanceEntity?,
     onSelect: (AccountBalanceEntity) -> Unit
 ) {
-    LazyColumn(
-        modifier = Modifier.fillMaxWidth(),
-        verticalArrangement = Arrangement.spacedBy(Spacing.xs)
+    items(
+        accounts,
+        key = { "$idPrefix|${it.bankName}|${it.accountLast4}|${it.id}" }
+    ) { acct ->
+        val isSelected = selected?.bankName == acct.bankName &&
+            selected.accountLast4 == acct.accountLast4
+        AccountPickerRow(acct = acct, isSelected = isSelected, onClick = { onSelect(acct) })
+    }
+}
+
+@Composable
+private fun AccountPickerRow(
+    acct: AccountBalanceEntity,
+    isSelected: Boolean,
+    onClick: () -> Unit
+) {
+    Surface(
+        shape = RoundedCornerShape(12.dp),
+        color = if (isSelected) MaterialTheme.colorScheme.primaryContainer
+        else MaterialTheme.colorScheme.surfaceContainerHighest,
+        modifier = Modifier
+            .padding(top = Spacing.xs)
+            .fillMaxWidth()
+            .clickable { onClick() }
     ) {
-        items(
-            accounts,
-            key = { "${it.bankName}|${it.accountLast4}|${it.id}" }
-        ) { acct ->
-            val isSelected = selected?.bankName == acct.bankName &&
-                selected.accountLast4 == acct.accountLast4
-            Surface(
-                shape = RoundedCornerShape(12.dp),
-                color = if (isSelected) MaterialTheme.colorScheme.primaryContainer
-                else MaterialTheme.colorScheme.surfaceContainerHighest,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable { onSelect(acct) }
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = Spacing.md, vertical = Spacing.sm),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(Spacing.sm)
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = acct.bankName,
-                            style = MaterialTheme.typography.bodyLarge,
-                            fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal
+        Row(
+            modifier = Modifier.padding(horizontal = Spacing.md, vertical = Spacing.sm),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(Spacing.sm)
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = acct.bankName,
+                    style = MaterialTheme.typography.bodyLarge,
+                    fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal
+                )
+                val creditTag = stringResource(R.string.merge_accounts_credit_tag)
+                Text(
+                    text = buildString {
+                        if (acct.accountLast4 != AccountBalanceEntity.WALLET_ACCOUNT_MARKER) {
+                            append("••")
+                            append(acct.accountLast4)
+                            append(" · ")
+                        }
+                        append(acct.currency)
+                        if (acct.isCreditCard) append(" · $creditTag")
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            if (isSelected) {
+                AssistChip(
+                    onClick = {},
+                    label = { Text(stringResource(R.string.merge_accounts_selected)) },
+                    leadingIcon = {
+                        Icon(
+                            Icons.Default.Check,
+                            contentDescription = null,
+                            modifier = Modifier.padding(end = 2.dp)
                         )
-                        Text(
-                            text = buildString {
-                                append("••")
-                                append(acct.accountLast4)
-                                append(" · ")
-                                append(acct.currency)
-                                if (acct.isCreditCard) append(" · Credit")
-                            },
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                    if (isSelected) {
-                        AssistChip(
-                            onClick = {},
-                            label = { Text("Selected") },
-                            leadingIcon = {
-                                Icon(
-                                    Icons.Default.Check,
-                                    contentDescription = null,
-                                    modifier = Modifier.padding(end = 2.dp)
-                                )
-                            },
-                            colors = AssistChipDefaults.assistChipColors(
-                                containerColor = MaterialTheme.colorScheme.primary,
-                                labelColor = MaterialTheme.colorScheme.onPrimary,
-                                leadingIconContentColor = MaterialTheme.colorScheme.onPrimary
-                            )
-                        )
-                    }
-                }
+                    },
+                    colors = AssistChipDefaults.assistChipColors(
+                        containerColor = MaterialTheme.colorScheme.primary,
+                        labelColor = MaterialTheme.colorScheme.onPrimary,
+                        leadingIconContentColor = MaterialTheme.colorScheme.onPrimary
+                    )
+                )
             }
         }
     }
@@ -256,6 +294,6 @@ private fun compatible(a: AccountBalanceEntity, b: AccountBalanceEntity): Boolea
         a.accountLast4 == b.accountLast4
     if (sameAccount) return false
     if (!a.currency.equals(b.currency, ignoreCase = true)) return false
-    if (a.isCreditCard != b.isCreditCard) return false
+    if (a.isCreditCard != b.isCreditCard || a.isLoan != b.isLoan) return false
     return true
 }

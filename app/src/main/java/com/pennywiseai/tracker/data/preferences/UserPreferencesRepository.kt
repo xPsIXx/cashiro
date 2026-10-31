@@ -8,10 +8,18 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
+import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import com.pennywiseai.tracker.data.share.ShareCardConfig
+import com.pennywiseai.tracker.data.share.ShareHero
+import com.pennywiseai.tracker.data.share.SharePeriod
+import com.pennywiseai.tracker.data.preferences.HomeSection
+import com.pennywiseai.tracker.data.preferences.HomeSectionLayout
+import com.pennywiseai.tracker.widget.WidgetRefresher
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
+import java.time.LocalDate
 import kotlinx.coroutines.flow.map
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -47,8 +55,15 @@ internal val Context.dataStore: DataStore<Preferences> by preferencesDataStore(
     }
 )
 
+/**
+ * Whether the evening recap is on for someone who never touched its switch:
+ * off, an opt-in from Settings → Notifications. The single source of that
+ * default: the pref, the Settings switch and the scheduler all read it.
+ */
+const val DAILY_SUMMARY_DEFAULT = false
+
 @Singleton
-class UserPreferencesRepository @Inject constructor(
+open class UserPreferencesRepository @Inject constructor(
     @ApplicationContext private val context: Context
 ) {
     private object PreferencesKeys {
@@ -60,19 +75,35 @@ class UserPreferencesRepository @Inject constructor(
         val APP_FONT = stringPreferencesKey("app_font")
         val HAS_SKIPPED_SMS_PERMISSION = booleanPreferencesKey("has_skipped_sms_permission")
         val DEVELOPER_MODE_ENABLED = booleanPreferencesKey("developer_mode_enabled")
+        val COUNT_CREDIT_AS_EXPENSE = booleanPreferencesKey("count_credit_as_expense")
+        val DAILY_SUMMARY_ENABLED = booleanPreferencesKey("daily_summary_enabled")
         val SYSTEM_PROMPT = stringPreferencesKey("system_prompt")
         val HAS_SHOWN_SCAN_TUTORIAL = booleanPreferencesKey("has_shown_scan_tutorial")
         val ACTIVE_DOWNLOAD_ID = longPreferencesKey("active_download_id")
         val SMS_SCAN_MONTHS = intPreferencesKey("sms_scan_months")
         val SMS_SCAN_ALL_TIME = booleanPreferencesKey("sms_scan_all_time")
+        val SMS_SCAN_USE_CUSTOM_DATE = booleanPreferencesKey("sms_scan_use_custom_date")
+        val SMS_SCAN_CUSTOM_DATE = longPreferencesKey("sms_scan_custom_date")
         val LAST_SCAN_TIMESTAMP = longPreferencesKey("last_scan_timestamp")
         val LAST_SCAN_PERIOD = intPreferencesKey("last_scan_period")
         val BASE_CURRENCY = stringPreferencesKey("base_currency")
+
+        // Share card — which single figure the card leads with, and over what window
+        val SHARE_CARD_HERO = stringPreferencesKey("share_card_hero")
+        val SHARE_CARD_PERIOD = stringPreferencesKey("share_card_period")
+        // Calendar month ("2026-07") the monthly share prompt was last acted on or
+        // dismissed. A month string rather than a day count: "30 days" drifts off the
+        // month boundary this prompt is entirely about.
+        val SHARE_PROMPT_HANDLED_MONTH = stringPreferencesKey("share_prompt_handled_month")
+        // Device-local on purpose: kept out of the backup's PreferencesSnapshot (#945).
+        val PRO_HOME_CARD_HANDLED = booleanPreferencesKey("pro_home_card_handled")
 
         // App Lock preferences
         val APP_LOCK_ENABLED = booleanPreferencesKey("app_lock_enabled")
         val APP_LOCK_TIMEOUT_MINUTES = intPreferencesKey("app_lock_timeout_minutes")
         val LAST_AUTH_TIMESTAMP = longPreferencesKey("last_auth_timestamp")
+        // Device-local: whether the "App Lock needs a screen lock" notice was shown.
+        val APP_LOCK_NO_SCREEN_LOCK_NOTICE_SHOWN = booleanPreferencesKey("app_lock_no_screen_lock_notice_shown")
 
         // In-App Review preferences
         val FIRST_LAUNCH_TIME = longPreferencesKey("first_launch_time")
@@ -82,11 +113,33 @@ class UserPreferencesRepository @Inject constructor(
         // Feature discovery
         val HAS_USED_FULL_RESYNC = booleanPreferencesKey("has_used_full_resync")
 
+        // Pro tier — UI-cached entitlement to avoid first-frame flicker
+        // while the BillingClient connects.
+        val PRO_CACHED_IS_PRO = booleanPreferencesKey("pro_cached_is_pro")
+
+        // Website-sold Pro (Dodo license key). Key + activation instance are
+        // what Dodo needs to validate; validated_at drives the offline policy.
+        val LICENSE_KEY = stringPreferencesKey("license_key")
+        val LICENSE_INSTANCE_ID = stringPreferencesKey("license_instance_id")
+        val LICENSE_VALIDATED_AT = longPreferencesKey("license_validated_at")
+        val LICENSE_PRODUCT_NAME = stringPreferencesKey("license_product_name")
+
+        // F-Droid support nudge — epoch-day of the last contextual "Support
+        // development" prompt, so it stays frequency-capped.
+        val SUPPORT_NUDGE_LAST_SHOWN_DAY = longPreferencesKey("support_nudge_last_shown_epoch_day")
+
+        // Pro tier — statement-import monthly quota tracking.
+        val LAST_STATEMENT_IMPORT_AT = longPreferencesKey("last_statement_import_at")
+        val STATEMENT_COLUMN_MAPPINGS = stringPreferencesKey("statement_column_mappings")
+
         // What's New feature
         val LAST_SEEN_APP_VERSION = stringPreferencesKey("last_seen_app_version")
 
         // Monthly Budget
         val MONTHLY_BUDGET_LIMIT = stringPreferencesKey("monthly_budget_limit")
+
+        // Budget Cycle Start Day (1..31, default 1 = calendar month)
+        val BUDGET_CYCLE_START_DAY = intPreferencesKey("budget_cycle_start_day")
 
         // Unified Currency Mode
         val UNIFIED_CURRENCY_MODE = booleanPreferencesKey("unified_currency_mode")
@@ -107,11 +160,25 @@ class UserPreferencesRepository @Inject constructor(
         // Navigation Bar Style
         val NAV_BAR_STYLE = stringPreferencesKey("nav_bar_style")
 
+        // Routes of the bottom-bar tabs the user hid (#912)
+        val HIDDEN_NAV_TABS = stringSetPreferencesKey("hidden_nav_tabs")
+
+        // Number Format Style (digit grouping: Auto / Indian / International)
+        val NUMBER_FORMAT_STYLE = stringPreferencesKey("number_format_style")
+        val DATE_FORMAT_STYLE = stringPreferencesKey("date_format_style")
+
         // Analytics Chart Type
         val ANALYTICS_CHART_TYPE = stringPreferencesKey("analytics_chart_type")
+        val ANALYTICS_GROUP_BY = stringPreferencesKey("analytics_group_by")
 
         // Cover Style
         val COVER_STYLE = stringPreferencesKey("cover_style")
+
+        // Home screen section order / visibility (#770) — see HomeSectionLayout
+        val HOME_SECTIONS = stringPreferencesKey("home_sections")
+
+        // Accounts left out of Home's "Safe to spend", as "bankName_last4" keys
+        val SAFE_TO_SPEND_EXCLUDED = stringSetPreferencesKey("safe_to_spend_excluded_accounts")
 
         // Profile & Onboarding
         val USER_NAME = stringPreferencesKey("user_name")
@@ -119,14 +186,30 @@ class UserPreferencesRepository @Inject constructor(
         val PROFILE_BACKGROUND_COLOR = intPreferencesKey("profile_background_color")
         val HAS_COMPLETED_ONBOARDING = booleanPreferencesKey("has_completed_onboarding")
         val MAIN_ACCOUNT_KEY = stringPreferencesKey("main_account_key")
-
-        // Explicit base-currency choice from the Settings currency selector. Marks the
-        // currency as user-set so the main-account can no longer override it.
+        // True once the user explicitly picks a currency in the Settings selector.
+        // While true, the main-account-derived currency must not override their choice.
         val BASE_CURRENCY_USER_SET = booleanPreferencesKey("base_currency_user_set")
 
         // UPI VPA → contact name lookup (opt-in; gated by READ_CONTACTS).
         val USE_CONTACTS_FOR_VPA = booleanPreferencesKey("use_contacts_for_vpa")
 
+        // The user's own UPI ID, for asking people to pay their share of a split bill (#346).
+        val UPI_ID = stringPreferencesKey("upi_id")
+
+        // Scheduled folder backup (SAF tree URI; shared by standard and F-Droid).
+        val SCHEDULED_FOLDER_BACKUP_ENABLED = booleanPreferencesKey("scheduled_folder_backup_enabled")
+        val SCHEDULED_FOLDER_BACKUP_TREE_URI = stringPreferencesKey("scheduled_folder_backup_tree_uri")
+        val SCHEDULED_FOLDER_BACKUP_LAST_TIMESTAMP = longPreferencesKey("scheduled_folder_backup_last_timestamp")
+
+        // Embed receipt photos in backups (#839). Manual export defaults ON;
+        // the daily folder backup defaults OFF (photos make every copy large).
+        val EXPORT_INCLUDE_RECEIPTS = booleanPreferencesKey("export_include_receipts")
+        val FOLDER_BACKUP_INCLUDE_RECEIPTS = booleanPreferencesKey("folder_backup_include_receipts")
+    }
+
+    private companion object {
+        // F-Droid support nudge: at most one contextual prompt per this many days.
+        const val SUPPORT_NUDGE_COOLDOWN_DAYS = 30L
     }
 
     val userPreferences: Flow<UserPreferences> = context.dataStore.data
@@ -157,6 +240,7 @@ class UserPreferencesRepository @Inject constructor(
                 navBarStyle = preferences[PreferencesKeys.NAV_BAR_STYLE]?.let {
                     try { NavBarStyle.valueOf(it) } catch (_: Exception) { NavBarStyle.FLOATING }
                 } ?: NavBarStyle.FLOATING,
+                hiddenNavTabs = preferences[PreferencesKeys.HIDDEN_NAV_TABS] ?: emptySet(),
                 coverStyle = preferences[PreferencesKeys.COVER_STYLE]?.let {
                     try { CoverStyle.valueOf(it) } catch (_: Exception) { CoverStyle.AURORA }
                 } ?: CoverStyle.AURORA,
@@ -165,8 +249,7 @@ class UserPreferencesRepository @Inject constructor(
                     ?: if (preferences[PreferencesKeys.HAS_COMPLETED_ONBOARDING] == true) "avatar://0" else null,
                 profileBackgroundColor = preferences[PreferencesKeys.PROFILE_BACKGROUND_COLOR] ?: 0,
                 hasCompletedOnboarding = preferences[PreferencesKeys.HAS_COMPLETED_ONBOARDING] ?: false,
-                mainAccountKey = preferences[PreferencesKeys.MAIN_ACCOUNT_KEY],
-                baseCurrencyUserSet = preferences[PreferencesKeys.BASE_CURRENCY_USER_SET] ?: false
+                mainAccountKey = preferences[PreferencesKeys.MAIN_ACCOUNT_KEY]
             )
         }
 
@@ -189,6 +272,36 @@ class UserPreferencesRepository @Inject constructor(
     val isDeveloperModeEnabled: Flow<Boolean> = context.dataStore.data
         .map { preferences ->
             preferences[PreferencesKeys.DEVELOPER_MODE_ENABLED] ?: false
+        }
+
+    /**
+     * When true, credit-card spend (TransactionType.CREDIT) is folded into the
+     * fixed "expenses / spent" totals (Home card) instead
+     * of being kept as a separate figure. Default off. The filter-driven
+     * Analytics screen is unaffected — it already lets users select the Credit
+     * type to view card spend. (#705)
+     */
+    val countCreditCardAsExpense: Flow<Boolean> = context.dataStore.data
+        .map { preferences ->
+            preferences[PreferencesKeys.COUNT_CREDIT_AS_EXPENSE] ?: false
+        }
+
+    val numberFormatStyle: Flow<NumberFormatStyle> = context.dataStore.data
+        .map { preferences ->
+            preferences[PreferencesKeys.NUMBER_FORMAT_STYLE]?.let {
+                try {
+                    NumberFormatStyle.valueOf(it)
+                } catch (_: Exception) {
+                    NumberFormatStyle.AUTO
+                }
+            } ?: NumberFormatStyle.AUTO
+        }
+
+    val dateFormatStyle: Flow<DateFormatStyle> = context.dataStore.data
+        .map { preferences ->
+            preferences[PreferencesKeys.DATE_FORMAT_STYLE]
+                ?.let { name -> DateFormatStyle.entries.firstOrNull { it.name == name } }
+                ?: DateFormatStyle.AUTO
         }
 
     suspend fun updateDarkThemeEnabled(enabled: Boolean?) {
@@ -240,6 +353,22 @@ class UserPreferencesRepository @Inject constructor(
     suspend fun setDeveloperModeEnabled(enabled: Boolean) {
         context.dataStore.edit { preferences ->
             preferences[PreferencesKeys.DEVELOPER_MODE_ENABLED] = enabled
+        }
+    }
+
+    suspend fun setCountCreditCardAsExpense(enabled: Boolean) {
+        context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.COUNT_CREDIT_AS_EXPENSE] = enabled
+        }
+    }
+
+    /** The 9 PM recap notification (DailySummaryWorker); default in [DAILY_SUMMARY_DEFAULT]. */
+    val dailySummaryEnabled: Flow<Boolean> = context.dataStore.data
+        .map { preferences -> preferences[PreferencesKeys.DAILY_SUMMARY_ENABLED] ?: DAILY_SUMMARY_DEFAULT }
+
+    suspend fun setDailySummaryEnabled(enabled: Boolean) {
+        context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.DAILY_SUMMARY_ENABLED] = enabled
         }
     }
     
@@ -311,6 +440,38 @@ class UserPreferencesRepository @Inject constructor(
             .map { preferences -> preferences[PreferencesKeys.SMS_SCAN_ALL_TIME] ?: true }
             .first()
     }
+
+    val smsScanUseCustomDate: Flow<Boolean> = context.dataStore.data
+        .map { preferences ->
+            preferences[PreferencesKeys.SMS_SCAN_USE_CUSTOM_DATE] ?: false
+        }
+
+    suspend fun updateSmsScanUseCustomDate(useCustomDate: Boolean) {
+        context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.SMS_SCAN_USE_CUSTOM_DATE] = useCustomDate
+        }
+    }
+
+    suspend fun getSmsScanUseCustomDate(): Boolean {
+        return context.dataStore.data
+            .map { preferences -> preferences[PreferencesKeys.SMS_SCAN_USE_CUSTOM_DATE] ?: false }
+            .first()
+    }
+
+    val smsScanCustomDate: Flow<Long?> = context.dataStore.data
+        .map { preferences -> preferences[PreferencesKeys.SMS_SCAN_CUSTOM_DATE] }
+
+    suspend fun updateSmsScanCustomDate(dateMillis: Long) {
+        context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.SMS_SCAN_CUSTOM_DATE] = dateMillis
+        }
+    }
+
+    suspend fun getSmsScanCustomDate(): Long? {
+        return context.dataStore.data
+            .map { preferences -> preferences[PreferencesKeys.SMS_SCAN_CUSTOM_DATE] }
+            .first()
+    }
     
     suspend fun setLastScanTimestamp(timestamp: Long) {
         context.dataStore.edit { preferences ->
@@ -323,7 +484,57 @@ class UserPreferencesRepository @Inject constructor(
             preferences[PreferencesKeys.LAST_SCAN_PERIOD] = period
         }
     }
-    
+
+    /**
+     * The user's saved share-card layout. Defaults have every section on: the preview
+     * shows exactly what will be sent, so an opinionated default is safe and means the
+     * first share is two taps rather than a configuration exercise.
+     */
+    val shareCardConfig: Flow<ShareCardConfig> = context.dataStore.data
+        .map { preferences ->
+            ShareCardConfig(
+                hero = ShareHero.fromName(preferences[PreferencesKeys.SHARE_CARD_HERO]),
+                period = SharePeriod.fromName(preferences[PreferencesKeys.SHARE_CARD_PERIOD]),
+            )
+        }
+
+    /**
+     * The month ("2026-07") whose share prompt the user has already dismissed or acted
+     * on, or null if they never have.
+     */
+    val sharePromptHandledMonth: Flow<String?> = context.dataStore.data
+        .map { it[PreferencesKeys.SHARE_PROMPT_HANDLED_MONTH] }
+
+    /**
+     * Records [month] as handled so the Home banner doesn't come back until the next one.
+     *
+     * Deliberately not the claim-on-decide shape used by [claimSupportNudge]: that nudge
+     * is contextual and fires once at a moment, whereas this banner should persist across
+     * launches until the user actually engages with it. Marking on dismissal rather than
+     * on display means an app kill doesn't silently burn the month's only prompt.
+     */
+    suspend fun markSharePromptHandled(month: String) {
+        context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.SHARE_PROMPT_HANDLED_MONTH] = month
+        }
+    }
+
+    /** Whether the one-time Home Pro card (#945) has been tapped or dismissed. */
+    val proHomeCardHandled: Flow<Boolean> = context.dataStore.data
+        .map { it[PreferencesKeys.PRO_HOME_CARD_HANDLED] ?: false }
+
+    /** Marked on the user's action, not on display — same reasoning as [markSharePromptHandled]. */
+    suspend fun markProHomeCardHandled() {
+        context.dataStore.edit { it[PreferencesKeys.PRO_HOME_CARD_HANDLED] = true }
+    }
+
+    suspend fun setShareCardConfig(config: ShareCardConfig) {
+        context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.SHARE_CARD_HERO] = config.hero.name
+            preferences[PreferencesKeys.SHARE_CARD_PERIOD] = config.period.name
+        }
+    }
+
     suspend fun setFirstLaunchTime(timestamp: Long) {
         context.dataStore.edit { preferences ->
             preferences[PreferencesKeys.FIRST_LAUNCH_TIME] = timestamp
@@ -471,6 +682,16 @@ class UserPreferencesRepository @Inject constructor(
             .first()
     }
 
+    /** True only the first time it's called: the no-screen-lock notice is shown once. */
+    suspend fun claimAppLockNoScreenLockNotice(): Boolean {
+        var first = false
+        context.dataStore.edit { preferences ->
+            first = preferences[PreferencesKeys.APP_LOCK_NO_SCREEN_LOCK_NOTICE_SHOWN] != true
+            preferences[PreferencesKeys.APP_LOCK_NO_SCREEN_LOCK_NOTICE_SHOWN] = true
+        }
+        return first
+    }
+
     fun getLastAuthTimestampFlow(): Flow<Long> = context.dataStore.data
         .map { preferences ->
             preferences[PreferencesKeys.LAST_AUTH_TIMESTAMP] ?: 0L
@@ -486,6 +707,102 @@ class UserPreferencesRepository @Inject constructor(
         context.dataStore.edit { preferences ->
             preferences[PreferencesKeys.HAS_USED_FULL_RESYNC] = true
         }
+    }
+
+    // Pro tier — UI-cached entitlement so first frame after cold start
+    // doesn't flicker `false → true` while BillingClient connects. Real
+    // source of truth is Play; this is a hint only.
+    val proCachedIsPro: Flow<Boolean> = context.dataStore.data
+        .map { it[PreferencesKeys.PRO_CACHED_IS_PRO] ?: false }
+
+    suspend fun setProCachedIsPro(isPro: Boolean) {
+        context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.PRO_CACHED_IS_PRO] = isPro
+        }
+    }
+
+    /** Stored website license (Dodo). Null [StoredLicense.key] means none. */
+    val storedLicense: Flow<StoredLicense?> = context.dataStore.data.map { p ->
+        p[PreferencesKeys.LICENSE_KEY]?.let { key ->
+            StoredLicense(
+                key = key,
+                instanceId = p[PreferencesKeys.LICENSE_INSTANCE_ID],
+                validatedAt = p[PreferencesKeys.LICENSE_VALIDATED_AT] ?: 0L,
+                productName = p[PreferencesKeys.LICENSE_PRODUCT_NAME],
+            )
+        }
+    }
+
+    suspend fun setStoredLicense(license: StoredLicense?) {
+        context.dataStore.edit { p ->
+            if (license == null) {
+                p.remove(PreferencesKeys.LICENSE_KEY)
+                p.remove(PreferencesKeys.LICENSE_INSTANCE_ID)
+                p.remove(PreferencesKeys.LICENSE_VALIDATED_AT)
+                p.remove(PreferencesKeys.LICENSE_PRODUCT_NAME)
+            } else {
+                p[PreferencesKeys.LICENSE_KEY] = license.key
+                license.instanceId?.let { p[PreferencesKeys.LICENSE_INSTANCE_ID] = it }
+                    ?: p.remove(PreferencesKeys.LICENSE_INSTANCE_ID)
+                p[PreferencesKeys.LICENSE_VALIDATED_AT] = license.validatedAt
+                license.productName?.let { p[PreferencesKeys.LICENSE_PRODUCT_NAME] = it }
+                    ?: p.remove(PreferencesKeys.LICENSE_PRODUCT_NAME)
+            }
+        }
+    }
+
+    /** Epoch-day the contextual F-Droid support nudge was last shown (0 = never). */
+    val supportNudgeLastShownDay: Flow<Long> = context.dataStore.data
+        .map { it[PreferencesKeys.SUPPORT_NUDGE_LAST_SHOWN_DAY] ?: 0L }
+
+    /**
+     * Atomically decides whether to show the contextual F-Droid "Support
+     * development" nudge and, if so, records it as shown before returning — so
+     * back-to-back power-feature moments can't show it twice. Returns true at
+     * most once per [SUPPORT_NUDGE_COOLDOWN_DAYS] days, across every trigger
+     * site (a single global timestamp). Callers gate on the F-Droid flavor.
+     */
+    suspend fun claimSupportNudge(): Boolean {
+        val today = LocalDate.now().toEpochDay()
+        // Check-and-set inside a single edit{} so the read and write are one
+        // atomic transaction — DataStore serializes edit blocks, so two
+        // concurrent claims can't both observe the stale timestamp and win.
+        var claimed = false
+        context.dataStore.edit { prefs ->
+            val last = prefs[PreferencesKeys.SUPPORT_NUDGE_LAST_SHOWN_DAY] ?: 0L
+            if (today - last >= SUPPORT_NUDGE_COOLDOWN_DAYS) {
+                prefs[PreferencesKeys.SUPPORT_NUDGE_LAST_SHOWN_DAY] = today
+                claimed = true
+            }
+        }
+        return claimed
+    }
+
+    /**
+     * Epoch-millis of the last successful PDF statement import, or null if
+     * the user has never imported. Consumed by the statement-import gate —
+     * free users get one import per calendar month, so this single
+     * timestamp is enough (no per-month counter needed since the limit is 1).
+     */
+    val lastStatementImportAt: Flow<Long?> = context.dataStore.data
+        .map { it[PreferencesKeys.LAST_STATEMENT_IMPORT_AT] }
+
+    suspend fun markStatementImported(epochMillis: Long) {
+        context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.LAST_STATEMENT_IMPORT_AT] = epochMillis
+        }
+    }
+
+    /**
+     * Spreadsheet statement column mappings (#13), JSON keyed by header
+     * signature — see StatementTableParser.encodeMappings. Device-local, not
+     * backed up: a lost mapping costs one re-map.
+     */
+    suspend fun getStatementColumnMappings(): String? =
+        context.dataStore.data.first()[PreferencesKeys.STATEMENT_COLUMN_MAPPINGS]
+
+    suspend fun setStatementColumnMappings(json: String) {
+        context.dataStore.edit { it[PreferencesKeys.STATEMENT_COLUMN_MAPPINGS] = json }
     }
 
     // What's New feature
@@ -542,22 +859,75 @@ class UserPreferencesRepository @Inject constructor(
         }
     }
 
+    /**
+     * Day of the month the user's budget cycle starts on. 1 = first of the month
+     * (the calendar-month default); up to 31. Stored as an Int 1..31 — out-of-range
+     * values from older builds or migrations are clamped at read time.
+     */
+    val budgetCycleStartDay: Flow<Int> = context.dataStore.data
+        .map { preferences ->
+            (preferences[PreferencesKeys.BUDGET_CYCLE_START_DAY] ?: 1).coerceIn(1, 31)
+        }
+
+    suspend fun getBudgetCycleStartDay(): Int = budgetCycleStartDay.first()
+
+    suspend fun updateBudgetCycleStartDay(day: Int) {
+        val clamped = day.coerceIn(1, 31)
+        context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.BUDGET_CYCLE_START_DAY] = clamped
+        }
+        // Every widget computes "this cycle" from this day.
+        WidgetRefresher.refreshTransactionWidgets(context)
+    }
+
+    /**
+     * Explicit base-currency choice from the Settings currency selector. Marks the
+     * currency as user-set so the main account can no longer override it.
+     */
     suspend fun updateBaseCurrency(currency: String) {
         context.dataStore.edit { preferences ->
             preferences[PreferencesKeys.BASE_CURRENCY] = currency
+            preferences[PreferencesKeys.BASE_CURRENCY_USER_SET] = true
+        }
+    }
+
+    suspend fun updateNumberFormatStyle(style: NumberFormatStyle) {
+        context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.NUMBER_FORMAT_STYLE] = style.name
+        }
+    }
+
+    suspend fun updateDateFormatStyle(style: DateFormatStyle) {
+        context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.DATE_FORMAT_STYLE] = style.name
+        }
+    }
+
+    /**
+     * Sets the base currency derived from the user's main account, but only if the
+     * user hasn't explicitly chosen one via the Settings currency selector. The
+     * explicit selector always wins.
+     */
+    suspend fun applyMainAccountCurrency(currency: String) {
+        context.dataStore.edit { preferences ->
+            if (preferences[PreferencesKeys.BASE_CURRENCY_USER_SET] != true) {
+                preferences[PreferencesKeys.BASE_CURRENCY] = currency
+            }
         }
     }
 
     // Balance Visibility
     val isBalanceHidden: Flow<Boolean> = context.dataStore.data
         .map { preferences ->
-            preferences[PreferencesKeys.BALANCE_HIDDEN] ?: false
+            preferences[PreferencesKeys.BALANCE_HIDDEN] ?: true // hidden until the user reveals it
         }
 
     suspend fun setBalanceHidden(hidden: Boolean) {
         context.dataStore.edit { preferences ->
             preferences[PreferencesKeys.BALANCE_HIDDEN] = hidden
         }
+        // The widgets' totals follow the same eye.
+        WidgetRefresher.refreshTransactionWidgets(context)
     }
 
     // Replace UPI VPAs with matching contact names at display time.
@@ -573,6 +943,18 @@ class UserPreferencesRepository @Inject constructor(
         }
     }
 
+    /** The user's own UPI ID (#346), or null until they enter one. */
+    val upiId: Flow<String?> = context.dataStore.data
+        .map { preferences -> preferences[PreferencesKeys.UPI_ID]?.takeIf { it.isNotBlank() } }
+
+    /** Blank or null clears it. */
+    suspend fun setUpiId(id: String?) {
+        context.dataStore.edit { preferences ->
+            val trimmed = id?.trim().orEmpty()
+            if (trimmed.isEmpty()) preferences.remove(PreferencesKeys.UPI_ID) else preferences[PreferencesKeys.UPI_ID] = trimmed
+        }
+    }
+
     // Selected Profile
     val selectedProfileId: Flow<Long?> = context.dataStore.data
         .map { preferences -> preferences[PreferencesKeys.SELECTED_PROFILE_ID] }
@@ -585,6 +967,8 @@ class UserPreferencesRepository @Inject constructor(
                 preferences[PreferencesKeys.SELECTED_PROFILE_ID] = profileId
             }
         }
+        // The spend widgets are scoped to the selected profile.
+        WidgetRefresher.refreshTransactionWidgets(context)
     }
 
     // Blur Effects
@@ -606,6 +990,22 @@ class UserPreferencesRepository @Inject constructor(
         }
     }
 
+    // Bottom-bar tabs (#912). Read-modify-write inside one edit so quick
+    // toggles of two tabs can't overwrite each other.
+    suspend fun setNavTabHidden(route: String, hidden: Boolean) {
+        context.dataStore.edit { preferences ->
+            val current = preferences[PreferencesKeys.HIDDEN_NAV_TABS] ?: emptySet()
+            preferences[PreferencesKeys.HIDDEN_NAV_TABS] =
+                if (hidden) current + route else current - route
+        }
+    }
+
+    suspend fun updateHiddenNavTabs(routes: Set<String>) {
+        context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.HIDDEN_NAV_TABS] = routes
+        }
+    }
+
     // Analytics Chart Type
     suspend fun saveAnalyticsChartType(chartType: String) {
         context.dataStore.edit { preferences ->
@@ -616,10 +1016,44 @@ class UserPreferencesRepository @Inject constructor(
     fun getAnalyticsChartType(): Flow<String?> = context.dataStore.data
         .map { preferences -> preferences[PreferencesKeys.ANALYTICS_CHART_TYPE] }
 
+    suspend fun saveAnalyticsGroupBy(groupBy: String) {
+        context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.ANALYTICS_GROUP_BY] = groupBy
+        }
+    }
+
+    fun getAnalyticsGroupBy(): Flow<String?> = context.dataStore.data
+        .map { preferences -> preferences[PreferencesKeys.ANALYTICS_GROUP_BY] }
+
     // Cover Style
     suspend fun updateCoverStyle(style: CoverStyle) {
         context.dataStore.edit { preferences ->
             preferences[PreferencesKeys.COVER_STYLE] = style.name
+        }
+    }
+
+    // Home sections (#770)
+    val homeSectionLayout: Flow<List<Pair<HomeSection, Boolean>>> = context.dataStore.data
+        .map { preferences -> HomeSectionLayout.decode(preferences[PreferencesKeys.HOME_SECTIONS]) }
+
+    /** Read-modify-write inside one `edit` so rapid taps can't clobber each other. */
+    suspend fun updateHomeSectionLayout(
+        transform: (List<Pair<HomeSection, Boolean>>) -> List<Pair<HomeSection, Boolean>>
+    ) {
+        context.dataStore.edit { preferences ->
+            val current = HomeSectionLayout.decode(preferences[PreferencesKeys.HOME_SECTIONS])
+            preferences[PreferencesKeys.HOME_SECTIONS] = HomeSectionLayout.encode(transform(current))
+        }
+    }
+
+    /** Accounts left out of "Safe to spend" ("bankName_last4"); empty = every spendable account counts. */
+    val safeToSpendExcludedAccounts: Flow<Set<String>> = context.dataStore.data
+        .map { preferences -> preferences[PreferencesKeys.SAFE_TO_SPEND_EXCLUDED] ?: emptySet() }
+
+    suspend fun setSafeToSpendAccountIncluded(key: String, included: Boolean) {
+        context.dataStore.edit { preferences ->
+            val current = preferences[PreferencesKeys.SAFE_TO_SPEND_EXCLUDED] ?: emptySet()
+            preferences[PreferencesKeys.SAFE_TO_SPEND_EXCLUDED] = if (included) current - key else current + key
         }
     }
 
@@ -662,30 +1096,60 @@ class UserPreferencesRepository @Inject constructor(
         }
     }
 
-    /**
-     * Explicitly set base currency from user selector in Settings.
-     * This marks the choice so main-account derivation will not override.
-     */
-    suspend fun setBaseCurrency(currency: String) {
+    val scheduledFolderBackupEnabled: Flow<Boolean> = context.dataStore.data
+        .map { preferences ->
+            preferences[PreferencesKeys.SCHEDULED_FOLDER_BACKUP_ENABLED] ?: false
+        }
+
+    val scheduledFolderBackupTreeUri: Flow<String?> = context.dataStore.data
+        .map { preferences ->
+            preferences[PreferencesKeys.SCHEDULED_FOLDER_BACKUP_TREE_URI]
+        }
+
+    val scheduledFolderBackupLastTimestamp: Flow<Long?> = context.dataStore.data
+        .map { preferences ->
+            preferences[PreferencesKeys.SCHEDULED_FOLDER_BACKUP_LAST_TIMESTAMP]
+        }
+
+    suspend fun isScheduledFolderBackupEnabled(): Boolean {
+        return scheduledFolderBackupEnabled.first()
+    }
+
+    suspend fun getScheduledFolderBackupTreeUri(): String? {
+        return scheduledFolderBackupTreeUri.first()
+    }
+
+    suspend fun setScheduledFolderBackupEnabled(enabled: Boolean) {
         context.dataStore.edit { preferences ->
-            preferences[PreferencesKeys.BASE_CURRENCY] = currency
-            preferences[PreferencesKeys.BASE_CURRENCY_USER_SET] = true
+            preferences[PreferencesKeys.SCHEDULED_FOLDER_BACKUP_ENABLED] = enabled
         }
     }
 
-    /**
-     * Sets the base currency derived from the user's main account, but only if the
-     * user hasn't explicitly chosen one via the Settings currency selector. The
-     * explicit selector always wins.
-     */
-    suspend fun applyMainAccountCurrency(currency: String) {
+    suspend fun setScheduledFolderBackupTreeUri(treeUri: String) {
         context.dataStore.edit { preferences ->
-            if (preferences[PreferencesKeys.BASE_CURRENCY_USER_SET] != true) {
-                preferences[PreferencesKeys.BASE_CURRENCY] = currency
-            }
+            preferences[PreferencesKeys.SCHEDULED_FOLDER_BACKUP_TREE_URI] = treeUri
         }
     }
 
+    suspend fun setScheduledFolderBackupLastTimestamp(timestamp: Long) {
+        context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.SCHEDULED_FOLDER_BACKUP_LAST_TIMESTAMP] = timestamp
+        }
+    }
+
+    val exportIncludeReceipts: Flow<Boolean> = context.dataStore.data
+        .map { it[PreferencesKeys.EXPORT_INCLUDE_RECEIPTS] ?: true }
+
+    val folderBackupIncludeReceipts: Flow<Boolean> = context.dataStore.data
+        .map { it[PreferencesKeys.FOLDER_BACKUP_INCLUDE_RECEIPTS] ?: false }
+
+    suspend fun setExportIncludeReceipts(include: Boolean) {
+        context.dataStore.edit { it[PreferencesKeys.EXPORT_INCLUDE_RECEIPTS] = include }
+    }
+
+    suspend fun setFolderBackupIncludeReceipts(include: Boolean) {
+        context.dataStore.edit { it[PreferencesKeys.FOLDER_BACKUP_INCLUDE_RECEIPTS] = include }
+    }
 }
 
 data class UserPreferences(
@@ -705,6 +1169,7 @@ data class UserPreferences(
     val displayCurrency: String = "INR",
     val blurEffectsEnabled: Boolean = true,
     val navBarStyle: NavBarStyle = NavBarStyle.FLOATING,
+    val hiddenNavTabs: Set<String> = emptySet(),
     val coverStyle: CoverStyle = CoverStyle.AURORA,
     val userName: String = "User",
     val profileImageUri: String? = null,
@@ -712,5 +1177,14 @@ data class UserPreferences(
     val hasCompletedOnboarding: Boolean = false,
     val mainAccountKey: String? = null,
     val selectedProfileId: Long? = null,
-    val baseCurrencyUserSet: Boolean = false
+    /** Day of the month (1..31) the budget cycle starts on. 1 = calendar month. */
+    val budgetCycleStartDay: Int = 1
+)
+
+/** A website-sold Pro license as persisted in DataStore. */
+data class StoredLicense(
+    val key: String,
+    val instanceId: String?,
+    val validatedAt: Long,
+    val productName: String?,
 )

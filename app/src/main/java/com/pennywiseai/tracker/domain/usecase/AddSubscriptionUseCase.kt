@@ -1,6 +1,7 @@
 package com.pennywiseai.tracker.domain.usecase
 
 import android.util.Log
+import com.pennywiseai.tracker.data.database.entity.SubscriptionDirection
 import com.pennywiseai.tracker.data.database.entity.SubscriptionEntity
 import com.pennywiseai.tracker.data.database.entity.SubscriptionState
 import com.pennywiseai.tracker.data.repository.SubscriptionRepository
@@ -21,21 +22,30 @@ class AddSubscriptionUseCase @Inject constructor(
         autoRenewal: Boolean = true,
         paymentReminder: Boolean = true,
         notes: String? = null,
-        currency: String = "INR"
+        currency: String = "INR",
+        direction: SubscriptionDirection = SubscriptionDirection.EXPENSE,
+        bankName: String? = null,
+        accountLast4: String? = null
     ): Long {
         Log.d("AddSubscriptionUseCase", "Creating subscription entity...")
-        
+
         val subscription = SubscriptionEntity(
             merchantName = merchantName,
             amount = amount,
             nextPaymentDate = nextPaymentDate,
             state = SubscriptionState.ACTIVE, // Always active for manually added subscriptions
-            bankName = "Manual Entry",
+            // When the user picks a funding account, key the subscription to it
+            // (bank + last4) so mark-as-paid can move that account's balance.
+            // Otherwise fall back to the unlinked "Manual Entry" placeholder.
+            bankName = bankName ?: "Manual Entry",
+            accountLast4 = accountLast4,
             category = category,
             currency = currency,
             smsBody = notes, // Store user notes in smsBody field
             createdAt = LocalDateTime.now(),
-            updatedAt = LocalDateTime.now()
+            updatedAt = LocalDateTime.now(),
+            direction = direction,
+            billingCycle = billingCycle
         )
         
         Log.d("AddSubscriptionUseCase", "Subscription entity created: $subscription")

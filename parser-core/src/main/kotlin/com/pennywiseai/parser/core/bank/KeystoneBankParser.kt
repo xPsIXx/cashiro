@@ -14,7 +14,7 @@ import java.math.BigDecimal
  * Desc:<description>
  * Date:26-05-2026 0:0
  * Bal:NGN1,929.24
- * Download Keymobile bit.ly/31MJj1s       (promo ÔÇö ignored)
+ * Download Keymobile bit.ly/31MJj1s       (promo — ignored)
  * ```
  *
  * Sender: KEYSTONE

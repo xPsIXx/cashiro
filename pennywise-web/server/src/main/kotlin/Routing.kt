@@ -13,6 +13,13 @@ import com.pennywiseai.parser.core.bank.BankParserRegistry
 import com.pennywiseai.parser.core.bank.*
 import com.example.ui.ParseViews.respondParsePage
 import com.example.ui.ParseViews.renderParseResult
+import com.example.ui.BankViews
+import com.example.ui.BankViews.respondBankPage
+import com.example.ui.BankViews.respondBanksIndex
+import com.example.ui.BankViews.respondCountryPage
+import com.example.ui.ProViews.respondProPage
+import com.example.ui.GuideViews.respondGuideHub
+import com.example.ui.GuideViews.respondGuidePage
 
 fun Application.configureRouting() {
     install(CORS) {
@@ -28,7 +35,30 @@ fun Application.configureRouting() {
             CityUnionBankParser(), KarnatakaBankParser(), PNBBankParser(), UnionBankParser(), JKBankParser(),
             AirtelPaymentsBankParser(), IPPBParser(), JioPaymentsBankParser(), JioPayParser(), JupiterBankParser(),
             HSBCBankParser(), SliceParser(), LazyPayParser(), AMEXBankParser(), OneCardParser(), SouthIndianBankParser(),
-            UtkarshBankParser(), DBSBankParser(), JuspayParser()
+            UtkarshBankParser(), DBSBankParser(), JuspayParser(),
+            // Pluxee (#685) — the web tester advertises a Pluxee sample, so the
+            // /htmx/parse registry must be able to parse it too.
+            PluxeeBankParser(),
+            // Sri Lanka (#658) — the web tester advertises NDB samples, so the
+            // /htmx/parse registry must be able to parse them too.
+            NDBBankParser(),
+            // Ethiopia (#716) — Bank of Abyssinia.
+            BankOfAbyssiniaParser(),
+            // ZamZam Bank (Ethiopia) (#720)
+            ZamZamBankParser(),
+            // Siket Bank (Ethiopia, #717)
+            SiketBankParser(),
+            // Awash Bank (Ethiopia) (#718)
+            AwashBankParser(),
+            // Apollo mobile wallet (Ethiopia) (#719)
+            ApolloParser(),
+            // El Salvador (#755, #756, #757) — Spanish/USD parsers.
+            BancoCuscatlanParser(), BancoPromericaParser(), BancoAgricolaParser(),
+            // Jordan (#955) — the web tester advertises JIB and Safwa samples.
+            JordanIslamicBankParser(), IslamicInternationalArabBankParser(),
+            BankAlEtihadParser(), SafwaIslamicBankParser(),
+            // Orange Money (Jordan) — the web tester advertises its samples.
+            OrangeMoneyJordanParser()
         )
     )
 
@@ -38,7 +68,34 @@ fun Application.configureRouting() {
 
         // Serve HTMX page at root
         get("/") { call.respondParsePage() }
+        get("/pro") { call.respondProPage() }
+        get("/guide") { call.respondGuideHub() }
+        get("/guide/{slug}") {
+            if (!call.respondGuidePage(call.parameters["slug"].orEmpty())) call.respond(HttpStatusCode.NotFound, "Unknown guide")
+        }
         get("/tools/parse") { call.respondParsePage() }
+
+        // Long-tail landing pages, one per supported bank/country. Generated from the
+        // same catalogue the README and Play listing use, so they can never advertise a
+        // bank we don't actually parse.
+        get("/banks") { call.respondBanksIndex() }
+        get("/banks/country/{slug}") {
+            val country = SupportedBanks.country(call.parameters["slug"].orEmpty())
+            if (country == null) call.respond(HttpStatusCode.NotFound, "Unknown country")
+            else call.respondCountryPage(country)
+        }
+        get("/banks/{slug}") {
+            val bank = SupportedBanks.bank(call.parameters["slug"].orEmpty())
+            if (bank == null) call.respond(HttpStatusCode.NotFound, "Unknown bank")
+            else call.respondBankPage(bank)
+        }
+
+        get("/sitemap.xml") {
+            call.respondText(BankViews.buildSitemap(), ContentType.Text.Xml)
+        }
+        get("/robots.txt") {
+            call.respondText(BankViews.buildRobots(), ContentType.Text.Plain)
+        }
 
         // HTMX endpoint that returns an HTML snippet with parsed result
         post("/htmx/parse") {

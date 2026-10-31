@@ -1,5 +1,8 @@
 package com.pennywiseai.tracker.presentation.groups
 
+import androidx.compose.ui.res.pluralStringResource
+import com.pennywiseai.tracker.R
+import androidx.compose.ui.res.stringResource
 import androidx.compose.foundation.background
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
@@ -22,14 +25,17 @@ import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.unit.dp
-import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
+import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.pennywiseai.tracker.ui.components.CustomTitleTopAppBar
 import com.pennywiseai.tracker.ui.components.cards.PennyWiseCardV2
 import com.pennywiseai.tracker.ui.effects.overScrollVertical
 import com.pennywiseai.tracker.ui.effects.rememberOverscrollFlingBehavior
 import com.pennywiseai.tracker.ui.theme.*
+import com.pennywiseai.tracker.ui.theme.investment
 import com.pennywiseai.tracker.utils.CurrencyFormatter
+import com.pennywiseai.tracker.ui.components.PennyWiseEmptyState
+import com.pennywiseai.tracker.data.repository.GroupSummary
 import dev.chrisbanes.haze.HazeState
 import dev.chrisbanes.haze.hazeSource
 import java.math.BigDecimal
@@ -54,11 +60,11 @@ fun TransactionGroupsScreen(
             CustomTitleTopAppBar(
                 scrollBehaviorSmall = scrollBehaviorSmall,
                 scrollBehaviorLarge = scrollBehaviorLarge,
-                title = "Transaction Groups",
+                title = stringResource(R.string.groups_title),
                 hasBackButton = true,
                 navigationContent = {
                     IconButton(onClick = onNavigateBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(R.string.group_back))
                     }
                 },
                 hazeState = hazeState
@@ -68,7 +74,7 @@ fun TransactionGroupsScreen(
             FloatingActionButton(
                 onClick = { viewModel.showCreateDialog() }
             ) {
-                Icon(Icons.Default.Add, contentDescription = "Create Group")
+                Icon(Icons.Default.Add, contentDescription = stringResource(R.string.groups_create))
             }
         }
     ) { paddingValues ->
@@ -89,27 +95,11 @@ fun TransactionGroupsScreen(
                 modifier = Modifier.fillMaxSize().padding(paddingValues),
                 contentAlignment = Alignment.Center
             ) {
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(Spacing.sm)
-                ) {
-                    Icon(
-                        Icons.Default.Folder,
-                        contentDescription = null,
-                        modifier = Modifier.size(Dimensions.Icon.extraLarge),
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
-                    )
-                    Text(
-                        "No groups yet",
-                        style = MaterialTheme.typography.titleMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Text(
-                        "Create a group to organise related transactions",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
-                    )
-                }
+                PennyWiseEmptyState(
+                    icon = Icons.Default.Folder,
+                    headline = stringResource(R.string.groups_empty_title),
+                    description = stringResource(R.string.groups_empty_hint)
+                )
             }
             return@Scaffold
         }
@@ -195,25 +185,35 @@ private fun GroupListItem(
                     )
                 }
                 Text(
-                    "${summary.transactionCount} transaction${if (summary.transactionCount != 1) "s" else ""}",
+                    pluralStringResource(R.plurals.groups_transaction_count, summary.transactionCount, summary.transactionCount),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
 
             Column(horizontalAlignment = Alignment.End) {
-                if (summary.totalExpense > BigDecimal.ZERO) {
+                if (summary.hasExpense) {
                     val expenseColor = if (isDark) expense_dark else expense_light
                     Text(
-                        "-${CurrencyFormatter.formatCurrency(summary.totalExpense)}",
+                        CurrencyFormatter.formatByCurrency(summary.expenseByCurrency, signPrefix = "-"),
                         style = MaterialTheme.typography.bodyMedium,
                         fontWeight = FontWeight.SemiBold,
                         color = expenseColor
                     )
                 }
-                if (summary.totalIncome > BigDecimal.ZERO) {
+                if (summary.hasInvested) {
                     Text(
-                        "+${CurrencyFormatter.formatCurrency(summary.totalIncome)}",
+                        stringResource(
+                            R.string.group_card_invested,
+                            CurrencyFormatter.formatByCurrency(summary.investedByCurrency)
+                        ),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.investment
+                    )
+                }
+                if (summary.hasIncome) {
+                    Text(
+                        CurrencyFormatter.formatByCurrency(summary.incomeByCurrency, signPrefix = "+"),
                         style = MaterialTheme.typography.bodySmall,
                         color = accentColor
                     )
@@ -233,13 +233,13 @@ private fun CreateGroupDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("New Group") },
+        title = { Text(stringResource(R.string.groups_new_title)) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(Spacing.sm)) {
                 TextField(
                     value = name,
                     onValueChange = { name = it },
-                    label = { Text("Group name") },
+                    label = { Text(stringResource(R.string.group_name)) },
                     singleLine = true,
                     keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Words),
                     shape = RoundedCornerShape(16.dp),
@@ -252,7 +252,7 @@ private fun CreateGroupDialog(
                 TextField(
                     value = note,
                     onValueChange = { note = it },
-                    label = { Text("Note (optional)") },
+                    label = { Text(stringResource(R.string.group_note)) },
                     singleLine = true,
                     shape = RoundedCornerShape(16.dp),
                     colors = TextFieldDefaults.colors(
@@ -268,12 +268,12 @@ private fun CreateGroupDialog(
                 onClick = { onCreate(name, note.ifBlank { null }) },
                 enabled = name.isNotBlank()
             ) {
-                Text("Create")
+                Text(stringResource(R.string.groups_create_confirm))
             }
         },
         dismissButton = {
             TextButton(onClick = onDismiss) {
-                Text("Cancel")
+                Text(stringResource(R.string.group_cancel))
             }
         }
     )

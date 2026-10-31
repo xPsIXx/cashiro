@@ -24,7 +24,7 @@ import java.math.BigDecimal
  * - "comissao X MZN"    = fee (when present)
  * - "A conta NNN"       = account number
  *
- * These messages have no merchant and no balance ÔÇö that is expected.
+ * These messages have no merchant and no balance — that is expected.
  * Only the "foi debitada / recebeu" formats are handled; anything else returns null.
  */
 class MillenniumBimParser : BankParser() {

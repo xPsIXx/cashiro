@@ -1,26 +1,28 @@
 import java.util.Properties
+import org.gradle.api.tasks.PathSensitivity
 
 plugins {
     alias(libs.plugins.android.application)
-    alias(libs.plugins.hilt.android)
     alias(libs.plugins.kotlin.compose)
-    alias(libs.plugins.ksp)
+    id("com.google.devtools.ksp")
+    id("com.google.dagger.hilt.android")
     alias(libs.plugins.kotlin.serialization)
 }
 
-val appVersionCode = 93
-val appVersionName = "1.3.1"
-
 android {
     namespace = "com.pennywiseai.tracker"
-    compileSdk = 36
+    compileSdk = 37
+    
+    buildFeatures {
+        buildConfig = true
+    }
 
     defaultConfig {
-        applicationId = "com.xpsixx.pennywiseai.firefly"
+        applicationId = "com.pennywiseai.tracker"
         minSdk = 26
         targetSdk = 36
-        versionCode = appVersionCode
-        versionName = appVersionName
+        versionCode = 108
+        versionName = "2.24.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         
@@ -32,9 +34,14 @@ android {
 
             val rsaPublicKey = localProperties.getProperty("RSA_PUBLIC_KEY", "")
             buildConfigField("String", "RSA_PUBLIC_KEY", "\"$rsaPublicKey\"")
+            // Cloudflare Worker that frees a license key's activation so it
+            // can move to a new phone. Empty = "Move to this device" hidden.
+            val licenseMoveUrl = localProperties.getProperty("LICENSE_MOVE_URL", "")
+            buildConfigField("String", "LICENSE_MOVE_URL", "\"$licenseMoveUrl\"")
         } else {
             // Fallback empty key for CI/CD builds
             buildConfigField("String", "RSA_PUBLIC_KEY", "\"\"")
+            buildConfigField("String", "LICENSE_MOVE_URL", "\"\"")
         }
     }
 
@@ -68,11 +75,16 @@ android {
             ndk {
                 abiFilters += setOf("arm64-v8a", "armeabi-v7a")
             }
+            // Type-safe flavor check for code that adapts to F-Droid (everything
+            // unlocked, tip-jar instead of Pro). Beats matching BuildConfig.FLAVOR
+            // against the "fdroid" string literal, which a typo would silently break.
+            buildConfigField("boolean", "IS_FDROID_BUILD", "true")
         }
         create("standard") {
             dimension = "version"
             isDefault = true
             // Standard flavor includes all architectures (including x86 for emulators)
+            buildConfigField("boolean", "IS_FDROID_BUILD", "false")
         }
     }
 
@@ -99,6 +111,9 @@ android {
         debug {
             applicationIdSuffix = ".debug"
             versionNameSuffix = "-debug"
+            // en-XA / ar-XB pseudo-locales: untranslated (hardcoded) text stands
+            // out as plain English, and RTL layout bugs show up without a translation.
+            isPseudoLocalesEnabled = true
         }
         release {
             isMinifyEnabled = true
@@ -126,6 +141,11 @@ android {
             }
         }
     }
+    // Lists every values-<lang>/ folder as a supported locale, so Android 13+
+    // shows PennyWise under System settings → App languages.
+    androidResources {
+        generateLocaleConfig = true
+    }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_11
         targetCompatibility = JavaVersion.VERSION_11
@@ -141,8 +161,6 @@ android {
     }
     buildFeatures {
         compose = true
-        buildConfig = true
-        resValues = true
     }
 
     testOptions {
@@ -151,6 +169,10 @@ android {
             // and other Android framework stubs without Robolectric.
             isReturnDefaultValues = true
         }
+    }
+    lint {
+        abortOnError = false
+        checkReleaseBuilds = false
     }
 }
 
@@ -171,7 +193,7 @@ ksp {
 val generatedAssetsDir = layout.buildDirectory.dir("generated/assets/changelog")
 
 tasks.register<Copy>("copyChangelog") {
-    val versionCode = appVersionCode
+    val versionCode = android.defaultConfig.versionCode
     val changelogDir = rootProject.file("fastlane/metadata/android/en-US/changelogs")
     val changelogFile = file("$changelogDir/$versionCode.txt")
     val defaultFile = file("$changelogDir/default.txt")
@@ -181,8 +203,7 @@ tasks.register<Copy>("copyChangelog") {
     rename { "whats_new.txt" }
 }
 
-// Register generated assets dir. Use resolved File to avoid Provider restrictions in AGP 9 SourceSet API.
-android.sourceSets["main"].assets.srcDir(generatedAssetsDir.get().asFile)
+android.sourceSets["main"].assets.directories.add(generatedAssetsDir.get().asFile.path)
 
 tasks.matching { it.name.startsWith("merge") && it.name.contains("Assets") }.configureEach {
     dependsOn("copyChangelog")
@@ -228,23 +249,25 @@ dependencies {
 
     // Ktor for HTTP requests
     implementation(libs.ktor.client.core)
-
-    // No Pro billing layer - using always-unlocked for personal Firefly use (no Google connections)
     implementation(libs.ktor.client.android)
     implementation(libs.ktor.client.content.negotiation)
     implementation(libs.ktor.serialization.kotlinx.json)
+    // AI access: WebSocket line to the relay (ADR 0002)
+    implementation(libs.ktor.client.okhttp) // platform TLS; CIO rejects Cloudflare certs
+    implementation(libs.ktor.client.websockets)
     
     // Gson for backup/restore
     implementation(libs.gson)
     
     // DataStore
     implementation(libs.androidx.datastore.preferences)
-
-    // Encrypted storage for sensitive data (Firefly token)
-    implementation(libs.androidx.security.crypto)
+    implementation(libs.androidx.documentfile)
 
     // Biometric Authentication
     implementation(libs.androidx.biometric)
+
+    // Encrypted storage for sensitive data (Firefly token; add-on-owned)
+    implementation(libs.androidx.security.crypto)
 
     // Hilt
     implementation(libs.hilt.android)
@@ -267,6 +290,10 @@ dependencies {
     implementation(libs.androidx.glance.appwidget)
     implementation(libs.androidx.glance.material3)
 
+    // LiteRT-LM >= 0.14 calls SendChannel.close$default as an interface static; only
+    // coroutines >= 1.11.0 provides it (see the litertlm note in libs.versions.toml, #599).
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.11.0")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0")
     // LiteRT-LM for on-device LLM inference
     implementation(libs.litertlm.android)
     
@@ -278,8 +305,11 @@ dependencies {
     "standardImplementation"(libs.review)
     "standardImplementation"(libs.review.ktx)
     
+    testImplementation(libs.mockk)
+    testImplementation(libs.ktor.client.mock)
     testImplementation(libs.junit)
     testImplementation(libs.androidx.room.testing)
+    androidTestImplementation(libs.androidx.room.testing)
     androidTestImplementation(libs.androidx.work.testing)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
@@ -291,6 +321,8 @@ dependencies {
     
     // Coil for image loading
     implementation(libs.coil.compose)
+    // On-device QR for split-bill UPI requests (#346): pure-Java encoder, no Play services, no network.
+    implementation(libs.zxing.core)
 
     // Haze blur effects
     implementation(libs.haze)
@@ -306,8 +338,21 @@ dependencies {
 
     // PDFBox Android for PDF statement parsing
     implementation(libs.pdfbox.android)
+
+    // Google Play Billing — STANDARD FLAVOR ONLY. F-Droid forbids the
+    // proprietary library; its build keeps Pro features unlocked via the
+    // FdroidBillingGateway stub and does not need the dep.
+    "standardImplementation"(libs.billing.ktx)
+
     testImplementation(kotlin("test"))
 }
 
-
-
+android.sourceSets["androidTest"].assets.srcDir("$projectDir/schemas")
+// StringPlaceholderParityTest reads res/ straight off disk, which Gradle can't
+// infer. Without this the test task stays UP-TO-DATE when only translations
+// change — i.e. for exactly the pull requests it exists to check.
+tasks.withType<Test>().configureEach {
+    inputs.dir(layout.projectDirectory.dir("src/main/res"))
+        .withPathSensitivity(PathSensitivity.RELATIVE)
+        .withPropertyName("androidResourcesForParityTest")
+}

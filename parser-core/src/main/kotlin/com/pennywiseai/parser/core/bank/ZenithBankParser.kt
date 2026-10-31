@@ -13,7 +13,7 @@ import java.math.BigDecimal
  * <description>
  * DR Amt:650.00          (debit -> EXPENSE)  or  CR Amt:40,000.00 (credit -> INCOME)
  * Bal:289.69
- * Dial *966# for quick airtime/Data purchase   (promo ÔÇö ignored)
+ * Dial *966# for quick airtime/Data purchase   (promo — ignored)
  * ```
  * Amounts have no NGN prefix.
  *
@@ -66,7 +66,7 @@ class ZenithBankParser : BankParser() {
 
     override fun extractMerchant(message: String, sender: String): String? {
         // Narration is the line directly above the amount line. Anchor on the amount
-        // line (always present) and take the preceding line ÔÇö when a message has no
+        // line (always present) and take the preceding line — when a message has no
         // narration, that line is the DT:/Acct: header, which we treat as "no merchant"
         // instead of persisting a header/amount line.
         val match = Regex("""(?im)^(.+)\r?\n\s*(?:DR|CR)\s*Amt:""").find(message) ?: return null

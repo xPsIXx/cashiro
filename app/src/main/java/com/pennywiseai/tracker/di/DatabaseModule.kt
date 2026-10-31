@@ -11,18 +11,26 @@ import com.pennywiseai.tracker.data.database.dao.BankNotificationDao
 import com.pennywiseai.tracker.data.database.dao.BudgetDao
 import com.pennywiseai.tracker.data.database.dao.BudgetSnapshotDao
 import com.pennywiseai.tracker.data.database.dao.CardDao
+import com.pennywiseai.shared.data.bootstrap.DefaultCategoryData
 import com.pennywiseai.tracker.data.database.dao.CategoryDao
 import com.pennywiseai.tracker.data.database.dao.ChatDao
 import com.pennywiseai.tracker.data.database.dao.ExchangeRateDao
 import com.pennywiseai.tracker.data.database.dao.LoanDao
 import com.pennywiseai.tracker.data.database.dao.TransactionGroupDao
 import com.pennywiseai.tracker.data.database.dao.MerchantMappingDao
+import com.pennywiseai.tracker.data.database.dao.MerchantAliasDao
 import com.pennywiseai.tracker.data.database.dao.RuleApplicationDao
+import com.pennywiseai.tracker.data.database.dao.RecurringTransactionDao
 import com.pennywiseai.tracker.data.database.dao.RuleDao
 import com.pennywiseai.tracker.data.database.dao.SubscriptionDao
+import com.pennywiseai.tracker.data.database.dao.TagDao
 import com.pennywiseai.tracker.data.database.dao.TransactionDao
 import com.pennywiseai.tracker.data.database.dao.TransactionSplitDao
 import com.pennywiseai.tracker.data.database.dao.UnrecognizedSmsDao
+import com.pennywiseai.tracker.data.database.dao.WebhookProfileDao
+import com.pennywiseai.tracker.data.database.dao.WebhookLogDao
+import com.pennywiseai.tracker.data.database.dao.WebhookCursorDao
+import com.pennywiseai.tracker.data.database.dao.GoalDao
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -56,19 +64,9 @@ object DatabaseModule {
             PennyWiseDatabase::class.java,
             PennyWiseDatabase.DATABASE_NAME
         )
-            // Add manual migrations here when needed
-            .addMigrations(
-                PennyWiseDatabase.MIGRATION_12_14,
-                PennyWiseDatabase.MIGRATION_13_14,
-                PennyWiseDatabase.MIGRATION_14_15,
-                PennyWiseDatabase.MIGRATION_20_21,
-                PennyWiseDatabase.MIGRATION_21_22,
-                PennyWiseDatabase.MIGRATION_22_23,
-                PennyWiseDatabase.MIGRATION_38_39,
-                PennyWiseDatabase.MIGRATION_44_45,
-                PennyWiseDatabase.MIGRATION_45_46,
-                PennyWiseDatabase.MIGRATION_46_47
-            )
+            // Single source of truth lives in PennyWiseDatabase.ALL_MIGRATIONS
+            // so the BroadcastReceiver fallback builder stays in sync.
+            .addMigrations(*PennyWiseDatabase.ALL_MIGRATIONS)
 
             // Enable auto-migrations
             // Room will automatically detect schema changes between versions
@@ -131,7 +129,19 @@ object DatabaseModule {
     fun provideMerchantMappingDao(database: PennyWiseDatabase): MerchantMappingDao {
         return database.merchantMappingDao()
     }
-    
+
+    /**
+     * Provides the MerchantAliasDao from the database.
+     *
+     * @param database The PennyWiseDatabase instance
+     * @return MerchantAliasDao for accessing merchant alias data
+     */
+    @Provides
+    @Singleton
+    fun provideMerchantAliasDao(database: PennyWiseDatabase): MerchantAliasDao {
+        return database.merchantAliasDao()
+    }
+
     /**
      * Provides the CategoryDao from the database.
      * 
@@ -269,6 +279,23 @@ object DatabaseModule {
     fun provideProfileDao(database: PennyWiseDatabase): ProfileDao {
         return database.profileDao()
     }
+
+    @Provides
+    @Singleton
+    fun provideTagDao(database: PennyWiseDatabase): TagDao {
+        return database.tagDao()
+    }
+
+    @Provides
+    @Singleton
+    fun provideRecurringTransactionDao(database: PennyWiseDatabase): RecurringTransactionDao {
+        return database.recurringTransactionDao()
+    }
+
+    @Provides @Singleton fun provideWebhookProfileDao(database: PennyWiseDatabase): WebhookProfileDao = database.webhookProfileDao()
+    @Provides @Singleton fun provideWebhookLogDao(database: PennyWiseDatabase): WebhookLogDao = database.webhookLogDao()
+    @Provides @Singleton fun provideWebhookCursorDao(database: PennyWiseDatabase): WebhookCursorDao = database.webhookCursorDao()
+    @Provides @Singleton fun provideGoalDao(database: PennyWiseDatabase): GoalDao = database.goalDao()
 }
 
 /**
@@ -286,32 +313,13 @@ class DatabaseCallback : RoomDatabase.Callback() {
     }
     
     private fun seedCategories(db: SupportSQLiteDatabase) {
-        val categories = listOf(
-            Triple("Food & Dining", "#FC8019", false),
-            Triple("Groceries", "#5AC85A", false),
-            Triple("Transportation", "#000000", false),
-            Triple("Shopping", "#FF9900", false),
-            Triple("Bills & Utilities", "#4CAF50", false),
-            Triple("Entertainment", "#E50914", false),
-            Triple("Healthcare", "#10847E", false),
-            Triple("Investments", "#00D09C", false),
-            Triple("Banking", "#004C8F", false),
-            Triple("Personal Care", "#6A4C93", false),
-            Triple("Education", "#673AB7", false),
-            Triple("Mobile", "#2A3890", false),
-            Triple("Fitness", "#FF3278", false),
-            Triple("Insurance", "#0066CC", false),
-            Triple("Travel", "#00BCD4", false),
-            Triple("Salary", "#4CAF50", true),
-            Triple("Income", "#4CAF50", true),
-            Triple("Others", "#757575", false)
-        )
-        
-        categories.forEachIndexed { index, (name, color, isIncome) ->
+        val categories = DefaultCategoryData.ALL
+
+        categories.forEachIndexed { index, seed ->
             db.execSQL("""
-                INSERT OR IGNORE INTO categories (name, color, is_system, is_income, display_order, created_at, updated_at)
-                VALUES (?, ?, 1, ?, ?, datetime('now'), datetime('now'))
-            """.trimIndent(), arrayOf<Any>(name, color, if (isIncome) 1 else 0, index + 1))
+                INSERT OR IGNORE INTO categories (name, color, is_system, system_name, is_income, display_order, created_at, updated_at)
+                VALUES (?, ?, 1, ?, ?, ?, datetime('now'), datetime('now'))
+            """.trimIndent(), arrayOf<Any>(seed.name, seed.colorHex, seed.name, if (seed.isIncome) 1 else 0, index + 1))
         }
     }
 

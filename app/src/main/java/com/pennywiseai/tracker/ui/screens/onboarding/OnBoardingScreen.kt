@@ -2,7 +2,11 @@ package com.pennywiseai.tracker.ui.screens.onboarding
 
 import com.pennywiseai.tracker.R
 import android.Manifest
+import android.app.LocaleConfig
+import android.app.LocaleManager
 import android.os.Build
+import android.os.LocaleList
+import androidx.annotation.RequiresApi
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
@@ -23,7 +27,9 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -33,6 +39,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import com.pennywiseai.tracker.ui.effects.overScrollVertical
+import com.pennywiseai.tracker.data.database.entity.AccountBalanceEntity
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Check
@@ -42,6 +49,11 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExposedDropdownMenuBox
+import androidx.compose.material3.ExposedDropdownMenuDefaults
+import androidx.compose.material3.MenuAnchorType
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -53,26 +65,36 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.pluralStringResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import androidx.compose.foundation.shape.RoundedCornerShape
 // TextFieldDefaults already imported above
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 
 import androidx.compose.foundation.isSystemInDarkTheme
 import com.pennywiseai.tracker.ui.theme.Dimensions
+import com.pennywiseai.tracker.ui.theme.PennyWiseText
 import com.pennywiseai.tracker.ui.theme.Spacing
 import com.pennywiseai.tracker.ui.theme.income
+import com.pennywiseai.tracker.utils.CurrencyFormatter
+import java.text.Collator
+import java.util.Currency
+import java.util.Locale
 
 @Composable
 fun OnBoardingScreen(
@@ -134,7 +156,10 @@ fun OnBoardingScreen(
             label = "onboarding_step"
         ) { step ->
             when (step) {
-                OnBoardingStep.WELCOME -> WelcomeStep()
+                OnBoardingStep.WELCOME -> WelcomeStep(
+                    uiState = uiState,
+                    viewModel = viewModel
+                )
                 OnBoardingStep.PROFILE -> ProfileStep(
                     uiState = uiState,
                     viewModel = viewModel
@@ -154,19 +179,24 @@ fun OnBoardingScreen(
 }
 
 @Composable
-private fun WelcomeStep() {
+private fun WelcomeStep(
+    uiState: OnBoardingUiState,
+    viewModel: OnBoardingViewModel
+) {
     Column(
         modifier = Modifier
             .fillMaxSize()
+            .overScrollVertical()
+            .verticalScroll(rememberScrollState())
             .padding(Spacing.lg),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
         Image(
             painter = painterResource(id = R.mipmap.ic_launcher_foreground),
-            contentDescription = "PennyWise",
+            contentDescription = stringResource(R.string.onboarding_logo_cd),
             modifier = Modifier
-                .size(100.dp)
+                .size(HERO_ICON_SIZE)
                 .clip(CircleShape),
             contentScale = ContentScale.Crop
         )
@@ -174,7 +204,7 @@ private fun WelcomeStep() {
         Spacer(modifier = Modifier.height(Spacing.xl))
 
         Text(
-            text = "Welcome to PennyWise",
+            text = stringResource(R.string.onboarding_welcome_title),
             style = MaterialTheme.typography.headlineLarge,
             textAlign = TextAlign.Center,
             fontWeight = FontWeight.Bold
@@ -183,7 +213,7 @@ private fun WelcomeStep() {
         Spacer(modifier = Modifier.height(Spacing.md))
 
         Text(
-            text = "Your AI-powered expense tracker that automatically detects transactions from SMS messages.",
+            text = stringResource(R.string.onboarding_welcome_body),
             style = MaterialTheme.typography.bodyLarge,
             textAlign = TextAlign.Center,
             color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -195,20 +225,129 @@ private fun WelcomeStep() {
             colors = CardDefaults.cardColors(
                 containerColor = MaterialTheme.colorScheme.secondaryContainer
             ),
-            shape = RoundedCornerShape(16.dp),
+            shape = MaterialTheme.shapes.large,
             modifier = Modifier.fillMaxWidth()
         ) {
             Column(modifier = Modifier.padding(Spacing.md)) {
                 Text(
-                    text = "What you'll set up:",
+                    text = stringResource(R.string.onboarding_setup_heading),
                     style = MaterialTheme.typography.titleSmall,
                     color = MaterialTheme.colorScheme.onSecondaryContainer
                 )
                 Spacer(modifier = Modifier.height(Spacing.sm))
                 Text(
-                    text = "1. Your profile\n2. SMS permissions for auto-detection\n3. Initial transaction scan\n4. Your main bank account",
+                    text = stringResource(R.string.onboarding_setup_steps),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSecondaryContainer
+                )
+            }
+        }
+
+        // ponytail: per-app language is framework-only on Android 13+ (same as Settings);
+        // older versions keep following the device language.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            Spacer(modifier = Modifier.height(Spacing.lg))
+            LanguagePicker()
+        }
+
+        Spacer(modifier = Modifier.height(Spacing.lg))
+
+        Text(
+            text = stringResource(R.string.onboarding_currency_title),
+            style = MaterialTheme.typography.titleMedium
+        )
+
+        Spacer(modifier = Modifier.height(Spacing.sm))
+
+        OnboardingPicker(
+            options = viewModel.currencies,
+            selected = uiState.selectedCurrency,
+            label = ::currencyLabel,
+            onSelect = viewModel::selectCurrency,
+            supportingText = stringResource(R.string.onboarding_currency_hint)
+        )
+    }
+}
+
+/** Defaults to the device language; picking one sets the per-app locale and recreates the activity. */
+@RequiresApi(Build.VERSION_CODES.TIRAMISU)
+@Composable
+private fun LanguagePicker() {
+    val context = LocalContext.current
+    val localeManager = remember { context.getSystemService(LocaleManager::class.java) }
+    val languages = remember {
+        val supported = LocaleConfig(context).supportedLocales ?: LocaleList.getEmptyLocaleList()
+        // Debug builds also list the en-XA / ar-XB pseudolocales.
+        val locales = (0 until supported.size()).map { supported[it] }.filter { it.country !in PSEUDO_REGIONS }
+        val multiRegion = locales.groupBy { it.language }.filterValues { it.size > 1 }.keys
+        // Region only where a language has several variants (pt-BR / pt-PT).
+        listOf<Pair<Locale?, String>>(null to "") + locales
+            .map { it to (if (it.language in multiRegion) it.getDisplayName(it) else it.getDisplayLanguage(it)).replaceFirstChar { c -> c.titlecase(it) } }
+            .sortedWith(compareBy(Collator.getInstance()) { it.second })
+    }
+    val deviceLanguage = stringResource(R.string.onboarding_language_device)
+    val current = localeManager.applicationLocales.takeUnless { it.isEmpty }?.get(0)
+    Text(
+        text = stringResource(R.string.settings_language_title),
+        style = MaterialTheme.typography.titleMedium
+    )
+    Spacer(modifier = Modifier.height(Spacing.sm))
+    OnboardingPicker(
+        options = languages,
+        selected = languages.firstOrNull { it.first == current } ?: languages.first(),
+        label = { (locale, name) -> if (locale == null) deviceLanguage else name },
+        onSelect = { (locale, _) ->
+            localeManager.applicationLocales = locale?.let { LocaleList(it) } ?: LocaleList.getEmptyLocaleList()
+        }
+    )
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun <T> OnboardingPicker(
+    options: List<T>,
+    selected: T,
+    label: (T) -> String,
+    onSelect: (T) -> Unit,
+    supportingText: String? = null
+) {
+    var expanded by rememberSaveable { mutableStateOf(false) }
+    ExposedDropdownMenuBox(
+        expanded = expanded,
+        onExpandedChange = { expanded = it }
+    ) {
+        TextField(
+            value = label(selected),
+            onValueChange = {},
+            readOnly = true,
+            singleLine = true,
+            supportingText = supportingText?.let { { Text(it) } },
+            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
+            shape = MaterialTheme.shapes.large,
+            modifier = Modifier
+                .fillMaxWidth()
+                .menuAnchor(MenuAnchorType.PrimaryNotEditable),
+            colors = TextFieldDefaults.colors(
+                focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+                unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+                focusedIndicatorColor = Color.Transparent,
+                unfocusedIndicatorColor = Color.Transparent
+            )
+        )
+        ExposedDropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false }
+        ) {
+            options.forEach { option ->
+                DropdownMenuItem(
+                    text = { Text(label(option)) },
+                    onClick = {
+                        expanded = false
+                        onSelect(option)
+                    },
+                    leadingIcon = if (option == selected) {
+                        { Icon(Icons.Default.Check, contentDescription = null, tint = MaterialTheme.colorScheme.primary) }
+                    } else null
                 )
             }
         }
@@ -238,7 +377,7 @@ private fun ProfileStep(
         Spacer(modifier = Modifier.height(Spacing.xl))
 
         Text(
-            text = "What should we call you?",
+            text = stringResource(R.string.onboarding_name_title),
             style = MaterialTheme.typography.headlineMedium,
             textAlign = TextAlign.Center,
             fontWeight = FontWeight.Bold
@@ -249,9 +388,9 @@ private fun ProfileStep(
         TextField(
             value = uiState.userName,
             onValueChange = { viewModel.updateUserName(it) },
-            label = { Text("Your name") },
+            label = { Text(stringResource(R.string.onboarding_name_label)) },
             singleLine = true,
-            shape = RoundedCornerShape(16.dp),
+            shape = MaterialTheme.shapes.large,
             modifier = Modifier.fillMaxWidth(),
             colors = TextFieldDefaults.colors(
                 focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerLow,
@@ -266,7 +405,7 @@ private fun ProfileStep(
         Spacer(modifier = Modifier.height(Spacing.xl))
 
         Text(
-            text = "Choose an avatar",
+            text = stringResource(R.string.onboarding_avatar_title),
             style = MaterialTheme.typography.titleMedium
         )
 
@@ -280,7 +419,7 @@ private fun ProfileStep(
                 val isSelected = uiState.profileImageUri == null && uiState.selectedAvatarIndex == index
                 Box(
                     modifier = Modifier
-                        .size(72.dp)
+                        .size(OPTION_TILE_SIZE)
                         .clip(CircleShape)
                         .background(
                             if (isSelected) MaterialTheme.colorScheme.primaryContainer
@@ -288,7 +427,7 @@ private fun ProfileStep(
                         )
                         .then(
                             if (isSelected) Modifier.border(
-                                3.dp,
+                                SELECTION_RING_WIDTH,
                                 MaterialTheme.colorScheme.primary,
                                 CircleShape
                             ) else Modifier
@@ -298,8 +437,8 @@ private fun ProfileStep(
                 ) {
                     Image(
                         painter = painterResource(id = drawableRes),
-                        contentDescription = "Avatar ${index + 1}",
-                        modifier = Modifier.size(40.dp),
+                        contentDescription = stringResource(R.string.onboarding_avatar_cd, index + 1),
+                        modifier = Modifier.size(Dimensions.Icon.avatar),
                         colorFilter = ColorFilter.tint(
                             if (isSelected) MaterialTheme.colorScheme.primary
                             else MaterialTheme.colorScheme.onSurfaceVariant
@@ -312,7 +451,7 @@ private fun ProfileStep(
                 // Gallery picker option
                 Box(
                     modifier = Modifier
-                        .size(72.dp)
+                        .size(OPTION_TILE_SIZE)
                         .clip(CircleShape)
                         .background(
                             if (uiState.profileImageUri != null) MaterialTheme.colorScheme.primaryContainer
@@ -320,7 +459,7 @@ private fun ProfileStep(
                         )
                         .then(
                             if (uiState.profileImageUri != null) Modifier.border(
-                                3.dp,
+                                SELECTION_RING_WIDTH,
                                 MaterialTheme.colorScheme.primary,
                                 CircleShape
                             ) else Modifier
@@ -331,9 +470,9 @@ private fun ProfileStep(
                     if (uiState.profileImageUri != null) {
                         Icon(
                             imageVector = Icons.Default.Check,
-                            contentDescription = "Photo selected",
+                            contentDescription = stringResource(R.string.onboarding_photo_selected_cd),
                             tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(32.dp)
+                            modifier = Modifier.size(Dimensions.Icon.large)
                         )
                     } else {
                         Text(
@@ -349,7 +488,7 @@ private fun ProfileStep(
         Spacer(modifier = Modifier.height(Spacing.xl))
 
         Text(
-            text = "Pick a background color",
+            text = stringResource(R.string.onboarding_background_color_title),
             style = MaterialTheme.typography.titleMedium
         )
 
@@ -364,12 +503,12 @@ private fun ProfileStep(
                 val isSelected = uiState.selectedBackgroundColor == index
                 Box(
                     modifier = Modifier
-                        .size(40.dp)
+                        .size(Dimensions.Icon.avatar)
                         .clip(CircleShape)
                         .background(Color(colorInt))
                         .then(
                             if (isSelected) Modifier.border(
-                                3.dp,
+                                SELECTION_RING_WIDTH,
                                 MaterialTheme.colorScheme.onSurface,
                                 CircleShape
                             ) else Modifier
@@ -380,7 +519,7 @@ private fun ProfileStep(
                     if (isSelected) {
                         Icon(
                             imageVector = Icons.Default.Check,
-                            contentDescription = "Selected",
+                            contentDescription = stringResource(R.string.onboarding_selected_cd),
                             tint = MaterialTheme.colorScheme.surface,
                             modifier = Modifier.size(Dimensions.Icon.medium)
                         )
@@ -415,14 +554,14 @@ private fun PermissionsStep(
         Icon(
             imageVector = Icons.Filled.MailOutline,
             contentDescription = null,
-            modifier = Modifier.size(80.dp),
+            modifier = Modifier.size(HERO_ICON_SIZE_SMALL),
             tint = MaterialTheme.colorScheme.primary
         )
 
         Spacer(modifier = Modifier.height(Spacing.lg))
 
         Text(
-            text = "Enable Automatic Detection",
+            text = stringResource(R.string.onboarding_permission_title),
             style = MaterialTheme.typography.headlineMedium,
             textAlign = TextAlign.Center,
             fontWeight = FontWeight.Bold
@@ -431,7 +570,7 @@ private fun PermissionsStep(
         Spacer(modifier = Modifier.height(Spacing.md))
 
         Text(
-            text = "PennyWise can automatically detect and categorize your bank transactions from SMS messages.",
+            text = stringResource(R.string.onboarding_permission_body),
             style = MaterialTheme.typography.bodyLarge,
             textAlign = TextAlign.Center,
             color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -443,21 +582,18 @@ private fun PermissionsStep(
             colors = CardDefaults.cardColors(
                 containerColor = MaterialTheme.colorScheme.primaryContainer
             ),
-            shape = RoundedCornerShape(16.dp),
+            shape = MaterialTheme.shapes.large,
             modifier = Modifier.fillMaxWidth()
         ) {
             Column(modifier = Modifier.padding(Spacing.md)) {
                 Text(
-                    text = "Your Privacy Matters",
+                    text = stringResource(R.string.permission_privacy_title),
                     style = MaterialTheme.typography.titleSmall,
                     color = MaterialTheme.colorScheme.onPrimaryContainer
                 )
                 Spacer(modifier = Modifier.height(Spacing.sm))
                 Text(
-                    text = "\u2022 Only transaction messages are processed\n" +
-                            "\u2022 All data stays on your device\n" +
-                            "\u2022 No personal messages are read\n" +
-                            "\u2022 You can revoke access anytime in Settings",
+                    text = stringResource(R.string.permission_privacy_points),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onPrimaryContainer
                 )
@@ -472,7 +608,7 @@ private fun PermissionsStep(
                 colors = CardDefaults.cardColors(
                     containerColor = incomeColor.copy(alpha = if (isSystemInDarkTheme()) 0.15f else 0.12f)
                 ),
-                shape = RoundedCornerShape(16.dp),
+                shape = MaterialTheme.shapes.large,
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Row(
@@ -486,7 +622,7 @@ private fun PermissionsStep(
                     )
                     Spacer(modifier = Modifier.width(Spacing.sm))
                     Text(
-                        text = "Permissions granted! Tap Continue to proceed.",
+                        text = stringResource(R.string.onboarding_permission_granted),
                         style = MaterialTheme.typography.bodyMedium,
                         color = incomeColor
                     )
@@ -506,7 +642,7 @@ private fun PermissionsStep(
                 },
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Text("Enable Permissions")
+                Text(stringResource(R.string.onboarding_enable_permissions))
             }
         }
     }
@@ -523,13 +659,13 @@ private fun SmsScanStep(uiState: OnBoardingUiState) {
     ) {
         if (uiState.isScanning) {
             CircularProgressIndicator(
-                modifier = Modifier.size(64.dp)
+                modifier = Modifier.size(Dimensions.Icon.emptyStateContainer)
             )
 
             Spacer(modifier = Modifier.height(Spacing.lg))
 
             Text(
-                text = "Scanning your messages...",
+                text = stringResource(R.string.onboarding_scan_in_progress),
                 style = MaterialTheme.typography.headlineSmall,
                 textAlign = TextAlign.Center,
                 fontWeight = FontWeight.Bold
@@ -545,13 +681,13 @@ private fun SmsScanStep(uiState: OnBoardingUiState) {
                 )
                 Spacer(modifier = Modifier.height(Spacing.sm))
                 Text(
-                    text = "${uiState.scanProcessed} / ${uiState.scanTotal} messages processed",
+                    text = pluralStringResource(R.plurals.onboarding_scan_processed, uiState.scanTotal, uiState.scanProcessed, uiState.scanTotal),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 if (uiState.scanParsed > 0) {
                     Text(
-                        text = "${uiState.scanParsed} transactions found",
+                        text = pluralStringResource(R.plurals.onboarding_scan_found, uiState.scanParsed, uiState.scanParsed),
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.primary
                     )
@@ -559,7 +695,7 @@ private fun SmsScanStep(uiState: OnBoardingUiState) {
                 if (uiState.scanEstimatedRemaining > 0) {
                     val seconds = uiState.scanEstimatedRemaining / 1000
                     Text(
-                        text = "~${seconds}s remaining",
+                        text = stringResource(R.string.onboarding_scan_remaining, seconds),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -568,7 +704,7 @@ private fun SmsScanStep(uiState: OnBoardingUiState) {
                 LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
                 Spacer(modifier = Modifier.height(Spacing.sm))
                 Text(
-                    text = "Preparing scan...",
+                    text = stringResource(R.string.onboarding_scan_preparing),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -577,14 +713,14 @@ private fun SmsScanStep(uiState: OnBoardingUiState) {
             Icon(
                 imageVector = Icons.Default.Check,
                 contentDescription = null,
-                modifier = Modifier.size(64.dp),
+                modifier = Modifier.size(Dimensions.Icon.emptyStateContainer),
                 tint = MaterialTheme.colorScheme.primary
             )
 
             Spacer(modifier = Modifier.height(Spacing.lg))
 
             Text(
-                text = "Scan Complete!",
+                text = stringResource(R.string.onboarding_scan_complete),
                 style = MaterialTheme.typography.headlineSmall,
                 textAlign = TextAlign.Center,
                 fontWeight = FontWeight.Bold
@@ -594,14 +730,14 @@ private fun SmsScanStep(uiState: OnBoardingUiState) {
 
             if (uiState.scanSaved > 0) {
                 Text(
-                    text = "${uiState.scanSaved} transactions saved from ${uiState.scanTotal} messages",
+                    text = pluralStringResource(R.plurals.onboarding_scan_saved, uiState.scanSaved, uiState.scanSaved, uiState.scanTotal),
                     style = MaterialTheme.typography.bodyLarge,
                     textAlign = TextAlign.Center,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             } else {
                 Text(
-                    text = "No transactions found. You can add them manually later.",
+                    text = stringResource(R.string.onboarding_scan_none_found),
                     style = MaterialTheme.typography.bodyLarge,
                     textAlign = TextAlign.Center,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -612,14 +748,14 @@ private fun SmsScanStep(uiState: OnBoardingUiState) {
             Icon(
                 imageVector = Icons.Filled.MailOutline,
                 contentDescription = null,
-                modifier = Modifier.size(64.dp),
+                modifier = Modifier.size(Dimensions.Icon.emptyStateContainer),
                 tint = MaterialTheme.colorScheme.primary
             )
 
             Spacer(modifier = Modifier.height(Spacing.lg))
 
             Text(
-                text = "Scan Your Messages",
+                text = stringResource(R.string.onboarding_scan_title),
                 style = MaterialTheme.typography.headlineSmall,
                 textAlign = TextAlign.Center,
                 fontWeight = FontWeight.Bold
@@ -628,7 +764,7 @@ private fun SmsScanStep(uiState: OnBoardingUiState) {
             Spacer(modifier = Modifier.height(Spacing.md))
 
             Text(
-                text = "We'll scan your SMS messages to find bank transactions and set up your accounts automatically.",
+                text = stringResource(R.string.onboarding_scan_body),
                 style = MaterialTheme.typography.bodyLarge,
                 textAlign = TextAlign.Center,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -656,14 +792,14 @@ private fun AccountSetupStep(
             Icon(
                 imageVector = Icons.Filled.AccountBalance,
                 contentDescription = null,
-                modifier = Modifier.size(64.dp),
+                modifier = Modifier.size(Dimensions.Icon.emptyStateContainer),
                 tint = MaterialTheme.colorScheme.primary
             )
 
             Spacer(modifier = Modifier.height(Spacing.lg))
 
             Text(
-                text = "You're all set!",
+                text = stringResource(R.string.onboarding_all_set),
                 style = MaterialTheme.typography.headlineMedium,
                 textAlign = TextAlign.Center,
                 fontWeight = FontWeight.Bold
@@ -672,14 +808,14 @@ private fun AccountSetupStep(
             Spacer(modifier = Modifier.height(Spacing.md))
 
             Text(
-                text = "No accounts were detected yet. You can set up your main account later in Settings.",
+                text = stringResource(R.string.onboarding_no_accounts),
                 style = MaterialTheme.typography.bodyLarge,
                 textAlign = TextAlign.Center,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         } else {
             Text(
-                text = "Select Your Main Account",
+                text = stringResource(R.string.onboarding_main_account_title),
                 style = MaterialTheme.typography.headlineMedium,
                 textAlign = TextAlign.Center,
                 fontWeight = FontWeight.Bold
@@ -688,7 +824,7 @@ private fun AccountSetupStep(
             Spacer(modifier = Modifier.height(Spacing.md))
 
             Text(
-                text = "Choose the account you use most often. This will be shown on your home screen.",
+                text = stringResource(R.string.onboarding_main_account_body),
                 style = MaterialTheme.typography.bodyLarge,
                 textAlign = TextAlign.Center,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -700,6 +836,18 @@ private fun AccountSetupStep(
                 val accountKey = "${account.bankName}_${account.accountLast4}"
                 val isSelected = uiState.selectedAccountKey == accountKey
 
+                // The muted "on" colour has to follow the container. Selecting a
+                // row swaps its fill to primaryContainer, and onSurfaceVariant —
+                // a colour paired with `surface` — then sat on it at almost no
+                // contrast, making the masked digits vanish on the selected row.
+                val mutedColor = if (isSelected) {
+                    MaterialTheme.colorScheme.onPrimaryContainer.copy(
+                        alpha = Dimensions.Alpha.subtitle
+                    )
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                }
+
                 Card(
                     onClick = { onSelectAccount(accountKey) },
                     colors = CardDefaults.cardColors(
@@ -709,7 +857,7 @@ private fun AccountSetupStep(
                             MaterialTheme.colorScheme.surfaceContainerHigh
                     ),
                     border = if (isSelected) BorderStroke(
-                        2.dp,
+                        Spacing.xxs,
                         MaterialTheme.colorScheme.primary
                     ) else null,
                     modifier = Modifier
@@ -719,35 +867,39 @@ private fun AccountSetupStep(
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(Spacing.md),
+                            .padding(Spacing.md)
+                            .defaultMinSize(minHeight = Dimensions.Component.minTouchTarget),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        Column(modifier = Modifier.weight(1f)) {
+                        Column(
+                            modifier = Modifier.weight(1f),
+                            verticalArrangement = Arrangement.spacedBy(Spacing.xxs)
+                        ) {
                             Text(
                                 text = account.bankName,
-                                style = MaterialTheme.typography.titleSmall,
-                                fontWeight = FontWeight.Bold
+                                style = MaterialTheme.typography.titleSmall
                             )
-                            Text(
-                                text = "****${account.accountLast4}",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
+                            // Mobile-money wallets have no account number.
+                            if (account.accountLast4 != AccountBalanceEntity.WALLET_ACCOUNT_MARKER) {
+                                Text(
+                                    text = "****${account.accountLast4}",
+                                    style = PennyWiseText.amountSmall,
+                                    color = mutedColor
+                                )
+                            }
                         }
-                        Column(horizontalAlignment = Alignment.End) {
-                            Text(
-                                text = "${account.currency} ${account.balance}",
-                                style = MaterialTheme.typography.titleSmall,
-                                fontWeight = FontWeight.Bold
-                            )
-                        }
+                        Text(
+                            text = CurrencyFormatter.formatCurrency(account.balance, account.currency),
+                            style = PennyWiseText.amountRow
+                        )
                         if (isSelected) {
                             Spacer(modifier = Modifier.width(Spacing.sm))
                             Icon(
                                 imageVector = Icons.Default.Check,
-                                contentDescription = "Selected",
-                                tint = MaterialTheme.colorScheme.primary
+                                contentDescription = stringResource(R.string.onboarding_selected_cd),
+                                tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                                modifier = Modifier.size(Dimensions.Icon.inline)
                             )
                         }
                     }
@@ -773,8 +925,8 @@ private fun StepIndicator(
             val isPast = index < steps.indexOf(currentStep)
             Box(
                 modifier = Modifier
-                    .padding(horizontal = 4.dp)
-                    .size(if (isActive) 8.dp else 6.dp)
+                    .padding(horizontal = Spacing.xs)
+                    .size(if (isActive) STEP_DOT_ACTIVE else STEP_DOT_INACTIVE)
                     .clip(CircleShape)
                     .background(
                         when {
@@ -799,7 +951,10 @@ private fun OnBoardingBottomBar(
     val isFirstStep = uiState.currentStep == OnBoardingStep.WELCOME
     val canGoBack = !isFirstStep && !uiState.isScanning
 
-    Column {
+    // Keep the controls above the system navigation bar under edge-to-edge (#563):
+    // the Scaffold's bottomBar slot doesn't apply navigation-bar insets on its own,
+    // so without this the gesture/3-button nav bar overlaps the Next button.
+    Column(modifier = Modifier.navigationBarsPadding()) {
         StepIndicator(
             currentStep = uiState.currentStep,
             modifier = Modifier
@@ -819,7 +974,7 @@ private fun OnBoardingBottomBar(
             IconButton(onClick = onBack) {
                 Icon(
                     imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                    contentDescription = "Back"
+                    contentDescription = stringResource(R.string.onboarding_back)
                 )
             }
         } else {
@@ -834,7 +989,7 @@ private fun OnBoardingBottomBar(
             when (uiState.currentStep) {
                 OnBoardingStep.WELCOME -> {
                     Button(onClick = onNext) {
-                        Text("Get Started")
+                        Text(stringResource(R.string.onboarding_get_started))
                     }
                 }
 
@@ -843,19 +998,19 @@ private fun OnBoardingBottomBar(
                         onClick = onNext,
                         enabled = uiState.userName.isNotBlank()
                     ) {
-                        Text("Save & Continue")
+                        Text(stringResource(R.string.onboarding_save_continue))
                     }
                 }
 
                 OnBoardingStep.PERMISSIONS -> {
                     if (!uiState.smsPermissionGranted) {
                         TextButton(onClick = onSkip) {
-                            Text("Skip")
+                            Text(stringResource(R.string.onboarding_skip))
                         }
                     }
                     if (uiState.smsPermissionGranted) {
                         Button(onClick = onNext) {
-                            Text("Continue")
+                            Text(stringResource(R.string.onboarding_continue))
                         }
                     }
                 }
@@ -863,18 +1018,18 @@ private fun OnBoardingBottomBar(
                 OnBoardingStep.SMS_SCAN -> {
                     if (!uiState.isScanning && !uiState.scanCompleted) {
                         TextButton(onClick = onSkip) {
-                            Text("Skip")
+                            Text(stringResource(R.string.onboarding_skip))
                         }
                         Button(onClick = onStartScan) {
-                            Text("Start Scanning")
+                            Text(stringResource(R.string.onboarding_start_scanning))
                         }
                     } else if (uiState.isScanning) {
                         TextButton(onClick = onSkip) {
-                            Text("Skip")
+                            Text(stringResource(R.string.onboarding_skip))
                         }
                     } else if (uiState.scanCompleted) {
                         Button(onClick = onNext) {
-                            Text("Continue")
+                            Text(stringResource(R.string.onboarding_continue))
                         }
                     }
                 }
@@ -882,12 +1037,12 @@ private fun OnBoardingBottomBar(
                 OnBoardingStep.ACCOUNT_SETUP -> {
                     if (uiState.accounts.isEmpty()) {
                         Button(onClick = onNext) {
-                            Text("Finish")
+                            Text(stringResource(R.string.onboarding_finish))
                         }
                     } else {
                         if (uiState.selectedAccountKey == null) {
                             TextButton(onClick = onSkip) {
-                                Text("Skip")
+                                Text(stringResource(R.string.onboarding_skip))
                             }
                         }
                         Button(
@@ -900,7 +1055,7 @@ private fun OnBoardingBottomBar(
                                     strokeWidth = 2.dp
                                 )
                             } else {
-                                Text("Finish")
+                                Text(stringResource(R.string.onboarding_finish))
                             }
                         }
                     }
@@ -910,3 +1065,21 @@ private fun OnBoardingBottomBar(
     }
     }
 }
+
+/** "₹ INR · Indian Rupee" — the localized name helps pick among similar codes. */
+private fun currencyLabel(code: String): String {
+    val name = runCatching { Currency.getInstance(code).displayName }.getOrNull()
+    val symbol = CurrencyFormatter.getCurrencySymbol(code)
+    val base = if (symbol == code) code else "$symbol $code"
+    return if (name == null || name == code) base else "$base · $name"
+}
+
+// Onboarding-only geometry. These are intentionally larger than any in-app
+// token: full-screen illustrative moments, not list chrome.
+private val HERO_ICON_SIZE = 100.dp
+private val PSEUDO_REGIONS = setOf("XA", "XB")
+private val HERO_ICON_SIZE_SMALL = 80.dp
+private val OPTION_TILE_SIZE = 72.dp
+private val SELECTION_RING_WIDTH = 3.dp
+private val STEP_DOT_ACTIVE = Spacing.sm
+private val STEP_DOT_INACTIVE = 6.dp

@@ -3,9 +3,11 @@ package com.pennywiseai.tracker.ui.viewmodel
 import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.pennywiseai.tracker.R
 import com.pennywiseai.tracker.data.repository.AppLockRepository
 import com.pennywiseai.tracker.domain.security.BiometricAuthManager
 import com.pennywiseai.tracker.domain.security.BiometricCapability
+import com.pennywiseai.tracker.ui.UiText
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
@@ -38,7 +40,8 @@ class AppLockViewModel @Inject constructor(
                     it.copy(
                         isLockEnabled = isEnabled,
                         timeoutMinutes = timeoutMinutes,
-                        isLocked = shouldLock && isEnabled
+                        isLocked = shouldLock && isEnabled,
+                        checks = it.checks + 1
                     )
                 }
             }
@@ -82,14 +85,14 @@ class AppLockViewModel @Inject constructor(
      * Called when authentication fails
      */
     fun onAuthenticationError(errorMessage: String) {
-        _uiState.update { it.copy(authenticationError = errorMessage) }
+        _uiState.update { it.copy(authenticationError = UiText.Plain(errorMessage)) }
     }
 
     /**
      * Called when authentication fails (wrong fingerprint, etc.)
      */
     fun onAuthenticationFailed() {
-        _uiState.update { it.copy(authenticationError = "Authentication failed. Please try again.") }
+        _uiState.update { it.copy(authenticationError = UiText.Res(R.string.applock_auth_failed)) }
     }
 
     /**
@@ -123,7 +126,7 @@ class AppLockViewModel @Inject constructor(
     fun lockApp() {
         viewModelScope.launch {
             val shouldLock = appLockRepository.shouldLockApp()
-            _uiState.update { it.copy(isLocked = shouldLock) }
+            _uiState.update { it.copy(isLocked = shouldLock, checks = it.checks + 1) }
         }
     }
 
@@ -133,7 +136,7 @@ class AppLockViewModel @Inject constructor(
     fun refreshLockState() {
         viewModelScope.launch {
             val shouldLock = appLockRepository.shouldLockApp()
-            _uiState.update { it.copy(isLocked = shouldLock) }
+            _uiState.update { it.copy(isLocked = shouldLock, checks = it.checks + 1) }
         }
     }
 
@@ -141,22 +144,36 @@ class AppLockViewModel @Inject constructor(
      * Trigger biometric authentication
      * This must be called with a FragmentActivity from the UI layer
      */
-    fun triggerAuthentication(activity: FragmentActivity) {
+    fun triggerAuthentication(activity: FragmentActivity, onNoScreenLockNotice: () -> Unit = {}) {
         biometricAuthManager.authenticate(
             activity = activity,
             onSuccess = { onAuthenticationSuccess() },
             onError = { error -> onAuthenticationError(error) },
-            onFailed = { onAuthenticationFailed() }
+            onFailed = { onAuthenticationFailed() },
+            // No screen lock to check against: let the user in, and say why once.
+            // Notice first: unlocking pops the lock screen and clears this ViewModel.
+            onNoScreenLock = {
+                viewModelScope.launch {
+                    if (appLockRepository.claimNoScreenLockNotice()) onNoScreenLockNotice()
+                    onAuthenticationSuccess()
+                }
+            }
         )
     }
 }
 
 data class AppLockUiState(
+    /**
+     * How many times the lock state has been evaluated (0 = not yet loaded, so
+     * isLocked means nothing). Lets a caller wait for a check that ran after
+     * some event, e.g. the resume-time re-check after text is shared in.
+     */
+    val checks: Int = 0,
     val isLockEnabled: Boolean = false,
     val isLocked: Boolean = false,
     val timeoutMinutes: Int = 1,
     val canUseBiometric: Boolean = false,
     val biometricCapability: BiometricCapability = BiometricCapability.Unknown,
-    val authenticationError: String? = null,
+    val authenticationError: UiText? = null,
     val authenticationSucceeded: Boolean = false
 )

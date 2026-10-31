@@ -112,6 +112,8 @@ struct TransactionListView: View {
     @State private var isLoading = true
     @State private var csvFileURL: URL? = nil
     @State private var showShareSheet = false
+    @State private var converter: CurrencyConverter?
+    @Environment(\.isAmoledActive) private var isAmoled
 
     init(facade: PennyWiseSharedFacade) {
         self.facade = facade
@@ -198,33 +200,34 @@ struct TransactionListView: View {
         return order.map { (key: $0, items: groups[$0] ?? []) }
     }
 
-    private var totals: (income: Int64, expense: Int64, net: Int64) {
-        var income: Int64 = 0
-        var expense: Int64 = 0
-        for item in filteredTransactions {
-            if item.transactionType == "INCOME" {
-                income += item.amountMinor
-            } else {
-                expense += item.amountMinor
-            }
-        }
-        return (income, expense, income - expense)
+    /// Income / Expense / Net of the filtered rows, per currency and then
+    /// converted to the display currency (never one cross-currency sum).
+    private var totals: (income: ConvertedTotal, expense: ConvertedTotal, net: ConvertedTotal)? {
+        guard let converter else { return nil }
+        // EXPENSE only, mirroring Android and the home snapshot: TRANSFER
+        // moves money between own accounts and CREDIT/INVESTMENT are their
+        // own types.
+        let income = converter.totalOf(transactions: filteredTransactions.filter { $0.transactionType == "INCOME" })
+        let expense = converter.totalOf(transactions: filteredTransactions.filter { $0.transactionType == "EXPENSE" })
+        return (income, expense, converter.net(income: income, expense: expense))
     }
 
     var body: some View {
         VStack(spacing: 0) {
-            filterBar
-            if !filteredTransactions.isEmpty {
-                TransactionTotalsCard(
-                    incomeMinor: totals.income,
-                    expenseMinor: totals.expense,
-                    netMinor: totals.net,
-                    currency: CurrencyManager.shared.displayCurrency
-                )
-                .padding(.horizontal, AppSpacing.md)
-                .padding(.bottom, AppSpacing.sm)
+            // Pinned header: opaque, so the list's sticky month header can't
+            // show through or peek out from under the totals card.
+            VStack(spacing: AppSpacing.xs) {
+                filterBar
+                if !filteredTransactions.isEmpty, let totals {
+                    TransactionTotalsCard(income: totals.income, expense: totals.expense, net: totals.net)
+                        .padding(.horizontal, AppSpacing.md)
+                }
             }
+            .padding(.bottom, AppSpacing.sm)
+            .background(AppColors.background(isAmoled: isAmoled))
+            .zIndex(1)
             transactionList
+                .clipped()
         }
         .searchable(text: $searchText, prompt: "Search transactions")
         .navigationTitle("Transactions")
@@ -292,33 +295,18 @@ struct TransactionListView: View {
 
     // MARK: - Filter Bar
 
+    /// Android-parity filter header: ONE row of dropdown chips (period, type,
+    /// category), each opening an anchored menu with checkmarks — instead of
+    /// three stacked always-expanded chip rows. "Clear filters" lives in the
+    /// toolbar's sort menu, same as Android's overflow.
     @ViewBuilder
     private var filterBar: some View {
-        VStack(spacing: AppSpacing.sm) {
-            // Date period filter chips
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: AppSpacing.sm) {
-                    // Clear All chip
-                    if hasActiveFilters {
-                        FilterChipView(
-                            label: "Clear All",
-                            icon: "xmark.circle",
-                            isSelected: false
-                        ) {
-                            let generator = UIImpactFeedbackGenerator(style: .medium)
-                            generator.impactOccurred()
-                            clearAllFilters()
-                        }
-                    }
-
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: AppSpacing.sm) {
+                // Period — always highlighted, like Android's calendar chip.
+                Menu {
                     ForEach(DatePeriodFilter.allCases, id: \.self) { period in
-                        FilterChipView(
-                            label: period == .custom && selectedDatePeriod == .custom
-                                ? customDateLabel
-                                : period.rawValue,
-                            icon: period.icon,
-                            isSelected: selectedDatePeriod == period
-                        ) {
+                        Button {
                             let generator = UIImpactFeedbackGenerator(style: .light)
                             generator.impactOccurred()
                             if period == .custom {
@@ -326,58 +314,83 @@ struct TransactionListView: View {
                             } else {
                                 selectedDatePeriod = period
                             }
-                        }
-                    }
-                }
-                .padding(.horizontal, AppSpacing.md)
-            }
-
-            // Type filter chips
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: AppSpacing.sm) {
-                    ForEach(TransactionTypeFilter.allCases, id: \.self) { filter in
-                        FilterChipView(
-                            label: filter.displayName,
-                            icon: filter == .all ? nil : filter.icon,
-                            isSelected: selectedTypeFilter == filter
-                        ) {
-                            let generator = UIImpactFeedbackGenerator(style: .light)
-                            generator.impactOccurred()
-                            selectedTypeFilter = filter
-                        }
-                    }
-                }
-                .padding(.horizontal, AppSpacing.md)
-            }
-
-            // Category filter chips
-            if !categories.isEmpty {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: AppSpacing.sm) {
-                        FilterChipView(
-                            label: "All Categories",
-                            isSelected: selectedCategory == nil
-                        ) {
-                            let generator = UIImpactFeedbackGenerator(style: .light)
-                            generator.impactOccurred()
-                            selectedCategory = nil
-                        }
-
-                        ForEach(categories, id: \.self) { category in
-                            FilterChipView(
-                                label: category,
-                                dotColor: AppColors.categoryColor(for: category),
-                                isSelected: selectedCategory == category
-                            ) {
-                                let generator = UIImpactFeedbackGenerator(style: .light)
-                                generator.impactOccurred()
-                                selectedCategory = category
+                        } label: {
+                            if selectedDatePeriod == period {
+                                Label(period.rawValue, systemImage: "checkmark")
+                            } else {
+                                Text(period.rawValue)
                             }
                         }
                     }
-                    .padding(.horizontal, AppSpacing.md)
+                } label: {
+                    FilterMenuChipLabel(
+                        label: selectedDatePeriod == .custom ? customDateLabel : selectedDatePeriod.rawValue,
+                        icon: "calendar",
+                        isActive: true
+                    )
+                }
+
+                // Type — highlighted only when narrowed.
+                Menu {
+                    ForEach(TransactionTypeFilter.allCases, id: \.self) { filter in
+                        Button {
+                            let generator = UIImpactFeedbackGenerator(style: .light)
+                            generator.impactOccurred()
+                            selectedTypeFilter = filter
+                        } label: {
+                            if selectedTypeFilter == filter {
+                                Label(filter.displayName, systemImage: "checkmark")
+                            } else {
+                                Label(filter.displayName, systemImage: filter.icon)
+                            }
+                        }
+                    }
+                } label: {
+                    FilterMenuChipLabel(
+                        label: selectedTypeFilter == .all ? "Type" : selectedTypeFilter.displayName,
+                        icon: selectedTypeFilter == .all ? "line.3.horizontal.decrease" : selectedTypeFilter.icon,
+                        isActive: selectedTypeFilter != .all
+                    )
+                }
+
+                // Category — Android's "more filters" chip, minus profiles
+                // (iOS has none yet).
+                if !categories.isEmpty || selectedCategory != nil {
+                    Menu {
+                        Button {
+                            selectedCategory = nil
+                        } label: {
+                            if selectedCategory == nil {
+                                Label("All Categories", systemImage: "checkmark")
+                            } else {
+                                Text("All Categories")
+                            }
+                        }
+                        Divider()
+                        ForEach(categories, id: \.self) { category in
+                            Button {
+                                let generator = UIImpactFeedbackGenerator(style: .light)
+                                generator.impactOccurred()
+                                selectedCategory = category
+                            } label: {
+                                if selectedCategory == category {
+                                    Label(category, systemImage: "checkmark")
+                                } else {
+                                    Text(category)
+                                }
+                            }
+                        }
+                    } label: {
+                        FilterMenuChipLabel(
+                            label: selectedCategory ?? "Category",
+                            dotColor: selectedCategory.map { AppColors.categoryColor(for: $0) },
+                            icon: selectedCategory == nil ? "slider.horizontal.3" : nil,
+                            isActive: selectedCategory != nil
+                        )
+                    }
                 }
             }
+            .padding(.horizontal, AppSpacing.md)
         }
         .padding(.vertical, AppSpacing.sm)
     }
@@ -425,6 +438,7 @@ struct TransactionListView: View {
             TransactionSkeletonList()
         } else if filteredTransactions.isEmpty {
             emptyState
+                .frame(maxHeight: .infinity)
         } else {
             let groups = groupedByMonth
             List {
@@ -432,7 +446,7 @@ struct TransactionListView: View {
                     Section {
                         ForEach(group.items, id: \.transactionId) { item in
                             NavigationLink(destination: TransactionDetailView(transactionId: item.transactionId, facade: facade, onUpdate: reloadTransactions)) {
-                                TransactionRowView(item: item)
+                                TransactionRow(item: item, isCard: false)
                             }
                             .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                                 Button(role: .destructive) {
@@ -453,6 +467,7 @@ struct TransactionListView: View {
                         }
                     } header: {
                         SectionHeaderView(title: group.key)
+                            .listRowInsets(EdgeInsets())
                     }
                 }
             }
@@ -467,40 +482,25 @@ struct TransactionListView: View {
 
     @ViewBuilder
     private var emptyState: some View {
-        VStack(spacing: AppSpacing.lg) {
-            Spacer()
-
-            Image(systemName: "tray")
-                .font(.system(size: 64))
-                .foregroundStyle(.tertiary)
-
-            VStack(spacing: AppSpacing.sm) {
-                Text(hasActiveFilters || !searchText.isEmpty ? "No Results" : "No Transactions Yet")
-                    .font(AppTypography.title)
-                    .foregroundStyle(.primary)
-
-                Text(emptyStateMessage)
-                    .font(AppTypography.body)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                    .padding(.horizontal, AppSpacing.xl)
-            }
-
-            if !hasActiveFilters && searchText.isEmpty {
-                NavigationLink(destination: AddEditTransactionView(facade: facade, onSave: reloadTransactions)) {
-                    Label("Add Transaction", systemImage: "plus.circle.fill")
-                        .font(AppTypography.headline)
-                        .padding(.horizontal, AppSpacing.lg)
-                        .padding(.vertical, AppSpacing.md)
-                        .background(Color.accentColor)
-                        .foregroundStyle(.white)
-                        .clipShape(Capsule())
+        let filtered = hasActiveFilters || !searchText.isEmpty
+        EmptyStateView(
+            title: filtered ? "No Results" : "No Transactions Yet",
+            systemImage: filtered ? "magnifyingglass" : "tray",
+            message: emptyStateMessage
+        ) {
+            if filtered {
+                Button("Clear Filters") {
+                    clearAllFilters()
+                    searchText = ""
                 }
+                .buttonStyle(.bordered)
+            } else {
+                NavigationLink("Add Transaction") {
+                    AddEditTransactionView(facade: facade, onSave: reloadTransactions)
+                }
+                .buttonStyle(.borderedProminent)
             }
-
-            Spacer()
         }
-        .frame(maxWidth: .infinity)
     }
 
     private var emptyStateMessage: String {
@@ -535,6 +535,17 @@ struct TransactionListView: View {
                     }
                 }
             }
+            // Android keeps "Clear filters" in this same overflow.
+            if hasActiveFilters {
+                Divider()
+                Button(role: .destructive) {
+                    let generator = UIImpactFeedbackGenerator(style: .medium)
+                    generator.impactOccurred()
+                    clearAllFilters()
+                } label: {
+                    Label("Clear filters", systemImage: "xmark.circle")
+                }
+            }
         } label: {
             Image(systemName: "arrow.up.arrow.down")
         }
@@ -544,6 +555,7 @@ struct TransactionListView: View {
 
     private func reloadTransactions() {
         transactions = facade.getAllTransactions()
+        converter = facade.currencyConverter(baseCurrency: CurrencyManager.shared.displayCurrency)
         let snapshot = facade.initializeAndLoadHome()
         let snapshotCategories = snapshot.categories
         categories = snapshotCategories.isEmpty ? ["Others"] : snapshotCategories
@@ -553,8 +565,11 @@ struct TransactionListView: View {
 
 // MARK: - Section Header
 
+/// Opaque, full-width: rows scrolling under the pinned header don't show
+/// through it.
 private struct SectionHeaderView: View {
     let title: String
+    @Environment(\.isAmoledActive) private var isAmoled
 
     var body: some View {
         Text(title)
@@ -562,91 +577,51 @@ private struct SectionHeaderView: View {
             .fontWeight(.semibold)
             .foregroundStyle(.secondary)
             .textCase(.uppercase)
+            .padding(.horizontal, AppSpacing.md)
+            .padding(.vertical, AppSpacing.sm)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(AppColors.background(isAmoled: isAmoled))
     }
 }
 
-// MARK: - Filter Chip
+// MARK: - Filter Chip (dropdown style, Android parity)
 
-private struct FilterChipView: View {
+/// The label half of a filter dropdown chip: current selection + a chevron so
+/// it reads as a menu, highlighted while its filter is narrowing the list.
+private struct FilterMenuChipLabel: View {
     let label: String
-    var icon: String? = nil
     var dotColor: Color? = nil
-    let isSelected: Bool
-    let action: () -> Void
+    var icon: String? = nil
+    let isActive: Bool
     @Environment(\.isAmoledActive) private var isAmoled
 
     var body: some View {
-        Button(action: action) {
-            HStack(spacing: AppSpacing.xs) {
-                if let dotColor {
-                    Circle()
-                        .fill(dotColor)
-                        .frame(width: 8, height: 8)
-                }
-                if let icon {
-                    Image(systemName: icon)
-                        .font(.caption2)
-                }
-                Text(label)
-                    .font(AppTypography.caption)
-            }
-            .padding(.horizontal, AppSpacing.md)
-            .padding(.vertical, 6)
-            .background(isSelected ? Color.accentColor : AppColors.surface(isAmoled: isAmoled))
-            .foregroundStyle(isSelected ? .white : .primary)
-            .clipShape(Capsule())
-            .overlay(
-                Capsule()
-                    .strokeBorder(isSelected ? Color.accentColor : Color.clear, lineWidth: 1.5)
-            )
-        }
-        .buttonStyle(.plain)
-        .animation(.easeInOut(duration: 0.2), value: isSelected)
-    }
-}
-
-// MARK: - Transaction Row (inline for list)
-
-struct TransactionRowView: View {
-    let item: SharedRecentTransactionItem
-
-    private var iconInfo: CategoryIconInfo {
-        AppColors.categoryIcon(for: item.category)
-    }
-
-    var body: some View {
-        HStack(spacing: AppSpacing.md) {
-            ZStack {
+        HStack(spacing: AppSpacing.xs) {
+            if let dotColor {
                 Circle()
-                    .fill(iconInfo.color.opacity(0.15))
-                    .frame(width: 42, height: 42)
-                Image(systemName: iconInfo.systemName)
-                    .font(.system(size: 18))
-                    .foregroundColor(iconInfo.color)
+                    .fill(dotColor)
+                    .frame(width: 8, height: 8)
             }
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(item.merchantName)
-                    .font(AppTypography.body)
-                    .lineLimit(1)
-                HStack(spacing: AppSpacing.xs) {
-                    Text(item.category)
-                        .font(AppTypography.caption2)
-                        .foregroundStyle(.secondary)
-                    Text(Date(epochMillis: item.occurredAtEpochMillis).formatted(as: "dd MMM yyyy"))
-                        .font(AppTypography.caption2)
-                        .foregroundStyle(.secondary)
-                }
+            if let icon {
+                Image(systemName: icon)
+                    .font(.caption2)
             }
-
-            Spacer()
-
-            AmountText(
-                amountMinor: item.amountMinor,
-                currency: item.currency,
-                transactionType: item.transactionType
-            )
+            Text(label)
+                .font(AppTypography.caption)
+                .lineLimit(1)
+            Image(systemName: "chevron.down")
+                .font(.system(size: 9, weight: .semibold))
+                .opacity(0.75)
         }
-        .padding(.vertical, AppSpacing.xs)
+        .padding(.horizontal, AppSpacing.md)
+        .padding(.vertical, 6)
+        .background(isActive ? Color.accentColor : AppColors.surface(isAmoled: isAmoled))
+        .foregroundStyle(isActive ? .white : .primary)
+        .clipShape(Capsule())
+        .overlay(
+            Capsule()
+                .strokeBorder(isActive ? Color.accentColor : Color(.separator).opacity(0.5), lineWidth: 1)
+        )
+        .animation(.easeInOut(duration: 0.2), value: isActive)
     }
 }

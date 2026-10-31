@@ -139,10 +139,90 @@ class PNBBankParserTest {
                     balance = BigDecimal("82431.67"),
                     merchant = "UPI Transaction"
                 )
+            ),
+            ParserTestCase(
+                name = "UPI debit includes payee",
+                message = "A/c X0000 debited INR 125.00 Dt 01-01-26 12:00:00 to Swiggy thru UPI:000000000001..Bal INR 9000.00-PNB",
+                sender = "VM-PNBSMS-S",
+                expected = ExpectedTransaction(
+                    amount = BigDecimal("125.00"),
+                    currency = "INR",
+                    type = TransactionType.EXPENSE,
+                    accountLast4 = "0000",
+                    reference = "000000000001",
+                    balance = BigDecimal("9000.00"),
+                    merchant = "Swiggy"
+                )
+            ),
+            ParserTestCase(
+                name = "UPI debit strips legal suffix from payee",
+                message = "A/c X0000 debited INR 250.00 Dt 02-01-26 12:00:00 to Swiggy Ltd thru UPI:000000000002.Bal INR 8750.00-PNB",
+                sender = "VM-PNBSMS-S",
+                expected = ExpectedTransaction(
+                    amount = BigDecimal("250.00"),
+                    currency = "INR",
+                    type = TransactionType.EXPENSE,
+                    accountLast4 = "0000",
+                    reference = "000000000002",
+                    balance = BigDecimal("8750.00"),
+                    merchant = "Swiggy"
+                )
+            ),
+            ParserTestCase(
+                name = "Credit card UPI spend",
+                message = "PNB Credit Card 1234 debited with Rs.270 [CODE:VG9918] at ombk.aaeh000000abcd@mbk on 04-10-2026 20:44 through UPI: 627768901810 Avl limit Rs. 48882.5. -PNB",
+                sender = "VA-PNBCCD-S",
+                expected = ExpectedTransaction(
+                    amount = BigDecimal("270"),
+                    currency = "INR",
+                    type = TransactionType.CREDIT,
+                    merchant = "ombk.aaeh000000abcd",
+                    reference = "627768901810",
+                    accountLast4 = "1234",
+                    creditLimit = BigDecimal("48882.5"),
+                    isFromCard = true
+                )
+            ),
+            ParserTestCase(
+                name = "Credit card spend at a multi-word merchant",
+                message = "PNB Credit Card 1234 debited with Rs.1,499 [CODE:AB1234] at AMAZON INDIA on 05-10-2026 10:12 through UPI: 123456789012 Avl limit Rs. 47383.5. -PNB",
+                sender = "VA-PNBCCD-S",
+                expected = ExpectedTransaction(
+                    amount = BigDecimal("1499"),
+                    currency = "INR",
+                    type = TransactionType.CREDIT,
+                    merchant = "AMAZON INDIA",
+                    accountLast4 = "1234",
+                    isFromCard = true
+                )
+            ),
+            ParserTestCase(
+                // The account is debited, not the card — paying the card bill is an
+                // account expense, not a card purchase.
+                name = "Bank-account debit towards a PNB credit card payment stays an expense",
+                message = "Ac XX1111 debited with Rs.270.00 on 05-10-2026 towards PNB credit card payment. Avl Bal Rs.5000.00 -PNB",
+                sender = "VM-PNBSMS-S",
+                expected = ExpectedTransaction(
+                    amount = BigDecimal("270.00"),
+                    currency = "INR",
+                    type = TransactionType.EXPENSE
+                )
+            ),
+            ParserTestCase(
+                name = "Credit card bill payment received is ignored (bank-side debit records it)",
+                message = "Thank you Rs.668.79/- has been received as payment towards your PNB credit card  XX1234 via Online Payment. Your available credit limit is Rs.50000. - PNB",
+                sender = "VA-PNBCCD-S",
+                shouldParse = false
             )
         )
 
         val handleChecks = listOf(
+            "VA-PNBCCD-S" to true,
+            "VM-PNBCCD-S" to true,
+            "JD-PNBCCD-T" to true,
+            "AD-PNBCCD" to true,
+            "VA-PNBCCDX-S" to false,
+            "VA-XPNBCCD-S" to false,
             "VM-PNBSMS-S" to true,
             "VA-PNBSMS-S" to true,
             "VK-PNBSMS-S" to true,
@@ -158,6 +238,115 @@ class PNBBankParserTest {
             handleCases = handleChecks,
             suiteName = "PNB Parser"
         )
+    }
+
+    @TestFactory
+    fun `pnb handles slash delimited payees and rupee amounts`(): List<DynamicTest> {
+        val cases = listOf(
+            ParserTestCase(
+                name = "UPI credit extracts multi word payee before slash",
+                message = "A/c X0000 credited INR 125.00 From Example Shop Ltd/UPI:000000000003. Bal INR 9000.00-PNB",
+                sender = "VM-PNBSMS-S",
+                expected = ExpectedTransaction(
+                    amount = BigDecimal("125.00"),
+                    currency = "INR",
+                    type = TransactionType.INCOME,
+                    merchant = "Example Shop",
+                    accountLast4 = "0000",
+                    reference = "000000000003",
+                    balance = BigDecimal("9000.00")
+                )
+            ),
+            ParserTestCase(
+                name = "UPI credit with numeric slash field retains generic label",
+                message = "A/c X0000 credited INR 125.00 From 000000/UPI:000000000004. Bal INR 9000.00-PNB",
+                sender = "VM-PNBSMS-S",
+                expected = ExpectedTransaction(
+                    amount = BigDecimal("125.00"),
+                    currency = "INR",
+                    type = TransactionType.INCOME,
+                    merchant = "UPI Transaction"
+                )
+            ),
+            ParserTestCase(
+                name = "Rupee credit amount is not replaced by later INR balance",
+                message = "A/c X0000 credited ₹125.00 From Example Shop/UPI:000000000006. Bal INR 9000.00-PNB",
+                sender = "VM-PNBSMS-S",
+                expected = ExpectedTransaction(
+                    amount = BigDecimal("125.00"),
+                    currency = "INR",
+                    type = TransactionType.INCOME,
+                    merchant = "Example Shop",
+                    balance = BigDecimal("9000.00")
+                )
+            ),
+            ParserTestCase(
+                name = "Rupee debit amount is not replaced by later INR balance",
+                message = "A/c X0000 debited ₹125.00 to Example Shop thru UPI:000000000005. Bal INR 9000.00-PNB",
+                sender = "VM-PNBSMS-S",
+                expected = ExpectedTransaction(
+                    amount = BigDecimal("125.00"),
+                    currency = "INR",
+                    type = TransactionType.EXPENSE,
+                    merchant = "Example Shop",
+                    balance = BigDecimal("9000.00")
+                )
+            )
+        )
+        return ParserTestUtils.runTestSuite(PNBBankParser(), cases)
+    }
+
+    @TestFactory
+    fun `pnb audit format regressions`(): List<DynamicTest> {
+        val cases = listOf(
+            ParserTestCase(
+                name = "Credit extracts by payee and reference",
+                message = "A/c X0000 credited for INR 125.00 on 01-01-2026 by Example Shop thru UPI.Avl INR 9000.00(UPI:000000000001).-PNB",
+                sender = "VM-PNBSMS-S",
+                expected = ExpectedTransaction(amount = BigDecimal("125.00"), currency = "INR", type = TransactionType.INCOME,
+                    merchant = "Example Shop", accountLast4 = "0000", reference = "000000000001", balance = BigDecimal("9000.00"))
+            ),
+            ParserTestCase(
+                name = "By currency is not part of the payee",
+                message = "A/c X0000 credited by ₹125.00 on 01-01-2026 by Example Shop thru UPI.Avl INR 9000.00-PNB",
+                sender = "VM-PNBSMS-S",
+                expected = ExpectedTransaction(amount = BigDecimal("125.00"), currency = "INR", type = TransactionType.INCOME, merchant = "Example Shop")
+            ),
+            ParserTestCase(
+                name = "Debitcard carries RRN and bank account",
+                message = "Ac XX0000 Debited by ₹125.00,01-01-2026 12:00:00 RRN-000000000001 thru Debitcard XXXX0000.Aval Bal INR 9000.00 CR.-PNB",
+                sender = "VM-PNBSMS-S",
+                expected = ExpectedTransaction(amount = BigDecimal("125.00"), currency = "INR", type = TransactionType.EXPENSE,
+                    merchant = "Debit Card Transaction", accountLast4 = "0000", reference = "000000000001", isFromCard = false)
+            ),
+            ParserTestCase(
+                name = "Named debitcard merchant precedes the generic fallback",
+                message = "Ac XX0000 Debited by INR 125.00 thru Debitcard XXXX0000 at Example Shop on 01-01-2026. Aval Bal INR 9000.00-PNB",
+                sender = "VM-PNBSMS-S",
+                expected = ExpectedTransaction(amount = BigDecimal("125.00"), currency = "INR", type = TransactionType.EXPENSE,
+                    merchant = "Example Shop", accountLast4 = "0000")
+            ),
+            ParserTestCase(
+                name = "Genuine three digit mask stays three digits",
+                message = "Your a/c no XX000 is credited by Rs 125.00 on 01-01-2026 (IMPS Ref no 000000000001)-PNB",
+                sender = "VM-PNBSMS-S",
+                expected = ExpectedTransaction(amount = BigDecimal("125.00"), currency = "INR", type = TransactionType.INCOME, accountLast4 = "000")
+            ),
+            ParserTestCase(
+                name = "Long masked suffix uses final four digits",
+                message = "Ac XX10000 Debited by INR 125.00,01-01-2026 RRN-000000000001 thru Debitcard XXXX0000.Aval Bal INR 9000.00 CR.-PNB",
+                sender = "VM-PNBSMS-S",
+                expected = ExpectedTransaction(amount = BigDecimal("125.00"), currency = "INR", type = TransactionType.EXPENSE, accountLast4 = "0000")
+            ),
+            ParserTestCase(
+                name = "Other bank ATM fee retains a generic ATM label",
+                message = "Ac XX0000 debited with Rs.25.00,01-01-2026 12:00:00 through Debitcard XXXX0000 on other bank ATM. Balance Rs.9000.00-PNB",
+                sender = "VM-PNBSMS-S",
+                expected = ExpectedTransaction(amount = BigDecimal("25.00"), currency = "INR", type = TransactionType.EXPENSE,
+                    merchant = "ATM Transaction", accountLast4 = "0000")
+            )
+        )
+        return ParserTestUtils.runTestSuite(PNBBankParser(), cases)
     }
 
     @TestFactory
@@ -180,6 +369,7 @@ class PNBBankParserTest {
                 assertEquals(BigDecimal("1500.00"), mandate?.amount)
                 assertEquals("Google", mandate?.merchant)
                 assertEquals("1d478c77808c410281f435rer5qwerty6@ybl-PNB", mandate?.umn)
+                assertEquals("4356", mandate?.accountLast4)
             }
         )
     }

@@ -1,5 +1,7 @@
 package com.pennywiseai.tracker.ui.screens.rules
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
@@ -14,23 +16,28 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.pluralStringResource
+import androidx.compose.ui.res.stringResource
+import com.pennywiseai.tracker.R
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
+import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.pennywiseai.tracker.data.rules.RuleSharingCodec
 import com.pennywiseai.tracker.domain.usecase.BatchApplyResult
 import com.pennywiseai.tracker.domain.usecase.DryRunResult
 import com.pennywiseai.tracker.ui.components.CustomTitleTopAppBar
-import com.pennywiseai.tracker.ui.components.PennyWiseCard
+import com.pennywiseai.tracker.ui.components.cards.PennyWiseCardV2
 import com.pennywiseai.tracker.ui.components.cards.SectionHeaderV2
 import dev.chrisbanes.haze.HazeState
 import dev.chrisbanes.haze.hazeSource
 import com.pennywiseai.tracker.ui.theme.Dimensions
 import com.pennywiseai.tracker.ui.theme.Spacing
 import com.pennywiseai.tracker.ui.viewmodel.RulesViewModel
+import com.pennywiseai.tracker.ui.icons.categoryLabel
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -38,6 +45,7 @@ fun RulesScreen(
     onNavigateBack: () -> Unit,
     onNavigateToCreateRule: () -> Unit,
     onNavigateToEditRule: (String) -> Unit,
+    onNavigateToDuplicateRule: (String) -> Unit,
     viewModel: RulesViewModel = hiltViewModel()
 ) {
     val rules by viewModel.rules.collectAsStateWithLifecycle()
@@ -45,6 +53,19 @@ fun RulesScreen(
     val batchApplyProgress by viewModel.batchApplyProgress.collectAsStateWithLifecycle()
     val batchApplyResult by viewModel.batchApplyResult.collectAsStateWithLifecycle()
     val dryRunResult by viewModel.dryRunResult.collectAsStateWithLifecycle()
+    val canCreateMoreRules by viewModel.canCreateMoreRules.collectAsStateWithLifecycle()
+    val sharingMessage by viewModel.sharingMessage.collectAsStateWithLifecycle()
+    var showUpgradeSheet by remember { mutableStateOf(false) }
+    var showOverflowMenu by remember { mutableStateOf(false) }
+
+    // Rule sharing (#741). CreateDocument/OpenDocument keep the file in the
+    // user's own storage — nothing leaves the device unless they share it.
+    val exportRulesLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument(RuleSharingCodec.MIME_TYPE)
+    ) { uri -> uri?.let { viewModel.exportRules(it) } }
+    val importRulesLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri -> uri?.let { viewModel.importRules(it) } }
 
     var showBatchApplyDialog by remember { mutableStateOf(false) }
     var selectedRuleForBatch by remember { mutableStateOf<com.pennywiseai.tracker.domain.model.rule.TransactionRule?>(null) }
@@ -63,25 +84,62 @@ fun RulesScreen(
             CustomTitleTopAppBar(
                 scrollBehaviorSmall = scrollBehaviorSmall,
                 scrollBehaviorLarge = scrollBehaviorLarge,
-                title = "Smart Rules",
+                title = stringResource(R.string.rules_title),
                 hasBackButton = true,
-                hasActionButton = true,
                 navigationContent = {
                     IconButton(onClick = onNavigateBack) {
                         Icon(
                             Icons.AutoMirrored.Filled.ArrowBack,
-                            contentDescription = "Navigate back"
+                            contentDescription = stringResource(R.string.rules_navigate_back)
                         )
                     }
                 },
                 actionContent = {
-                    IconButton(
-                        onClick = { showResetDialog = true }
-                    ) {
-                        Icon(
-                            Icons.Default.Refresh,
-                            contentDescription = "Reset to defaults"
-                        )
+                    Box {
+                        IconButton(onClick = { showOverflowMenu = true }) {
+                            Icon(
+                                Icons.Default.MoreVert,
+                                contentDescription = stringResource(R.string.rules_more_options)
+                            )
+                        }
+                        DropdownMenu(
+                            expanded = showOverflowMenu,
+                            onDismissRequest = { showOverflowMenu = false }
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text(stringResource(R.string.rules_menu_export)) },
+                                leadingIcon = { Icon(Icons.Default.Upload, contentDescription = null) },
+                                onClick = {
+                                    showOverflowMenu = false
+                                    if (RuleSharingCodec.exportable(rules).isEmpty()) {
+                                        viewModel.reportNothingToExport()
+                                    } else {
+                                        exportRulesLauncher.launch(
+                                            "pennywise-rules.${RuleSharingCodec.FILE_EXTENSION}"
+                                        )
+                                    }
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = { Text(stringResource(R.string.rules_menu_import)) },
+                                leadingIcon = { Icon(Icons.Default.Download, contentDescription = null) },
+                                onClick = {
+                                    showOverflowMenu = false
+                                    // Some file pickers don't offer JSON files under the
+                                    // strict MIME type, so accept anything and let the
+                                    // decoder reject what isn't a rule set.
+                                    importRulesLauncher.launch(arrayOf("*/*"))
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = { Text(stringResource(R.string.rules_menu_reset)) },
+                                leadingIcon = { Icon(Icons.Default.Refresh, contentDescription = null) },
+                                onClick = {
+                                    showOverflowMenu = false
+                                    showResetDialog = true
+                                }
+                            )
+                        }
                     }
                 },
                 hazeState = hazeState
@@ -89,19 +147,35 @@ fun RulesScreen(
         },
         floatingActionButton = {
             FloatingActionButton(
-                onClick = onNavigateToCreateRule,
+                onClick = {
+                    if (canCreateMoreRules) onNavigateToCreateRule()
+                    else showUpgradeSheet = true
+                },
                 containerColor = MaterialTheme.colorScheme.primary
             ) {
-                Icon(Icons.Default.Add, contentDescription = "Create Rule")
+                Icon(Icons.Default.Add, contentDescription = stringResource(R.string.rules_create_cd))
             }
         }
     ) { paddingValues ->
 
+        sharingMessage?.let { message ->
+            AlertDialog(
+                onDismissRequest = { viewModel.clearSharingMessage() },
+                title = { Text(stringResource(R.string.rules_title)) },
+                text = { Text(message.map { it.asString() }.joinToString(" ")) },
+                confirmButton = {
+                    TextButton(onClick = { viewModel.clearSharingMessage() }) {
+                        Text(stringResource(R.string.rules_ok))
+                    }
+                }
+            )
+        }
+
         if (showResetDialog) {
             AlertDialog(
                 onDismissRequest = { showResetDialog = false },
-                title = { Text("Reset Rules") },
-                text = { Text("Reset all rules to default settings? Your custom settings will be lost.") },
+                title = { Text(stringResource(R.string.rules_reset_title)) },
+                text = { Text(stringResource(R.string.rules_reset_body)) },
                 confirmButton = {
                     TextButton(
                         onClick = {
@@ -109,12 +183,12 @@ fun RulesScreen(
                             showResetDialog = false
                         }
                     ) {
-                        Text("Reset")
+                        Text(stringResource(R.string.rules_reset))
                     }
                 },
                 dismissButton = {
                     TextButton(onClick = { showResetDialog = false }) {
-                        Text("Cancel")
+                        Text(stringResource(R.string.rules_cancel))
                     }
                 }
             )
@@ -148,12 +222,12 @@ fun RulesScreen(
             ) {
                 // Info Card
                 item {
-                    // Use primaryContainer for legibility in dark mode (#1 upstream fix)
-                    PennyWiseCard(
+                    // Use a primaryContainer background so the onPrimaryContainer icon/text
+                    // are legible. On the default surface card they're near-invisible in
+                    // dark mode (low-contrast primary tone on a dark surface).
+                    PennyWiseCardV2(
                         modifier = Modifier.fillMaxWidth(),
-                        colors = CardDefaults.cardColors(
-                            containerColor = MaterialTheme.colorScheme.primaryContainer
-                        )
+                        containerColor = MaterialTheme.colorScheme.primaryContainer
                     ) {
                         Row(
                             modifier = Modifier
@@ -167,13 +241,13 @@ fun RulesScreen(
                             )
                             Column {
                                 Text(
-                                    text = "Automatic Categorization",
+                                    text = stringResource(R.string.rules_auto_categorization_title),
                                     style = MaterialTheme.typography.titleSmall,
                                     fontWeight = FontWeight.Medium,
                                     color = MaterialTheme.colorScheme.onPrimaryContainer
                                 )
                                 Text(
-                                    text = "Enable rules to automatically categorize your transactions based on patterns",
+                                    text = stringResource(R.string.rules_auto_categorization_body),
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onPrimaryContainer
                                 )
@@ -187,27 +261,27 @@ fun RulesScreen(
                     val groupedRules = rules.groupBy { rule ->
                         when {
                             rule.name.contains("Food", ignoreCase = true) ||
-                            rule.name.contains("Fuel", ignoreCase = true) -> "Daily Expenses"
+                            rule.name.contains("Fuel", ignoreCase = true) -> R.string.rules_group_daily
 
                             rule.name.contains("Salary", ignoreCase = true) ||
-                            rule.name.contains("Cashback", ignoreCase = true) -> "Income & Cashback"
+                            rule.name.contains("Cashback", ignoreCase = true) -> R.string.rules_group_income
 
                             rule.name.contains("Rent", ignoreCase = true) ||
                             rule.name.contains("EMI", ignoreCase = true) ||
-                            rule.name.contains("Subscription", ignoreCase = true) -> "Recurring Payments"
+                            rule.name.contains("Subscription", ignoreCase = true) -> R.string.rules_group_recurring
 
                             rule.name.contains("Investment", ignoreCase = true) ||
-                            rule.name.contains("Transfer", ignoreCase = true) -> "Banking & Investments"
+                            rule.name.contains("Transfer", ignoreCase = true) -> R.string.rules_group_banking
 
-                            rule.name.contains("Healthcare", ignoreCase = true) -> "Healthcare"
+                            rule.name.contains("Healthcare", ignoreCase = true) -> R.string.rules_group_healthcare
 
-                            else -> "Other"
+                            else -> R.string.rules_group_other
                         }
                     }
 
                     groupedRules.forEach { (category, categoryRules) ->
                         if (categoryRules.isNotEmpty()) {
-                            SectionHeaderV2(title = category)
+                            SectionHeaderV2(title = stringResource(category))
 
                             categoryRules.forEach { rule ->
                                 RuleCard(
@@ -217,6 +291,9 @@ fun RulesScreen(
                                     },
                                     onEdit = {
                                         onNavigateToEditRule(rule.id)
+                                    },
+                                    onDuplicate = {
+                                        onNavigateToDuplicateRule(rule.id)
                                     },
                                     onDelete = {
                                         viewModel.deleteRule(rule.id)
@@ -235,7 +312,7 @@ fun RulesScreen(
                 item {
                     Spacer(modifier = Modifier.height(Spacing.lg))
                     Text(
-                        text = "Rules are applied automatically to new transactions. Higher priority rules run first.",
+                        text = stringResource(R.string.rules_footer_info),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(horizontal = Spacing.md)
@@ -269,19 +346,42 @@ fun RulesScreen(
             }
         )
     }
+
+    if (showUpgradeSheet) {
+        com.pennywiseai.tracker.presentation.paywall.UpgradeSheet(
+            onDismiss = { showUpgradeSheet = false },
+        )
+    }
 }
+
+// The starter rule is stored in English: RuleTemplateService seeds it and the
+// grouping above matches on its name. Show it in the app's language until the
+// user edits it.
+private const val STARTER_RULE_NAME = "Small Payments to Food"
+private const val STARTER_RULE_DESCRIPTION = "Categorize small expense payments (under 200) as Food & Dining"
+
+@Composable
+private fun com.pennywiseai.tracker.domain.model.rule.TransactionRule.displayName(): String =
+    if (isSystemTemplate && name == STARTER_RULE_NAME) stringResource(R.string.rule_template_small_payments_name) else name
+
+@Composable
+private fun com.pennywiseai.tracker.domain.model.rule.TransactionRule.displayDescription(): String? =
+    if (isSystemTemplate && name == STARTER_RULE_NAME && description == STARTER_RULE_DESCRIPTION)
+        stringResource(R.string.rule_template_small_payments_description)
+    else description
 
 @Composable
 private fun RuleCard(
     rule: com.pennywiseai.tracker.domain.model.rule.TransactionRule,
     onToggle: (Boolean) -> Unit,
     onEdit: () -> Unit,
+    onDuplicate: () -> Unit,
     onDelete: () -> Unit,
     onApplyToPast: () -> Unit
 ) {
     var showDeleteDialog by remember { mutableStateOf(false) }
     var showActionsMenu by remember { mutableStateOf(false) }
-    PennyWiseCard(
+    PennyWiseCardV2(
         modifier = Modifier.fillMaxWidth()
     ) {
         Row(
@@ -295,12 +395,12 @@ private fun RuleCard(
                 verticalArrangement = Arrangement.spacedBy(Spacing.xs)
             ) {
                 Text(
-                    text = rule.name,
+                    text = rule.displayName(),
                     style = MaterialTheme.typography.bodyLarge,
                     fontWeight = FontWeight.Medium
                 )
 
-                rule.description?.let { description ->
+                rule.displayDescription()?.let { description ->
                     Text(
                         text = description,
                         style = MaterialTheme.typography.bodySmall,
@@ -310,16 +410,16 @@ private fun RuleCard(
 
                 // Show simple condition summary
                 val conditionSummary = when {
-                    rule.name.contains("Small Payments", ignoreCase = true) -> "Amount < 200"
-                    rule.name.contains("UPI Cashback", ignoreCase = true) -> "Amount < 10 from NPCI"
-                    rule.name.contains("Salary", ignoreCase = true) -> "Credits with salary keywords"
-                    rule.name.contains("Rent", ignoreCase = true) -> "Payments with rent keywords"
-                    rule.name.contains("EMI", ignoreCase = true) -> "EMI/loan keywords"
-                    rule.name.contains("Investment", ignoreCase = true) -> "Mutual funds, stocks keywords"
-                    rule.name.contains("Subscription", ignoreCase = true) -> "Netflix, Spotify, etc."
-                    rule.name.contains("Fuel", ignoreCase = true) -> "Petrol pump transactions"
-                    rule.name.contains("Healthcare", ignoreCase = true) -> "Hospital, pharmacy keywords"
-                    rule.name.contains("Transfer", ignoreCase = true) -> "Self transfers, contra"
+                    rule.name.contains("Small Payments", ignoreCase = true) -> stringResource(R.string.rules_summary_small_payments)
+                    rule.name.contains("UPI Cashback", ignoreCase = true) -> stringResource(R.string.rules_summary_upi_cashback)
+                    rule.name.contains("Salary", ignoreCase = true) -> stringResource(R.string.rules_summary_salary)
+                    rule.name.contains("Rent", ignoreCase = true) -> stringResource(R.string.rules_summary_rent)
+                    rule.name.contains("EMI", ignoreCase = true) -> stringResource(R.string.rules_summary_emi)
+                    rule.name.contains("Investment", ignoreCase = true) -> stringResource(R.string.rules_summary_investment)
+                    rule.name.contains("Subscription", ignoreCase = true) -> stringResource(R.string.rules_summary_subscription)
+                    rule.name.contains("Fuel", ignoreCase = true) -> stringResource(R.string.rules_summary_fuel)
+                    rule.name.contains("Healthcare", ignoreCase = true) -> stringResource(R.string.rules_summary_healthcare)
+                    rule.name.contains("Transfer", ignoreCase = true) -> stringResource(R.string.rules_summary_transfer)
                     else -> null
                 }
 
@@ -348,7 +448,7 @@ private fun RuleCard(
                         containerColor = MaterialTheme.colorScheme.secondaryContainer
                     ) {
                         Text(
-                            text = "Priority: ${rule.priority}",
+                            text = stringResource(R.string.rules_priority_badge, rule.priority),
                             style = MaterialTheme.typography.bodySmall
                         )
                     }
@@ -367,7 +467,7 @@ private fun RuleCard(
                         ) {
                             Icon(
                                 Icons.Default.MoreVert,
-                                contentDescription = "More actions"
+                                contentDescription = stringResource(R.string.rules_more_actions)
                             )
                         }
 
@@ -377,7 +477,7 @@ private fun RuleCard(
                         ) {
                             // Edit rule
                             DropdownMenuItem(
-                                text = { Text("Edit Rule") },
+                                text = { Text(stringResource(R.string.rules_menu_edit)) },
                                 leadingIcon = {
                                     Icon(Icons.Default.Edit, contentDescription = null)
                                 },
@@ -387,9 +487,21 @@ private fun RuleCard(
                                 }
                             )
 
+                            // Duplicate rule (opens the editor prefilled as a new rule)
+                            DropdownMenuItem(
+                                text = { Text(stringResource(R.string.rules_menu_duplicate)) },
+                                leadingIcon = {
+                                    Icon(Icons.Default.ContentCopy, contentDescription = null)
+                                },
+                                onClick = {
+                                    showActionsMenu = false
+                                    onDuplicate()
+                                }
+                            )
+
                             // Apply to past transactions
                             DropdownMenuItem(
-                                text = { Text("Apply to Past Transactions") },
+                                text = { Text(stringResource(R.string.rules_menu_apply_past)) },
                                 leadingIcon = {
                                     Icon(Icons.Default.History, contentDescription = null)
                                 },
@@ -402,7 +514,7 @@ private fun RuleCard(
                             // Only show delete for custom rules
                             if (!rule.isSystemTemplate) {
                                 DropdownMenuItem(
-                                    text = { Text("Delete Rule") },
+                                    text = { Text(stringResource(R.string.rules_delete_title)) },
                                     leadingIcon = {
                                         Icon(
                                             Icons.Default.Delete,
@@ -431,8 +543,8 @@ private fun RuleCard(
     if (showDeleteDialog) {
         AlertDialog(
             onDismissRequest = { showDeleteDialog = false },
-            title = { Text("Delete Rule") },
-            text = { Text("Delete \"${rule.name}\"? This action cannot be undone.") },
+            title = { Text(stringResource(R.string.rules_delete_title)) },
+            text = { Text(stringResource(R.string.rules_delete_body, rule.displayName())) },
             confirmButton = {
                 TextButton(
                     onClick = {
@@ -443,12 +555,12 @@ private fun RuleCard(
                         contentColor = MaterialTheme.colorScheme.error
                     )
                 ) {
-                    Text("Delete")
+                    Text(stringResource(R.string.rules_delete))
                 }
             },
             dismissButton = {
                 TextButton(onClick = { showDeleteDialog = false }) {
-                    Text("Cancel")
+                    Text(stringResource(R.string.rules_cancel))
                 }
             }
         )
@@ -468,11 +580,10 @@ private fun BatchApplyDialog(
     onApplyToUncategorized: () -> Unit
 ) {
     val title = when {
-        progress != null -> "Applying Rule..."
-        isLoading && dryRunResult == null -> "Previewing..."
-        dryRunResult != null && result == null -> "Preview: ${rule.name}"
-        result != null -> "Apply Rule to Past Transactions"
-        else -> "Apply Rule to Past Transactions"
+        progress != null -> stringResource(R.string.rules_batch_applying)
+        isLoading && dryRunResult == null -> stringResource(R.string.rules_batch_previewing)
+        dryRunResult != null && result == null -> stringResource(R.string.rules_batch_preview_title, rule.displayName())
+        else -> stringResource(R.string.rules_batch_title)
     }
 
     AlertDialog(
@@ -494,7 +605,7 @@ private fun BatchApplyDialog(
                             verticalArrangement = Arrangement.spacedBy(Spacing.sm)
                         ) {
                             LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-                            Text("Scanning transactions...", style = MaterialTheme.typography.bodySmall)
+                            Text(stringResource(R.string.rules_batch_scanning), style = MaterialTheme.typography.bodySmall)
                         }
                     }
 
@@ -502,24 +613,24 @@ private fun BatchApplyDialog(
                     dryRunResult != null && result == null && progress == null -> {
                         if (dryRunResult.totalMatched == 0) {
                             Text(
-                                text = "No transactions match this rule (scanned ${dryRunResult.totalScanned}).",
+                                text = stringResource(R.string.rules_batch_no_matches, dryRunResult.totalScanned),
                                 style = MaterialTheme.typography.bodyMedium
                             )
                         } else {
                             Text(
-                                text = "Scanned ${dryRunResult.totalScanned} transactions:",
+                                text = pluralStringResource(R.plurals.rules_batch_scanned, dryRunResult.totalScanned, dryRunResult.totalScanned),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                             Text(
-                                text = "${dryRunResult.totalWouldUpdate} would be updated",
+                                text = stringResource(R.string.rules_batch_would_update, dryRunResult.totalWouldUpdate),
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = MaterialTheme.colorScheme.primary,
                                 fontWeight = FontWeight.Medium
                             )
                             if (dryRunResult.totalWouldBlock > 0) {
                                 Text(
-                                    text = "${dryRunResult.totalWouldBlock} would be blocked",
+                                    text = stringResource(R.string.rules_batch_would_block, dryRunResult.totalWouldBlock),
                                     style = MaterialTheme.typography.bodyMedium,
                                     color = MaterialTheme.colorScheme.error,
                                     fontWeight = FontWeight.Medium
@@ -529,7 +640,7 @@ private fun BatchApplyDialog(
                             if (dryRunResult.samples.isNotEmpty()) {
                                 HorizontalDivider(modifier = Modifier.padding(vertical = Spacing.xs))
                                 Text(
-                                    text = "Sample changes:",
+                                    text = stringResource(R.string.rules_batch_sample_changes),
                                     style = MaterialTheme.typography.labelMedium,
                                     fontWeight = FontWeight.Medium
                                 )
@@ -552,7 +663,7 @@ private fun BatchApplyDialog(
                                             )
                                             if (diff.isBlock) {
                                                 Text(
-                                                    text = "Would be blocked",
+                                                    text = stringResource(R.string.rules_batch_sample_blocked),
                                                     style = MaterialTheme.typography.bodySmall,
                                                     color = MaterialTheme.colorScheme.error
                                                 )
@@ -560,25 +671,35 @@ private fun BatchApplyDialog(
                                                 val mod = diff.modified
                                                 if (orig.category != mod.category) {
                                                     Text(
-                                                        text = "Category: ${orig.category} \u2192 ${mod.category}",
+                                                        text = stringResource(R.string.rules_batch_change_category, categoryLabel(orig.category), categoryLabel(mod.category)),
                                                         style = MaterialTheme.typography.bodySmall
                                                     )
                                                 }
                                                 if (orig.merchantName != mod.merchantName) {
                                                     Text(
-                                                        text = "Merchant: ${orig.merchantName} \u2192 ${mod.merchantName}",
+                                                        text = stringResource(R.string.rules_batch_change_merchant, orig.merchantName, mod.merchantName),
                                                         style = MaterialTheme.typography.bodySmall
                                                     )
                                                 }
                                                 if (orig.transactionType != mod.transactionType) {
                                                     Text(
-                                                        text = "Type: ${orig.transactionType} \u2192 ${mod.transactionType}",
+                                                        text = stringResource(R.string.rules_batch_change_type, orig.transactionType, mod.transactionType),
                                                         style = MaterialTheme.typography.bodySmall
                                                     )
                                                 }
                                                 if (orig.description != mod.description) {
                                                     Text(
-                                                        text = "Description: ${orig.description ?: "(none)"} \u2192 ${mod.description ?: "(none)"}",
+                                                        text = stringResource(
+                                                            R.string.rules_batch_change_description,
+                                                            orig.description ?: stringResource(R.string.rules_batch_none),
+                                                            mod.description ?: stringResource(R.string.rules_batch_none)
+                                                        ),
+                                                        style = MaterialTheme.typography.bodySmall
+                                                    )
+                                                }
+                                                if (diff.tagChanges.isNotEmpty()) {
+                                                    Text(
+                                                        text = stringResource(R.string.rules_batch_change_tags, diff.tagChanges.joinToString(", ")),
                                                         style = MaterialTheme.typography.bodySmall
                                                     )
                                                 }
@@ -588,7 +709,7 @@ private fun BatchApplyDialog(
                                 }
                                 if (dryRunResult.totalMatched > 5) {
                                     Text(
-                                        text = "...and ${dryRunResult.totalMatched - 5} more",
+                                        text = stringResource(R.string.rules_batch_and_more, dryRunResult.totalMatched - 5),
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
@@ -600,11 +721,11 @@ private fun BatchApplyDialog(
                     // Initial state — show options with preview button
                     progress == null && result == null -> {
                         Text(
-                            text = "Apply \"${rule.name}\" to existing transactions?",
+                            text = stringResource(R.string.rules_batch_confirm, rule.displayName()),
                             style = MaterialTheme.typography.bodyMedium
                         )
                         Text(
-                            text = "Use Preview to see what would change before applying.",
+                            text = stringResource(R.string.rules_batch_preview_hint),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -618,7 +739,7 @@ private fun BatchApplyDialog(
                         ) {
                             LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
                             Text(
-                                text = "Processing ${progress.first} of ${progress.second} transactions",
+                                text = pluralStringResource(R.plurals.rules_batch_processing, progress.second, progress.first, progress.second),
                                 style = MaterialTheme.typography.bodySmall
                             )
                         }
@@ -642,7 +763,7 @@ private fun BatchApplyDialog(
                                         MaterialTheme.colorScheme.error
                                 )
                                 Text(
-                                    text = "Completed",
+                                    text = stringResource(R.string.rules_batch_completed),
                                     style = MaterialTheme.typography.titleMedium,
                                     fontWeight = FontWeight.Medium
                                 )
@@ -651,18 +772,18 @@ private fun BatchApplyDialog(
                             HorizontalDivider(modifier = Modifier.padding(vertical = Spacing.sm))
 
                             Text(
-                                text = "Transactions processed: ${result.totalProcessed}",
+                                text = stringResource(R.string.rules_batch_result_processed, result.totalProcessed),
                                 style = MaterialTheme.typography.bodySmall
                             )
                             Text(
-                                text = "Transactions updated: ${result.totalUpdated}",
+                                text = stringResource(R.string.rules_batch_result_updated, result.totalUpdated),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.primary,
                                 fontWeight = FontWeight.Medium
                             )
                             if (result.totalDeleted > 0) {
                                 Text(
-                                    text = "Transactions blocked: ${result.totalDeleted}",
+                                    text = stringResource(R.string.rules_batch_result_blocked, result.totalDeleted),
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.tertiary,
                                     fontWeight = FontWeight.Medium
@@ -670,7 +791,7 @@ private fun BatchApplyDialog(
                             }
                             if (result.errors.isNotEmpty()) {
                                 Text(
-                                    text = "Errors: ${result.errors.size}",
+                                    text = stringResource(R.string.rules_batch_result_errors, result.errors.size),
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.error
                                 )
@@ -691,10 +812,10 @@ private fun BatchApplyDialog(
                         horizontalArrangement = Arrangement.spacedBy(Spacing.sm),
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        TextButton(onClick = onDismiss) { Text("Cancel") }
+                        TextButton(onClick = onDismiss) { Text(stringResource(R.string.rules_cancel)) }
                         if (dryRunResult.totalMatched > 0) {
-                            TextButton(onClick = onApplyToUncategorized) { Text("Uncategorized") }
-                            TextButton(onClick = onApplyToAll) { Text("Apply All") }
+                            TextButton(onClick = onApplyToUncategorized) { Text(stringResource(R.string.rules_batch_apply_uncategorized)) }
+                            TextButton(onClick = onApplyToAll) { Text(stringResource(R.string.rules_batch_apply_all)) }
                         }
                     }
                 }
@@ -705,18 +826,18 @@ private fun BatchApplyDialog(
                         horizontalArrangement = Arrangement.spacedBy(Spacing.sm),
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        TextButton(onClick = onDismiss) { Text("Cancel") }
+                        TextButton(onClick = onDismiss) { Text(stringResource(R.string.rules_cancel)) }
                         OutlinedButton(onClick = onPreview) {
                             Icon(Icons.Default.Preview, contentDescription = null, modifier = Modifier.size(Dimensions.Icon.small))
                             Spacer(modifier = Modifier.width(Spacing.xs))
-                            Text("Preview")
+                            Text(stringResource(R.string.rules_batch_preview))
                         }
                     }
                 }
 
                 // Done — close button
                 result != null -> {
-                    TextButton(onClick = onDismiss) { Text("Close") }
+                    TextButton(onClick = onDismiss) { Text(stringResource(R.string.rules_close)) }
                 }
             }
         }

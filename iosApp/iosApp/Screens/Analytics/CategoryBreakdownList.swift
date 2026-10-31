@@ -3,6 +3,8 @@ import SwiftUI
 struct CategoryBreakdownList: View {
     @ObservedObject private var currencyManager = CurrencyManager.shared
     let categories: [CategoryBreakdownItem]
+    /// Drill-through to the category's transactions (Android parity).
+    var onSelect: ((CategoryBreakdownItem) -> Void)? = nil
     @Environment(\.isAmoledActive) private var isAmoled
 
     var body: some View {
@@ -22,21 +24,30 @@ struct CategoryBreakdownList: View {
             }
         }
         .padding(AppSpacing.md)
-        .background(AppColors.secondaryGroupedBackground(isAmoled: isAmoled))
+        .background(AppColors.surface(isAmoled: isAmoled))
         .clipShape(RoundedRectangle(cornerRadius: AppCornerRadius.medium))
     }
 
     private func categoryRow(_ item: CategoryBreakdownItem) -> some View {
+        Button {
+            onSelect?(item)
+        } label: {
+            categoryRowContent(item)
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func categoryRowContent(_ item: CategoryBreakdownItem) -> some View {
         HStack(spacing: AppSpacing.sm) {
             Circle()
-                .fill(AppColors.categoryColor(for: item.name))
+                .fill(item.color)
                 .frame(width: 12, height: 12)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(item.name)
                     .font(AppTypography.body)
                     .lineLimit(1)
-                Text("\(item.count) transactions")
+                Text("^[\(item.count) transaction](inflect: true)")
                     .font(AppTypography.caption2)
                     .foregroundStyle(.secondary)
             }
@@ -46,11 +57,18 @@ struct CategoryBreakdownList: View {
             VStack(alignment: .trailing, spacing: 2) {
                 Text(AmountFormatter.format(minorUnits: item.totalMinor, currency: CurrencyManager.shared.displayCurrency))
                     .font(AppTypography.amountSmall)
-                Text(String(format: "%.1f%%", item.percentage))
+                Text(item.percentLabel)
                     .font(AppTypography.caption2)
                     .foregroundStyle(.secondary)
             }
+
+            if onSelect != nil {
+                Image(systemName: "chevron.right")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
         }
         .padding(.vertical, AppSpacing.xs)
+        .contentShape(Rectangle())
     }
 }

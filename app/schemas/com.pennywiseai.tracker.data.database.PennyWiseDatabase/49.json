@@ -2,11 +2,11 @@
   "formatVersion": 1,
   "database": {
     "version": 49,
-    "identityHash": "ec49a09fa30c3a6601977cdf53e22893",
+    "identityHash": "2f1f5a1dd2ed2a5d3fedd0efd6b3fd9f",
     "entities": [
       {
         "tableName": "transactions",
-        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `amount` TEXT NOT NULL, `merchant_name` TEXT NOT NULL, `category` TEXT NOT NULL, `transaction_type` TEXT NOT NULL, `date_time` TEXT NOT NULL, `description` TEXT, `sms_body` TEXT, `bank_name` TEXT, `sms_sender` TEXT, `account_number` TEXT, `balance_after` TEXT, `transaction_hash` TEXT NOT NULL DEFAULT '', `is_recurring` INTEGER NOT NULL, `is_deleted` INTEGER NOT NULL DEFAULT 0, `created_at` TEXT NOT NULL, `updated_at` TEXT NOT NULL, `currency` TEXT NOT NULL DEFAULT 'INR', `from_account` TEXT, `to_account` TEXT, `reference` TEXT, `loan_id` INTEGER DEFAULT NULL, `loan_contribution` TEXT DEFAULT NULL, `receipt_path` TEXT DEFAULT NULL, `budget_category` TEXT DEFAULT NULL, `budget_impact_type` TEXT DEFAULT NULL, `group_id` INTEGER DEFAULT NULL, `profile_id` INTEGER DEFAULT NULL, `firefly_synced_at` TEXT DEFAULT NULL, `firefly_external_id` TEXT DEFAULT NULL, `firefly_last_error` TEXT DEFAULT NULL, `excluded_from_analytics` INTEGER NOT NULL DEFAULT 0)",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `amount` TEXT NOT NULL, `merchant_name` TEXT NOT NULL, `category` TEXT NOT NULL, `transaction_type` TEXT NOT NULL, `date_time` TEXT NOT NULL, `description` TEXT, `sms_body` TEXT, `bank_name` TEXT, `sms_sender` TEXT, `account_number` TEXT, `balance_after` TEXT, `transaction_hash` TEXT NOT NULL DEFAULT '', `is_recurring` INTEGER NOT NULL, `is_deleted` INTEGER NOT NULL DEFAULT 0, `created_at` TEXT NOT NULL, `updated_at` TEXT NOT NULL, `currency` TEXT NOT NULL DEFAULT 'INR', `from_account` TEXT, `to_account` TEXT, `reference` TEXT, `loan_id` INTEGER DEFAULT NULL, `loan_contribution` TEXT DEFAULT NULL, `receipt_path` TEXT DEFAULT NULL, `budget_category` TEXT DEFAULT NULL, `budget_impact_type` TEXT DEFAULT NULL, `group_id` INTEGER DEFAULT NULL, `profile_id` INTEGER DEFAULT NULL)",
         "fields": [
           {
             "fieldPath": "id",
@@ -169,31 +169,6 @@
             "columnName": "profile_id",
             "affinity": "INTEGER",
             "defaultValue": "NULL"
-          },
-          {
-            "fieldPath": "fireflySyncedAt",
-            "columnName": "firefly_synced_at",
-            "affinity": "TEXT",
-            "defaultValue": "NULL"
-          },
-          {
-            "fieldPath": "fireflyExternalId",
-            "columnName": "firefly_external_id",
-            "affinity": "TEXT",
-            "defaultValue": "NULL"
-          },
-          {
-            "fieldPath": "fireflyLastError",
-            "columnName": "firefly_last_error",
-            "affinity": "TEXT",
-            "defaultValue": "NULL"
-          },
-          {
-            "fieldPath": "excludedFromAnalytics",
-            "columnName": "excluded_from_analytics",
-            "affinity": "INTEGER",
-            "notNull": true,
-            "defaultValue": "0"
           }
         ],
         "primaryKey": {
@@ -216,7 +191,7 @@
       },
       {
         "tableName": "subscriptions",
-        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `merchant_name` TEXT NOT NULL, `amount` TEXT NOT NULL, `next_payment_date` TEXT, `state` TEXT NOT NULL, `bank_name` TEXT, `umn` TEXT, `category` TEXT, `sms_body` TEXT, `created_at` TEXT NOT NULL, `updated_at` TEXT NOT NULL, `currency` TEXT NOT NULL DEFAULT 'INR', `direction` TEXT NOT NULL DEFAULT 'EXPENSE', `billing_cycle` TEXT NOT NULL DEFAULT 'Monthly', `last_paid_at` TEXT, `firefly_recurring_id` TEXT DEFAULT NULL, `firefly_recurring_synced_at` TEXT DEFAULT NULL)",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `merchant_name` TEXT NOT NULL, `amount` TEXT NOT NULL, `next_payment_date` TEXT, `state` TEXT NOT NULL, `bank_name` TEXT, `umn` TEXT, `category` TEXT, `sms_body` TEXT, `created_at` TEXT NOT NULL, `updated_at` TEXT NOT NULL, `currency` TEXT NOT NULL DEFAULT 'INR', `direction` TEXT NOT NULL DEFAULT 'EXPENSE', `billing_cycle` TEXT NOT NULL DEFAULT 'Monthly', `last_paid_at` TEXT)",
         "fields": [
           {
             "fieldPath": "id",
@@ -304,18 +279,6 @@
             "fieldPath": "lastPaidAt",
             "columnName": "last_paid_at",
             "affinity": "TEXT"
-          },
-          {
-            "fieldPath": "fireflyRecurringId",
-            "columnName": "firefly_recurring_id",
-            "affinity": "TEXT",
-            "defaultValue": "NULL"
-          },
-          {
-            "fieldPath": "fireflyRecurringSyncedAt",
-            "columnName": "firefly_recurring_synced_at",
-            "affinity": "TEXT",
-            "defaultValue": "NULL"
           }
         ],
         "primaryKey": {
@@ -477,7 +440,7 @@
       },
       {
         "tableName": "account_balances",
-        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `bank_name` TEXT NOT NULL, `account_last4` TEXT NOT NULL, `balance` TEXT NOT NULL, `timestamp` TEXT NOT NULL, `transaction_id` INTEGER, `credit_limit` TEXT, `is_credit_card` INTEGER NOT NULL DEFAULT 0, `sms_source` TEXT, `source_type` TEXT, `account_type` TEXT, `created_at` TEXT NOT NULL, `currency` TEXT NOT NULL DEFAULT 'INR', `statement_day` INTEGER DEFAULT NULL, `profile_id` INTEGER NOT NULL DEFAULT 1, `alias` TEXT)",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `bank_name` TEXT NOT NULL, `account_last4` TEXT NOT NULL, `balance` TEXT NOT NULL, `timestamp` TEXT NOT NULL, `transaction_id` INTEGER, `credit_limit` TEXT, `is_credit_card` INTEGER NOT NULL DEFAULT 0, `sms_source` TEXT, `source_type` TEXT, `account_type` TEXT, `created_at` TEXT NOT NULL, `currency` TEXT NOT NULL DEFAULT 'INR', `statement_day` INTEGER DEFAULT NULL, `profile_id` INTEGER NOT NULL DEFAULT 1)",
         "fields": [
           {
             "fieldPath": "id",
@@ -566,11 +529,6 @@
             "affinity": "INTEGER",
             "notNull": true,
             "defaultValue": "1"
-          },
-          {
-            "fieldPath": "alias",
-            "columnName": "alias",
-            "affinity": "TEXT"
           }
         ],
         "primaryKey": {
@@ -1114,7 +1072,7 @@
       },
       {
         "tableName": "budgets",
-        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `name` TEXT NOT NULL, `limit_amount` TEXT NOT NULL, `period_type` TEXT NOT NULL, `start_date` TEXT NOT NULL, `end_date` TEXT NOT NULL, `currency` TEXT NOT NULL DEFAULT 'INR', `is_active` INTEGER NOT NULL DEFAULT 1, `include_all_categories` INTEGER NOT NULL DEFAULT 0, `color` TEXT NOT NULL DEFAULT '#1565C0', `group_type` TEXT NOT NULL DEFAULT 'LIMIT', `display_order` INTEGER NOT NULL DEFAULT 0, `firefly_budget_id` TEXT DEFAULT NULL, `firefly_limit_id` TEXT DEFAULT NULL, `firefly_synced_at` TEXT DEFAULT NULL, `created_at` TEXT NOT NULL, `updated_at` TEXT NOT NULL)",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `name` TEXT NOT NULL, `limit_amount` TEXT NOT NULL, `period_type` TEXT NOT NULL, `start_date` TEXT NOT NULL, `end_date` TEXT NOT NULL, `currency` TEXT NOT NULL DEFAULT 'INR', `is_active` INTEGER NOT NULL DEFAULT 1, `include_all_categories` INTEGER NOT NULL DEFAULT 0, `color` TEXT NOT NULL DEFAULT '#1565C0', `group_type` TEXT NOT NULL DEFAULT 'LIMIT', `display_order` INTEGER NOT NULL DEFAULT 0, `created_at` TEXT NOT NULL, `updated_at` TEXT NOT NULL)",
         "fields": [
           {
             "fieldPath": "id",
@@ -1193,24 +1151,6 @@
             "affinity": "INTEGER",
             "notNull": true,
             "defaultValue": "0"
-          },
-          {
-            "fieldPath": "fireflyBudgetId",
-            "columnName": "firefly_budget_id",
-            "affinity": "TEXT",
-            "defaultValue": "NULL"
-          },
-          {
-            "fieldPath": "fireflyLimitId",
-            "columnName": "firefly_limit_id",
-            "affinity": "TEXT",
-            "defaultValue": "NULL"
-          },
-          {
-            "fieldPath": "fireflySyncedAt",
-            "columnName": "firefly_synced_at",
-            "affinity": "TEXT",
-            "defaultValue": "NULL"
           },
           {
             "fieldPath": "createdAt",
@@ -1789,7 +1729,7 @@
     ],
     "setupQueries": [
       "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
-      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, 'ec49a09fa30c3a6601977cdf53e22893')"
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '2f1f5a1dd2ed2a5d3fedd0efd6b3fd9f')"
     ]
   }
 }

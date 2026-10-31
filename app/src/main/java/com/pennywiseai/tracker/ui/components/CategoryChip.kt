@@ -13,6 +13,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.pennywiseai.tracker.data.database.entity.CategoryEntity
 import com.pennywiseai.tracker.ui.theme.Spacing
+import com.pennywiseai.tracker.ui.icons.categoryLabel
 
 /**
  * A composable that displays a category with a colored dot indicator.
@@ -29,16 +30,23 @@ fun CategoryChip(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.Start
     ) {
-        // Colored dot indicator
-        CategoryDot(
-            color = category.color,
-            modifier = Modifier.padding(end = if (showText) Spacing.xs else 0.dp)
-        )
+        // Emoji if the user picked one (#760), else the colored dot
+        val emoji = category.icon?.takeIf { it.isNotBlank() }
+        if (emoji != null) {
+            Box(modifier = Modifier.padding(end = if (showText) Spacing.xs else 0.dp)) {
+                EmojiGlyph(emoji, 16.dp)
+            }
+        } else {
+            CategoryDot(
+                color = category.color,
+                modifier = Modifier.padding(end = if (showText) Spacing.xs else 0.dp)
+            )
+        }
 
         // Category name
         if (showText) {
             Text(
-                text = category.name,
+                text = categoryLabel(category.name),
                 style = MaterialTheme.typography.bodyMedium,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
@@ -91,7 +99,7 @@ fun CategoryChip(
         // Category name
         if (showText) {
             Text(
-                text = categoryName,
+                text = categoryLabel(categoryName),
                 style = MaterialTheme.typography.bodyMedium,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis

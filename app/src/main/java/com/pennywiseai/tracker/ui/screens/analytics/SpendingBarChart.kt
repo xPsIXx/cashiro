@@ -1,5 +1,7 @@
 package com.pennywiseai.tracker.ui.screens.analytics
 
+import com.pennywiseai.tracker.utils.AppDates
+
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
@@ -17,11 +19,12 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.pennywiseai.tracker.ui.components.BalancePoint
 import com.pennywiseai.tracker.ui.theme.Spacing
 import com.pennywiseai.tracker.utils.CurrencyFormatter
+import com.pennywiseai.tracker.ui.theme.PennyWiseText
 import java.time.format.DateTimeFormatter
 import kotlin.math.abs
 import kotlin.math.ceil
@@ -43,11 +46,12 @@ fun SpendingBarChart(
     val gridColor = themeColors.onSurface.copy(alpha = 0.1f)
     val labelColor = themeColors.onSurface.copy(alpha = 0.7f)
     val valueLabelColor = themeColors.onSurface.copy(alpha = 0.7f)
-    val indicatorColor = themeColors.onSurfaceVariant.copy(alpha = 0.7f)
+    val indicatorColor = themeColors.onSurfaceVariant
 
-    val labelStyle = TextStyle(fontSize = 10.sp, color = labelColor, textAlign = TextAlign.Center)
-    val valueLabelStyle = TextStyle(fontSize = 10.sp, color = valueLabelColor, textAlign = TextAlign.Center)
-    val indicatorStyle = TextStyle(fontSize = 10.sp, color = indicatorColor, textAlign = TextAlign.End)
+    val chartLabel = PennyWiseText.chartLabel
+    val labelStyle = chartLabel.copy(color = labelColor, textAlign = TextAlign.Center)
+    val valueLabelStyle = chartLabel.copy(color = valueLabelColor, textAlign = TextAlign.Center)
+    val indicatorStyle = chartLabel.copy(color = indicatorColor, textAlign = TextAlign.End)
 
     val chartData = remember(sortedData) {
         val isYearly = sortedData.size > 1 && sortedData.all { it.timestamp.dayOfYear == 1 }
@@ -59,16 +63,16 @@ fun SpendingBarChart(
         sortedData.map { point ->
             val label = when {
                 isYearly -> point.timestamp.format(DateTimeFormatter.ofPattern("yyyy"))
-                isMonthly && spansMultipleYears -> point.timestamp.format(DateTimeFormatter.ofPattern("MMM yy"))
-                isMonthly -> point.timestamp.format(DateTimeFormatter.ofPattern("MMM"))
-                else -> point.timestamp.format(DateTimeFormatter.ofPattern("dd MMM"))
+                isMonthly && spansMultipleYears -> point.timestamp.format(AppDates.pattern("MMM yy"))
+                isMonthly -> point.timestamp.format(AppDates.pattern("MMM"))
+                else -> point.timestamp.format(AppDates.pattern("dd MMM"))
             }
             BarData(label = label, value = point.balance.toDouble())
         }
     }
 
     val maxValue = remember(chartData) {
-        (chartData.maxOfOrNull { it.value } ?: 0.0) * 1.2
+        (chartData.map { it.value }.maxOrNull() ?: 0.0) * 1.2
     }
 
     val animationProgress = remember { Animatable(0f) }
@@ -99,6 +103,11 @@ fun SpendingBarChart(
 
         if (chartHeight <= 0f || chartWidth <= 0f) return@Canvas
 
+        // RTL: mirror every x (axis on the right, time running right to left),
+        // matching the line chart. [w] is the drawn item's width.
+        val rtl = layoutDirection == LayoutDirection.Rtl
+        fun mx(x: Float, w: Float = 0f) = if (rtl) size.width - x - w else x
+
         // Draw horizontal grid lines and Y-axis indicators
         val gridLineCount = 4
         val dashEffect = PathEffect.dashPathEffect(floatArrayOf(8f, 4f), 0f)
@@ -107,8 +116,8 @@ fun SpendingBarChart(
             val y = chartBottom - fraction * chartHeight
             drawLine(
                 color = gridColor,
-                start = Offset(chartLeft, y),
-                end = Offset(chartRight, y),
+                start = Offset(mx(chartLeft), y),
+                end = Offset(mx(chartRight), y),
                 pathEffect = dashEffect,
                 strokeWidth = 1f
             )
@@ -118,7 +127,7 @@ fun SpendingBarChart(
             drawText(
                 textLayoutResult = measured,
                 topLeft = Offset(
-                    x = yAxisWidth - measured.size.width - 4.dp.toPx(),
+                    x = mx(yAxisWidth - measured.size.width - 4.dp.toPx(), measured.size.width.toFloat()),
                     y = y - measured.size.height / 2f
                 )
             )
@@ -147,7 +156,7 @@ fun SpendingBarChart(
             if (barHeight > 0f) {
                 drawRoundRect(
                     color = barColor,
-                    topLeft = Offset(x, barTop),
+                    topLeft = Offset(mx(x, barThickness), barTop),
                     size = Size(barThickness, barHeight),
                     cornerRadius = CornerRadius(6.dp.toPx(), 6.dp.toPx())
                 )
@@ -165,7 +174,7 @@ fun SpendingBarChart(
                 if (labelY >= 0f) {
                     drawText(
                         textLayoutResult = valueMeasured,
-                        topLeft = Offset(labelX, labelY)
+                        topLeft = Offset(mx(labelX, valueMeasured.size.width.toFloat()), labelY)
                     )
                 }
             }
@@ -178,7 +187,7 @@ fun SpendingBarChart(
                 if (labelY + labelMeasured.size.height <= size.height) {
                     drawText(
                         textLayoutResult = labelMeasured,
-                        topLeft = Offset(labelX, labelY)
+                        topLeft = Offset(mx(labelX, labelMeasured.size.width.toFloat()), labelY)
                     )
                 }
             }
@@ -196,13 +205,13 @@ private fun formatCompactValue(value: Double, currencyCode: String): String {
     val useIndianNotation = currencyCode in setOf("INR", "NPR", "PKR")
     return when {
         useIndianNotation && absValue >= 1_00_00_000 ->
-            "${String.format("%.1f", absValue / 1_00_00_000)}Cr"
+            "${String.format(java.util.Locale.US, "%.1f", absValue / 1_00_00_000)}Cr"
         useIndianNotation && absValue >= 1_00_000 ->
-            "${String.format("%.1f", absValue / 1_00_000)}L"
+            "${String.format(java.util.Locale.US, "%.1f", absValue / 1_00_000)}L"
         absValue >= 10_000_000 ->
-            "${String.format("%.1f", absValue / 1_000_000)}M"
+            "${String.format(java.util.Locale.US, "%.1f", absValue / 1_000_000)}M"
         absValue >= 1_000 ->
-            "${String.format("%.1f", absValue / 1_000)}K"
+            "${String.format(java.util.Locale.US, "%.1f", absValue / 1_000)}K"
         absValue > 0 -> absValue.toInt().toString()
         else -> "0"
     }

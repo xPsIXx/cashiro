@@ -20,6 +20,45 @@ interface AccountBalanceDao {
     """)
     suspend fun getLatestBalance(bankName: String, accountLast4: String): AccountBalanceEntity?
     
+    /**
+     * The account's newest row at or before [at]: the balance an SMS stamped
+     * [at] moves from. Not [getLatestBalance], which may postdate it (#982).
+     */
+    @Query("""
+        SELECT * FROM account_balances
+        WHERE bank_name = :bankName AND account_last4 = :accountLast4 AND timestamp <= :at
+        ORDER BY timestamp DESC
+        LIMIT 1
+    """)
+    suspend fun getBalanceAtOrBefore(bankName: String, accountLast4: String, at: LocalDateTime): AccountBalanceEntity?
+
+    /**
+     * The account's rows after [after], oldest first. `derived` marks a row the
+     * app worked out from the row before it: a "TRANSACTION" row that is a
+     * delta (no `sms_source`) or whose SMS stated no balance. Every other row
+     * (a stated balance, MANUAL, OPENING, a balance notice) is an anchor (#982).
+     * While a resync puts the SMS history back, a delta row created before it
+     * began ([frozenBefore]) is an anchor too: it survived the wipe already
+     * holding the effect of the SMS being put back. One added mid-rebuild isn't.
+     */
+    @Query("""
+        SELECT ab.id AS id, ab.balance AS balance, ab.credit_limit AS creditLimit,
+            CASE WHEN ab.source_type = 'TRANSACTION'
+                AND ((ab.sms_source IS NULL AND (:frozenBefore IS NULL OR ab.created_at >= :frozenBefore))
+                    OR (ab.sms_source IS NOT NULL AND t.id IS NOT NULL AND t.balance_after IS NULL))
+            THEN 1 ELSE 0 END AS derived
+        FROM account_balances ab
+        LEFT JOIN transactions t ON t.id = ab.transaction_id
+        WHERE ab.bank_name = :bankName AND ab.account_last4 = :accountLast4 AND ab.timestamp > :after
+        ORDER BY ab.timestamp ASC
+    """)
+    suspend fun getBalanceRowsAfter(
+        bankName: String,
+        accountLast4: String,
+        after: LocalDateTime,
+        frozenBefore: LocalDateTime?
+    ): List<BalanceRowAfter>
+
     @Query("""
         SELECT * FROM account_balances
         WHERE bank_name = :bankName AND account_last4 = :accountLast4
@@ -44,21 +83,7 @@ interface AccountBalanceDao {
     suspend fun getLatestBalanceByLast4(accountLast4: String): AccountBalanceEntity?
     
     @Query("""
-        SELECT DISTINCT 
-            ab1.id,
-            ab1.bank_name,
-            ab1.account_last4,
-            ab1.balance,
-            ab1.timestamp,
-            ab1.transaction_id,
-            ab1.created_at,
-            ab1.credit_limit,
-            ab1.is_credit_card,
-            ab1.sms_source,
-            ab1.source_type,
-            ab1.currency,
-            ab1.profile_id,
-            ab1.alias
+        SELECT DISTINCT ab1.*
         FROM account_balances ab1
         INNER JOIN (
             SELECT bank_name, account_last4, MAX(timestamp) as max_timestamp
@@ -71,6 +96,39 @@ interface AccountBalanceDao {
         ORDER BY ab1.balance DESC
     """)
     fun getAllLatestBalances(): Flow<List<AccountBalanceEntity>>
+
+    /**
+     * One-shot form of [getAllLatestBalances], for callers that need the account
+     * list *inside* a database transaction — collecting a Flow there would
+     * observe the very writes the transaction is making.
+     */
+    @Query("""
+        SELECT ab1.* FROM account_balances ab1
+        INNER JOIN (
+            SELECT bank_name, account_last4, MAX(timestamp) as max_timestamp
+            FROM account_balances
+            GROUP BY bank_name, account_last4
+        ) ab2
+        ON ab1.bank_name = ab2.bank_name
+        AND ab1.account_last4 = ab2.account_last4
+        AND ab1.timestamp = ab2.max_timestamp
+        ORDER BY ab1.balance DESC
+    """)
+    suspend fun getAllLatestBalancesOnce(): List<AccountBalanceEntity>
+
+    /**
+     * Removes balance rows the app derived from a transaction — the signed delta
+     * snapshots written by `insertBalanceDelta`, which carry a `transaction_id`
+     * and no `sms_source`.
+     *
+     * Deliberately spares anything with an `sms_source`: a bank-reported balance
+     * is the bank's own word even though it arrived alongside a transaction, so a
+     * wipe of local history must not rewrite it.
+     *
+     * @return the number of rows removed.
+     */
+    @Query("DELETE FROM account_balances WHERE transaction_id IS NOT NULL AND sms_source IS NULL")
+    suspend fun deleteTransactionDerivedBalances(): Int
     
     @Query("SELECT * FROM account_balances ORDER BY timestamp DESC")
     fun getAllBalances(): Flow<List<AccountBalanceEntity>>
@@ -79,12 +137,12 @@ interface AccountBalanceDao {
     suspend fun deleteAllBalances()
 
     /**
-     * Resync companion to [TransactionDao.deleteUncuratedTransactions].
+     * Resync companion to [TransactionDao.deleteRebuildableSmsTransactions].
      * Wipes balance entries the SMS re-parse will regenerate, while
      * preserving:
      *
      *  - Entries linked to a transaction that survived the resync
-     *    (loan-linked / grouped) ÔÇö their `transaction_id` still points
+     *    (loan-linked / grouped) — their `transaction_id` still points
      *    at an existing row. Without this, balance time-series develops
      *    gaps because the re-parse short-circuits on hash collision and
      *    never calls processBalanceUpdate() for surviving rows.
@@ -96,7 +154,7 @@ interface AccountBalanceDao {
      *  - Orphans: `transaction_id` pointed at a transaction wiped this
      *    resync.
      *  - Balance-only SMS notifications (`transaction_id IS NULL` AND
-     *    `source_type IS NULL`) ÔÇö these will be re-inserted by the
+     *    `source_type IS NULL`) — these will be re-inserted by the
      *    re-parse and REPLACE on the (bank, account, timestamp) unique
      *    index, so the wipe-then-rebuild round-trip is a no-op.
      */
@@ -111,21 +169,7 @@ interface AccountBalanceDao {
     suspend fun deleteRebuildableBalances()
     
     @Query("""
-        SELECT DISTINCT 
-            ab1.id,
-            ab1.bank_name,
-            ab1.account_last4,
-            ab1.balance,
-            ab1.timestamp,
-            ab1.transaction_id,
-            ab1.created_at,
-            ab1.credit_limit,
-            ab1.is_credit_card,
-            ab1.sms_source,
-            ab1.source_type,
-            ab1.currency,
-            ab1.profile_id,
-            ab1.alias
+        SELECT DISTINCT ab1.*
         FROM account_balances ab1
         INNER JOIN (
             SELECT bank_name, account_last4, MAX(timestamp) as max_timestamp
@@ -175,7 +219,7 @@ interface AccountBalanceDao {
     """)
     fun getAccountCount(): Flow<Int>
     
-    // Never prune OPENING anchors ÔÇö they carry an intentionally early timestamp (so
+    // Never prune OPENING anchors — they carry an intentionally early timestamp (so
     // they never win "latest"), which would otherwise make them the prime target of a
     // timestamp-cutoff delete and silently break the derived manual-balance model.
     @Query("DELETE FROM account_balances WHERE timestamp < :beforeDate AND (source_type IS NULL OR source_type != 'OPENING')")
@@ -194,6 +238,9 @@ interface AccountBalanceDao {
     
     @Query("DELETE FROM account_balances WHERE id = :id")
     suspend fun deleteBalanceById(id: Long)
+
+    @Query("SELECT * FROM account_balances WHERE transaction_id = :transactionId")
+    suspend fun getBalancesForTransaction(transactionId: Long): List<AccountBalanceEntity>
 
     @Query("DELETE FROM account_balances WHERE transaction_id = :transactionId")
     suspend fun deleteBalancesForTransaction(transactionId: Long): Int
@@ -227,14 +274,27 @@ interface AccountBalanceDao {
     @Query("UPDATE account_balances SET alias = :alias WHERE bank_name = :bankName AND account_last4 = :accountLast4")
     suspend fun setAccountAlias(bankName: String, accountLast4: String, alias: String?): Int
 
-    // ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+    @Query("UPDATE account_balances SET account_type = :accountType, is_credit_card = :isCreditCard WHERE bank_name = :bankName AND account_last4 = :accountLast4")
+    suspend fun updateAccountType(bankName: String, accountLast4: String, accountType: String, isCreditCard: Boolean): Int
+
+    @Query("UPDATE account_balances SET account_type = :accountType, is_credit_card = :isCreditCard WHERE bank_name = :bankName AND account_last4 = :accountLast4 AND account_type IS NULL")
+    suspend fun fillMissingAccountType(bankName: String, accountLast4: String, accountType: String, isCreditCard: Boolean): Int
+
+    /**
+     * Sets the per-account low-balance alert threshold across ALL rows of an
+     * account (it is an account-level field). null clears the alert. (#509)
+     */
+    @Query("UPDATE account_balances SET lowBalanceThreshold = :threshold WHERE bank_name = :bankName AND account_last4 = :accountLast4")
+    suspend fun setLowBalanceThreshold(bankName: String, accountLast4: String, threshold: BigDecimal?): Int
+
+    // ─────────────────────────────────────────────────────────────────────────
     // Manual/cash account balance recompute support.
     //
-    // A manual account's displayed balance = opening + ╬ú(its transactions). The
+    // A manual account's displayed balance = opening + Σ(its transactions). The
     // opening is stored in a single OPENING row at an early timestamp (so it never
     // wins "latest by timestamp"); the displayed value lives in a single MANUAL row
     // that recompute refreshes. See AccountBalanceRepository.recomputeManualBalance.
-    // ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+    // ─────────────────────────────────────────────────────────────────────────
 
     @Query("""
         SELECT * FROM account_balances
@@ -269,7 +329,7 @@ interface AccountBalanceDao {
     /**
      * Count of SMS-sourced balance rows for an account. Real bank SMS balances always
      * carry a non-null `sms_source`, so a positive count means the account is
-     * SMS-tracked ÔÇö used to keep the manual-balance recompute away from SMS accounts
+     * SMS-tracked — used to keep the manual-balance recompute away from SMS accounts
      * that merely had a one-off "Update balance" override.
      */
     @Query("""
@@ -278,4 +338,63 @@ interface AccountBalanceDao {
         AND sms_source IS NOT NULL
     """)
     suspend fun countSmsSourcedBalances(bankName: String, accountLast4: String): Int
+
+    /**
+     * Count of balance rows for an account that represent an *independent* balance
+     * signal — anything not derived from a transaction (a balance-only SMS, a MANUAL
+     * override, an OPENING row, a card link). A phantom account left behind by GPay
+     * dedup has only orphaned `TRANSACTION`-source rows, so a zero here (combined with
+     * zero surviving transactions) marks it safe to delete without touching a real
+     * balance-tracked account (#456).
+     */
+    @Query("""
+        SELECT COUNT(*) FROM account_balances
+        WHERE bank_name = :bankName AND account_last4 = :accountLast4
+        AND (source_type IS NULL OR source_type != 'TRANSACTION')
+    """)
+    suspend fun countIndependentBalances(bankName: String, accountLast4: String): Int
+
+    /** Distinct account numbers that have balance rows for a given bank. */
+    @Query("SELECT DISTINCT account_last4 FROM account_balances WHERE bank_name = :bankName")
+    suspend fun getAccountLast4sForBank(bankName: String): List<String>
+
+    /**
+     * Count of balance rows still linked to a transaction (`transaction_id` non-null).
+     * A GPay phantom's residue rows were never linked (they were inserted with a null
+     * transaction_id on a hash-conflict IGNORE), so a positive count means this account
+     * carries balance history tied to real — possibly only soft-deleted — transactions
+     * and must NOT be treated as a phantom (#456).
+     */
+    @Query("""
+        SELECT COUNT(*) FROM account_balances
+        WHERE bank_name = :bankName AND account_last4 = :accountLast4
+        AND transaction_id IS NOT NULL
+    """)
+    suspend fun countTransactionLinkedBalances(bankName: String, accountLast4: String): Int
+
+    /**
+     * One row per distinct (account, source_type, did-the-linked-SMS-state-a-balance)
+     * — the input to [com.pennywiseai.tracker.utils.BalanceCalculator.unanchoredAccounts].
+     * `statedBalance` is the linked transaction's `balance_after IS NOT NULL`, or
+     * null when the row has no (surviving) transaction. (#982)
+     */
+    @Query("""
+        SELECT DISTINCT ab.bank_name AS bankName, ab.account_last4 AS accountLast4,
+            ab.source_type AS sourceType,
+            CASE WHEN t.id IS NULL THEN NULL WHEN t.balance_after IS NULL THEN 0 ELSE 1 END AS statedBalance
+        FROM account_balances ab
+        LEFT JOIN transactions t ON t.id = ab.transaction_id
+    """)
+    fun getBalanceSourceRows(): Flow<List<BalanceSourceRow>>
 }
+
+/** See [AccountBalanceDao.getBalanceRowsAfter]. */
+data class BalanceRowAfter(val id: Long, val balance: BigDecimal, val creditLimit: BigDecimal?, val derived: Boolean)
+
+/** See [AccountBalanceDao.getBalanceSourceRows]. */
+data class BalanceSourceRow(
+    val bankName: String,
+    val accountLast4: String,
+    val sourceType: String?,
+    val statedBalance: Boolean?
+)

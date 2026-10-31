@@ -4,14 +4,14 @@ import com.pennywiseai.parser.core.TransactionType
 import java.math.BigDecimal
 
 /**
- * Parser for Bankino (digital arm of Middle East Bank / Ï¿Ïº┘å┌® Ï«Ïº┘êÏ▒┘à█îÏº┘å┘ç), Iran.
+ * Parser for Bankino (digital arm of Middle East Bank / بانک خاورمیانه), Iran.
  *
  * Handles line-based Persian SMS such as:
- *   Ï¿Ïº┘å┌® Ï«Ïº┘êÏ▒┘à█îÏº┘å┘ç
- *   Ï«Ï▒█îÏ» Ï¿Ïº ┌®ÏºÏ▒Ï¬ 7284
+ *   بانک خاورمیانه
+ *   خرید با کارت 7284
  *   -3,300,000
  *   XXX/XXXXXXXX
- *   ┘àÏº┘åÏ»┘ç 14,412,600
+ *   مانده 14,412,600
  *   03/22
  *   12:49
  *
@@ -26,17 +26,17 @@ class BankinoBankParser : BaseIranianBankParser() {
 
     override fun getBankName() = "Bankino"
 
-    // "Ï¿Ïº┘å┌® Ï«Ïº┘êÏ▒┘à█îÏº┘å┘ç" = Middle East Bank (Bankino).
-    private val bankNameMarker = "Ï¿Ïº┘å┌® Ï«Ïº┘êÏ▒┘à█îÏº┘å┘ç"
+    // "بانک خاورمیانه" = Middle East Bank (Bankino).
+    private val bankNameMarker = "بانک خاورمیانه"
 
-    // "┌®ÏºÏ▒Ï¬" = card; followed by the masked last 4 digits.
-    private val cardPattern = Regex("""┌®ÏºÏ▒Ï¬\s+(\d{3,})""")
+    // "کارت" = card; followed by the masked last 4 digits.
+    private val cardPattern = Regex("""کارت\s+(\d{3,})""")
 
     // Signed amount on its own line: leading +/- then a comma-grouped number.
     private val signedAmountPattern = Regex("""([+-])\s*([0-9][0-9,]*)""")
 
-    // "┘àÏº┘åÏ»┘ç" = balance, followed by a comma-grouped number.
-    private val balancePattern = Regex("""┘àÏº┘åÏ»┘ç\s+([0-9][0-9,]*)""")
+    // "مانده" = balance, followed by a comma-grouped number.
+    private val balancePattern = Regex("""مانده\s+([0-9][0-9,]*)""")
 
     override fun canHandle(sender: String): Boolean {
         val digits = sender.filter { it.isDigit() }

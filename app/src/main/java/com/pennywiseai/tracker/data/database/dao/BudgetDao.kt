@@ -52,40 +52,6 @@ interface BudgetDao {
     @Query("DELETE FROM budgets WHERE id = :budgetId")
     suspend fun deleteBudgetById(budgetId: Long)
 
-    @Query("""
-        UPDATE budgets 
-        SET name = :name,
-            limit_amount = :limitAmount,
-            start_date = :startDate,
-            end_date = :endDate,
-            currency = :currency,
-            period_type = :periodType,
-            is_active = :isActive,
-            updated_at = datetime('now')
-        WHERE id = :budgetId
-    """)
-    suspend fun updateBudgetFromSync(
-        budgetId: Long,
-        name: String,
-        limitAmount: java.math.BigDecimal,
-        startDate: java.time.LocalDate,
-        endDate: java.time.LocalDate,
-        currency: String,
-        periodType: com.pennywiseai.tracker.data.database.entity.BudgetPeriodType,
-        isActive: Boolean
-    )
-
-    @Query("""
-        UPDATE budgets 
-        SET is_active = 0,
-            updated_at = datetime('now')
-        WHERE id = :budgetId
-    """)
-    suspend fun deactivateBudgetById(budgetId: Long)
-
-    @Query("SELECT * FROM budgets ORDER BY created_at DESC")
-    suspend fun getAllBudgetsList(): List<BudgetEntity>
-
     // Budget Categories
     @Query("SELECT * FROM budget_categories WHERE budget_id = :budgetId")
     fun getCategoriesForBudget(budgetId: Long): Flow<List<BudgetCategoryEntity>>
@@ -166,4 +132,32 @@ interface BudgetDao {
 
     @Query("SELECT COALESCE(MAX(display_order), -1) FROM budgets WHERE is_active = 1")
     suspend fun getMaxDisplayOrder(): Int
+
+    // ── Cashiro Firefly add-on (local-data updates; sync state lives in the sidecar DB) ──
+
+    @Query("SELECT * FROM budgets ORDER BY created_at DESC")
+    suspend fun getAllBudgetsList(): List<BudgetEntity>
+
+    @Query("""
+        UPDATE budgets 
+        SET name = :name,
+            limit_amount = :limitAmount,
+            start_date = :startDate,
+            end_date = :endDate,
+            currency = :currency,
+            period_type = :periodType,
+            is_active = :isActive,
+            updated_at = datetime('now')
+        WHERE id = :budgetId
+    """)
+    suspend fun updateBudgetFromSync(
+        budgetId: Long,
+        name: String,
+        limitAmount: java.math.BigDecimal,
+        startDate: java.time.LocalDate,
+        endDate: java.time.LocalDate,
+        currency: String,
+        periodType: com.pennywiseai.tracker.data.database.entity.BudgetPeriodType,
+        isActive: Boolean
+    )
 }

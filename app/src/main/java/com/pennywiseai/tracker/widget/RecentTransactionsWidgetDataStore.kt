@@ -1,11 +1,14 @@
 package com.pennywiseai.tracker.widget
 
 import android.content.Context
+import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
+import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.map
 import java.math.BigDecimal
 
@@ -16,6 +19,7 @@ object RecentTransactionsWidgetDataStore {
     private const val MAX_ITEMS = 10
 
     private val TOTAL_SPENT = stringPreferencesKey("total_spent")
+    private val TODAY_SPENT = stringPreferencesKey("today_spent")
     private val CURRENCY = stringPreferencesKey("currency")
     private val COUNT = intPreferencesKey("count")
 
@@ -24,6 +28,10 @@ object RecentTransactionsWidgetDataStore {
     private fun amountKey(index: Int) = stringPreferencesKey("tx_amount_$index")
     private fun currencyKey(index: Int) = stringPreferencesKey("tx_currency_$index")
     private fun typeKey(index: Int) = stringPreferencesKey("tx_type_$index")
+    private fun idKey(index: Int) = longPreferencesKey("tx_id_$index")
+    private fun needsCategoryKey(index: Int) = booleanPreferencesKey("tx_needs_category_$index")
+    private fun badgeKey(index: Int) = stringPreferencesKey("tx_badge_$index")
+    private fun colorKey(index: Int) = longPreferencesKey("tx_color_$index")
 
     fun getData(context: Context): Flow<RecentTransactionsWidgetData> {
         return context.recentTransactionsWidgetDataStore.data.map { prefs ->
@@ -41,21 +49,30 @@ object RecentTransactionsWidgetDataStore {
                     subtitle = subtitle,
                     amount = amount,
                     currency = currency,
-                    transactionType = type
+                    transactionType = type,
+                    transactionId = prefs[idKey(index)],
+                    needsCategory = prefs[needsCategoryKey(index)] ?: false,
+                    badge = prefs[badgeKey(index)] ?: "",
+                    colorArgb = prefs[colorKey(index)] ?: 0
                 )
             }
 
             RecentTransactionsWidgetData(
                 totalSpent = prefs[TOTAL_SPENT]?.toBigDecimalOrNull() ?: BigDecimal.ZERO,
+                todaySpent = prefs[TODAY_SPENT]?.toBigDecimalOrNull() ?: BigDecimal.ZERO,
                 currency = prefs[CURRENCY] ?: prefs[currencyKey(0)] ?: "INR",
                 transactions = items
             )
         }
+            // A failed read (corrupt file, unknown enum) shows the empty widget
+            // instead of killing the Glance session.
+            .catch { emit(RecentTransactionsWidgetData()) }
     }
 
     suspend fun update(context: Context, data: RecentTransactionsWidgetData) {
         context.recentTransactionsWidgetDataStore.edit { prefs ->
             prefs[TOTAL_SPENT] = data.totalSpent.toPlainString()
+            prefs[TODAY_SPENT] = data.todaySpent.toPlainString()
             prefs[CURRENCY] = data.currency
 
             // Clear previous entries
@@ -65,6 +82,10 @@ object RecentTransactionsWidgetDataStore {
                 prefs.remove(amountKey(index))
                 prefs.remove(currencyKey(index))
                 prefs.remove(typeKey(index))
+                prefs.remove(idKey(index))
+                prefs.remove(needsCategoryKey(index))
+                prefs.remove(badgeKey(index))
+                prefs.remove(colorKey(index))
             }
 
             val limitedItems = data.transactions.take(MAX_ITEMS)
@@ -76,6 +97,10 @@ object RecentTransactionsWidgetDataStore {
                 prefs[amountKey(index)] = item.amount.toPlainString()
                 prefs[currencyKey(index)] = item.currency
                 prefs[typeKey(index)] = item.transactionType.name
+                item.transactionId?.let { prefs[idKey(index)] = it }
+                prefs[needsCategoryKey(index)] = item.needsCategory
+                prefs[badgeKey(index)] = item.badge
+                prefs[colorKey(index)] = item.colorArgb
             }
         }
     }

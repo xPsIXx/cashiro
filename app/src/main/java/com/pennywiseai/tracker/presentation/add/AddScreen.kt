@@ -1,5 +1,7 @@
 package com.pennywiseai.tracker.presentation.add
 
+import com.pennywiseai.tracker.R
+import androidx.compose.ui.res.stringResource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
@@ -9,7 +11,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
+import androidx.hilt.navigation.compose.hiltViewModel
 import com.pennywiseai.tracker.ui.components.PennyWiseScaffold
 import com.pennywiseai.tracker.ui.theme.*
 import kotlinx.coroutines.launch
@@ -24,13 +26,13 @@ fun AddScreen(
     val coroutineScope = rememberCoroutineScope()
     val uiState by viewModel.uiState.collectAsState()
     
-    val tabs = listOf("Transaction", "Subscription")
+    val tabs = listOf(stringResource(R.string.add_tab_transaction), stringResource(R.string.add_tab_subscription))
     
     PennyWiseScaffold(
-        title = "Add New",
+        title = stringResource(R.string.add_title),
         navigationIcon = {
             IconButton(onClick = onNavigateBack) {
-                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(R.string.add_back))
             }
         }
     ) { paddingValues ->

@@ -1,20 +1,22 @@
 package com.pennywiseai.tracker.data.backup
 
+import com.pennywiseai.tracker.data.preferences.BankAccountMergeStore
+import com.pennywiseai.tracker.data.database.entity.builtinKey
+
 import android.content.Context
 import android.net.Uri
 import android.util.Log
 import androidx.room.withTransaction
 import com.pennywiseai.tracker.data.database.PennyWiseDatabase
-import com.pennywiseai.tracker.data.backup.jsonElementToTransaction
 import com.pennywiseai.tracker.data.database.entity.*
+import com.pennywiseai.tracker.billing.license.LicenseManager
+import com.pennywiseai.tracker.data.preferences.IgnoredAccountsStore
 import com.pennywiseai.tracker.data.preferences.UserPreferencesRepository
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.first
-import kotlinx.serialization.decodeFromString
-import java.io.BufferedReader
-import java.io.InputStreamReader
+import kotlinx.serialization.json.decodeFromStream
 import java.time.LocalDate
 import java.time.LocalDateTime
 import javax.inject.Inject
@@ -24,7 +26,9 @@ import javax.inject.Singleton
 class BackupImporter @Inject constructor(
     @ApplicationContext private val context: Context,
     private val database: PennyWiseDatabase,
-    private val userPreferencesRepository: UserPreferencesRepository
+    private val userPreferencesRepository: UserPreferencesRepository,
+    private val licenseManager: LicenseManager,
+    private val ignoredAccountsStore: IgnoredAccountsStore
 ) {
     
     /**
@@ -44,11 +48,21 @@ class BackupImporter @Inject constructor(
             }
             
             // Import based on strategy
-            when (strategy) {
+            val result = when (strategy) {
                 ImportStrategy.REPLACE_ALL -> replaceAllData(backup)
                 ImportStrategy.MERGE -> mergeData(backup)
                 ImportStrategy.SELECTIVE -> mergeData(backup) // For now, same as merge
             }
+            // Receipt photos (#839), after the DB commit: write only the files
+            // a transaction now in the DB points at, so a merge restores the
+            // photos of the rows it kept (row ids get remapped; paths don't).
+            if (result is ImportResult.Success && backup.receipts.isNotEmpty()) {
+                val referenced = database.transactionDao().getAllTransactions().first()
+                    .mapNotNullTo(HashSet()) { it.receiptPath }
+                val restored = BackupReceipts.restore(context.filesDir, backup.receipts, referenced)
+                Log.i("BackupImporter", "Restored $restored of ${backup.receipts.size} receipt photos")
+            }
+            result
         } catch (e: Exception) {
             Log.e("BackupImporter", "Import failed", e)
             ImportResult.Error("Import failed: ${e.message}")
@@ -61,14 +75,13 @@ class BackupImporter @Inject constructor(
     private suspend fun readBackupFile(uri: Uri): PennyWiseBackup {
         return withContext(Dispatchers.IO) {
             context.contentResolver.openInputStream(uri)?.use { inputStream ->
-                val reader = BufferedReader(InputStreamReader(inputStream))
-                val content = reader.readText()
+                // Streamed, so a large backup isn't also held as one big String.
                 // backupJson tolerates missing keys (older backups → Kotlin
                 // defaults) and unknown keys (newer backups → ignored). The
                 // old Gson `normalized()` net is no longer needed because the
                 // `= emptyList()` / field defaults on the models now actually
                 // apply. See BackupSerializers + docs/backup-format.md.
-                backupJson.decodeFromString<PennyWiseBackup>(content)
+                backupJson.decodeFromStream<PennyWiseBackup>(inputStream.buffered())
             } ?: throw Exception("Failed to read backup file")
         }
     }
@@ -110,9 +123,6 @@ class BackupImporter @Inject constructor(
         var importedCategories = 0
         var skippedRows = 0
 
-        // Convert JsonElement transactions (no annotations on entity to avoid IR/KSP crash)
-        val txEntities: List<TransactionEntity> = backup.database.transactions.map(::jsonElementToTransaction)
-
         return database.withTransaction {
             try {
                 // Clear existing data
@@ -122,6 +132,7 @@ class BackupImporter @Inject constructor(
                 database.accountBalanceDao().deleteAllBalances()
                 database.subscriptionDao().deleteAllSubscriptions()
                 database.merchantMappingDao().deleteAllMappings()
+                database.merchantAliasDao().deleteAllAliases()
                 database.unrecognizedSmsDao().deleteAll()
                 database.chatDao().deleteAllMessages()
                 database.ruleDao().deleteAllRules()
@@ -133,6 +144,12 @@ class BackupImporter @Inject constructor(
                 database.transactionGroupDao().deleteAllGroups()
                 database.budgetSnapshotDao().deleteAllGroupSnapshots()
                 database.budgetSnapshotDao().deleteAllCategorySnapshots()
+                // Cross-refs are cascade-deleted when transactions are cleared,
+                // but tags live in their own table — clear both explicitly.
+                database.tagDao().deleteAllCrossRefs()
+                database.tagDao().deleteAllTags()
+                database.recurringTransactionDao().deleteAll()
+                database.goalDao().deleteAllGoals() // cascades goal_contributions
                 // Note: budget categories and transaction splits are deleted via cascade (budget categories via budget deletion, transaction splits via transaction deletion)
                 // Profiles deliberately preserved — defaults (Personal=1, Business=2)
                 // are seeded on first launch and we don't want to wipe them.
@@ -177,6 +194,8 @@ class BackupImporter @Inject constructor(
                 }
                 fun cleanTransaction(tx: TransactionEntity): TransactionEntity = tx.copy(
                     loanId = tx.loanId?.takeIf { it in backupLoanIds },
+                    // Rebuilt from the shares that restore (#346), below.
+                    lentSharesTotal = null,
                     groupId = tx.groupId?.takeIf { it in backupGroupIds },
                     profileId = resolveProfileId(tx.profileId)
                 )
@@ -187,8 +206,12 @@ class BackupImporter @Inject constructor(
                     importedCategories++
                 }
 
-                txEntities.insertEachCounting({ skippedRows++ }) { transaction ->
-                    database.transactionDao().insertTransaction(cleanTransaction(transaction))
+                // Backup id → inserted id, so goal contributions only keep a
+                // link to a transaction that actually restored.
+                val restoredTransactionIds = HashMap<Long, Long>()
+                backup.database.transactions.insertEachCounting({ skippedRows++ }) { transaction ->
+                    val newId = database.transactionDao().insertTransaction(cleanTransaction(transaction))
+                    if (transaction.id != 0L && newId > 0L) restoredTransactionIds[transaction.id] = newId
                     importedTransactions++
                 }
 
@@ -213,6 +236,10 @@ class BackupImporter @Inject constructor(
 
                 backup.database.merchantMappings.insertEachCounting({ skippedRows++ }) { mapping ->
                     database.merchantMappingDao().insertMapping(mapping)
+                }
+
+                backup.database.merchantAliases.insertEachCounting({ skippedRows++ }) { alias ->
+                    database.merchantAliasDao().insertOrUpdateAlias(alias)
                 }
 
                 backup.database.unrecognizedSms.insertEachCounting({ skippedRows++ }) { sms ->
@@ -245,6 +272,53 @@ class BackupImporter @Inject constructor(
                 backup.database.bankNotifications.insertEachCounting({ skippedRows++ }) { notification ->
                     database.bankNotificationDao().insertOrReplace(notification)
                 }
+
+                // Tags + cross-refs: ids are preserved in REPLACE_ALL (so are
+                // transaction ids), so insert tags first then the links. Insert
+                // tags before cross-refs to satisfy the foreign keys.
+                backup.database.tags.insertEachCounting({ skippedRows++ }) { tag ->
+                    database.tagDao().insertTag(tag)
+                }
+                backup.database.transactionTagCrossRefs.insertEachCounting({ skippedRows++ }) { ref ->
+                    database.tagDao().insertCrossRef(ref)
+                }
+
+                // Recurring / scheduled manual transaction templates (#706).
+                // Standalone table (no foreign keys); ids are preserved in
+                // REPLACE_ALL like every other cleared table, but the source
+                // profile_id is remapped so materialized transactions land under
+                // the right local profile. (Greptile)
+                backup.database.recurringTransactions.insertEachCounting({ skippedRows++ }) { recurring ->
+                    // Fall back to the default Personal profile (1) when the source
+                    // profile can't be mapped, rather than keeping a stale/invalid id;
+                    // give a fresh uid to any blank/legacy one.
+                    database.recurringTransactionDao().insert(
+                        recurring.copy(
+                            uid = stableUid(recurring),
+                            profileId = resolveProfileId(recurring.profileId) ?: 1L
+                        )
+                    )
+                }
+
+                // Goals (#914): ids preserved like every cleared table; goals go
+                // before their contributions (FK). A link to a transaction that
+                // didn't restore is cleared, keeping the money on the goal.
+                backup.database.goals.insertEachCounting({ skippedRows++ }) { goal ->
+                    database.goalDao().insertGoal(goal.copy(uid = goal.uid.ifBlank { java.util.UUID.randomUUID().toString() }))
+                }
+                backup.database.goalContributions.insertEachCounting({ skippedRows++ }) { c ->
+                    database.goalDao().insertContribution(
+                        c.copy(
+                            uid = c.uid.ifBlank { java.util.UUID.randomUUID().toString() },
+                            transactionId = c.transactionId?.let { restoredTransactionIds[it] }
+                        )
+                    )
+                }
+
+                // Split-bill shares (#346): loan ids are preserved here, transaction
+                // ids go through the restored map; a share whose loan or bill
+                // didn't restore is skipped. Then each bill's total is rebuilt.
+                importLoanShares(backup.database.loanShares, { it.takeIf { id -> id in backupLoanIds } }, restoredTransactionIds) { skippedRows++ }
 
                 // Profiles were already imported earlier (before transactions /
                 // account balances) so foreign-key remapping could happen.
@@ -286,9 +360,6 @@ class BackupImporter @Inject constructor(
         var skippedDuplicates = 0
         var skippedRows = 0
 
-        // Convert JsonElement transactions (no annotations on entity to avoid IR/KSP crash)
-        val txEntities: List<TransactionEntity> = backup.database.transactions.map(::jsonElementToTransaction)
-
         return database.withTransaction {
             try {
                 // Get existing data for duplicate checking
@@ -297,17 +368,34 @@ class BackupImporter @Inject constructor(
                 val existingTransactionHashes = existingTransactions.map { it.transactionHash }.toSet()
                 val existingHashToIdMap = existingTransactions.associateBy({ it.transactionHash }, { it.id })
 
-                val existingCategories = database.categoryDao()
-                    .getAllCategories().first()
-                    .map { it.name }
-                    .toSet()
+                val existingCategoryRows = database.categoryDao().getAllCategories().first()
+                val existingCategories = existingCategoryRows.map { it.name }.toSet()
 
-                // Import categories (merge by name)
-                backup.database.categories.insertEachCounting({ skippedRows++ }) { category ->
+                // Import categories (merge by name). Rows get new local IDs, so a
+                // sub-category's parent_id (#374) is remapped: parents go first and
+                // old id → local id is tracked (an existing same-name category counts).
+                val categoryIdMap = HashMap<Long, Long>()
+                existingCategoryRows.forEach { local ->
+                    backup.database.categories.firstOrNull { it.name == local.name }?.let { categoryIdMap[it.id] = local.id }
+                }
+                val (topLevel, children) = backup.database.categories.partition { it.parentId == null }
+                (topLevel + children).insertEachCounting({ skippedRows++ }) { category ->
                     if (!existingCategories.contains(category.name)) {
-                        // Generate new ID for imported category
-                        val newCategory = category.copy(id = 0)
-                        database.categoryDao().insertCategory(newCategory)
+                        // Generate new ID for imported category; parent remapped (or dropped if unknown).
+                        // A built-in renamed in the backup ("Eating out" for "Food & Dining")
+                        // whose built-in already exists here comes in as a plain user
+                        // category, so two rows never claim the same built-in (#823).
+                        val duplicatesBuiltin = category.builtinKey?.let { key ->
+                            existingCategoryRows.any { it.builtinKey == key }
+                        } == true
+                        val newCategory = category.copy(
+                            id = 0,
+                            parentId = category.parentId?.let { categoryIdMap[it] },
+                            isSystem = category.isSystem && !duplicatesBuiltin,
+                            systemName = if (duplicatesBuiltin) null else category.systemName
+                        )
+                        val newId = database.categoryDao().insertCategory(newCategory)
+                        categoryIdMap[category.id] = newId
                         importedCategories++
                     }
                 }
@@ -331,11 +419,12 @@ class BackupImporter @Inject constructor(
                     Triple(it.personName, it.direction, it.createdAt) to it.id
                 }
                 val oldToNewLoanIdMap = mutableMapOf<Long, Long>()
+                val insertedLoanIds = HashSet<Long>()
                 backup.database.loans.insertEachCounting({ skippedRows++ }) { loan ->
                     val key = Triple(loan.personName, loan.direction, loan.createdAt)
                     val existingId = existingLoanKeyToId[key]
                     val newId = existingId
-                        ?: database.loanDao().insertLoan(loan.copy(id = 0))
+                        ?: database.loanDao().insertLoan(loan.copy(id = 0)).also { insertedLoanIds += it }
                     if (loan.id != 0L) oldToNewLoanIdMap[loan.id] = newId
                 }
 
@@ -370,12 +459,14 @@ class BackupImporter @Inject constructor(
                 // Build mapping from old transaction IDs to new IDs for split/application imports
                 val oldToNewTransactionIdMap = mutableMapOf<Long, Long>()
 
-                txEntities.insertEachCounting({ skippedRows++ }) { transaction ->
+                backup.database.transactions.insertEachCounting({ skippedRows++ }) { transaction ->
                     if (!existingTransactionHashes.contains(transaction.transactionHash)) {
                         val oldId = transaction.id
                         val newTransaction = transaction.copy(
                             id = 0,
                             loanId = transaction.loanId?.let { oldToNewLoanIdMap[it] },
+                            // Rebuilt from the shares that restore (#346).
+                            lentSharesTotal = null,
                             groupId = transaction.groupId?.let { oldToNewGroupIdMap[it] },
                             profileId = resolveProfileId(transaction.profileId)
                         )
@@ -399,7 +490,21 @@ class BackupImporter @Inject constructor(
                 importCardsWithMerge(backup.database.cards) { skippedRows++ }
                 importAccountBalancesWithMerge(backup.database.accountBalances, { resolveProfileId(it) }) { skippedRows++ }
                 importSubscriptionsWithMerge(backup.database.subscriptions) { skippedRows++ }
+                importRecurringTransactionsWithMerge(backup.database.recurringTransactions, { resolveProfileId(it) }) { skippedRows++ }
                 importMerchantMappingsWithMerge(backup.database.merchantMappings) { skippedRows++ }
+                importMerchantAliasesWithMerge(backup.database.merchantAliases) { skippedRows++ }
+                importGoalsWithMerge(
+                    backup.database.goals, backup.database.goalContributions, oldToNewTransactionIdMap
+                ) { skippedRows++ }
+                // Split-bill shares (#346): only onto a loan this merge inserted,
+                // whose principal was sized with them; a matched local loan wins
+                // as it is, like a local goal with the same uid, so a repeat
+                // merge is a no-op. The bill may be new or local; see importLoanShares.
+                importLoanShares(
+                    backup.database.loanShares,
+                    { old -> oldToNewLoanIdMap[old]?.takeIf { it in insertedLoanIds } },
+                    oldToNewTransactionIdMap
+                ) { skippedRows++ }
 
                 // Import new entities with correct ID mapping for splits and applications
                 // Rules and budgets: skip if exists locally (merge semantics - don't overwrite local changes)
@@ -447,6 +552,34 @@ class BackupImporter @Inject constructor(
                 }
                 backup.database.bankNotifications.insertEachCounting({ skippedRows++ }) { notification ->
                     database.bankNotificationDao().insertOrReplace(notification)
+                }
+
+                // Tags: dedup by name (case-insensitive) like categories, then
+                // remap the cross-refs' tag_id and transaction_id to their new
+                // local ids. A ref is skipped if its transaction wasn't imported
+                // (missing from the id map). insertCrossRef IGNOREs duplicates,
+                // so a repeat MERGE is idempotent.
+                val existingTagIdByName = database.tagDao().getAllTagsSync()
+                    .associate { it.name.lowercase() to it.id }
+                    .toMutableMap()
+                val oldToNewTagIdMap = mutableMapOf<Long, Long>()
+                backup.database.tags.insertEachCounting({ skippedRows++ }) { tag ->
+                    val key = tag.name.trim().lowercase()
+                    if (key.isNotEmpty()) {
+                        val newId = existingTagIdByName[key]
+                            ?: database.tagDao().insertTag(tag.copy(id = 0))
+                                .also { id -> if (id > 0L) existingTagIdByName[key] = id }
+                        if (newId > 0L && tag.id != 0L) oldToNewTagIdMap[tag.id] = newId
+                    }
+                }
+                backup.database.transactionTagCrossRefs.insertEachCounting({ skippedRows++ }) { ref ->
+                    val mappedTransactionId = oldToNewTransactionIdMap[ref.transactionId]
+                    val mappedTagId = oldToNewTagIdMap[ref.tagId]
+                    if (mappedTransactionId != null && mappedTagId != null) {
+                        database.tagDao().insertCrossRef(
+                            ref.copy(transactionId = mappedTransactionId, tagId = mappedTagId)
+                        )
+                    }
                 }
 
                 // Profiles were already imported earlier (before transactions /
@@ -550,6 +683,128 @@ class BackupImporter @Inject constructor(
     }
     
     /**
+     * Import recurring / scheduled manual transaction templates with duplicate
+     * checking (#706). The dedup key covers every schedule-distinguishing field
+     * (merchant, amount, currency, category, type, frequency, day-of-month/week,
+     * profile), so a repeat MERGE of the same backup doesn't stack duplicates
+     * while genuinely distinct templates are never collapsed (Greptile). The
+     * source profile_id is remapped so materialized transactions land under the
+     * right local profile, and a fresh id avoids colliding with local rows.
+     */
+    /**
+     * A stable uid for a template: the real one, or — for a blank/legacy uid —
+     * a deterministic content-derived id so re-importing the same legacy row is
+     * idempotent (same content → same uid → deduped), while distinct legacy rows
+     * still get distinct uids. New templates always carry a real uid.
+     */
+    private fun stableUid(t: RecurringTransactionEntity): String = t.uid.ifEmpty {
+        "legacy:" + listOf(
+            t.merchantName,
+            t.amount.stripTrailingZeros().toPlainString(),
+            t.currency,
+            t.category,
+            t.transactionType,
+            t.frequency,
+            t.dayOfMonth,
+            t.dayOfWeek,
+            t.bankName,
+            t.accountLast4,
+            t.note,
+            t.profileId
+        ).joinToString("|")
+    }
+
+    private suspend fun importRecurringTransactionsWithMerge(
+        recurring: List<RecurringTransactionEntity>,
+        resolveProfileId: (Long?) -> Long?,
+        onSkip: () -> Unit
+    ) {
+        // Dedup on the stable [RecurringTransactionEntity.uid], not on mutable
+        // content: a repeated restore of the same backup can't duplicate a
+        // template (same uid), while genuinely distinct templates always have
+        // distinct uids and are always kept. A blank/legacy uid gets a fresh one
+        // so it still inserts.
+        val seenUids = database.recurringTransactionDao().getAll().first()
+            .map { it.uid }.filter { it.isNotEmpty() }.toMutableSet()
+
+        recurring.insertEachCounting(onSkip) { template ->
+            val uid = stableUid(template)
+            if (seenUids.add(uid)) {
+                database.recurringTransactionDao().insert(
+                    template.copy(
+                        id = 0,
+                        uid = uid,
+                        // Fall back to the default Personal profile (1) when unmapped,
+                        // so a template never restores under a stale/invalid id.
+                        profileId = resolveProfileId(template.profileId) ?: 1L
+                    )
+                )
+            }
+        }
+    }
+
+    /**
+     * Goals + contributions (#914). Goals dedup on their stable uid (a local
+     * goal with the same uid wins, like other merges); contributions dedup on
+     * theirs, so a repeat MERGE is idempotent while new contributions made on
+     * another device still come in. goal_id is remapped to the local goal, and
+     * transaction_id through [transactionIdMap] (new + duplicate-by-hash rows);
+     * an unmapped link is cleared so the money stays on the goal. Finally each
+     * touched transaction's shares are capped to its amount, since local and
+     * backup contributions could now both claim it.
+     *
+     * A uid match whose currency differs (an empty goal may change currency on
+     * one device) keeps the local goal, and that goal's backup contributions
+     * are skipped and counted: amounts are never converted implicitly.
+     */
+    @androidx.annotation.VisibleForTesting
+    internal suspend fun importGoalsWithMerge(
+        goals: List<GoalEntity>,
+        contributions: List<GoalContributionEntity>,
+        transactionIdMap: Map<Long, Long>,
+        onSkip: () -> Unit
+    ) {
+        if (goals.isEmpty() && contributions.isEmpty()) return
+        val dao = database.goalDao()
+        val localGoalByUid = dao.getAllGoals().associateBy { it.uid }.toMutableMap()
+        val goalIdMap = HashMap<Long, Long>()
+        val otherCurrencyGoalIds = HashSet<Long>()
+        goals.insertEachCounting(onSkip) { goal ->
+            val uid = goal.uid.ifBlank { java.util.UUID.randomUUID().toString() }
+            val local = localGoalByUid[uid]
+            when {
+                local == null -> {
+                    val newId = dao.insertGoal(goal.copy(id = 0, uid = uid))
+                    localGoalByUid[uid] = goal.copy(id = newId, uid = uid)
+                    goalIdMap[goal.id] = newId
+                }
+                local.currency == goal.currency -> goalIdMap[goal.id] = local.id
+                else -> otherCurrencyGoalIds += goal.id
+            }
+        }
+
+        val seenUids = dao.getAllContributions().mapTo(HashSet()) { it.uid }
+        val touchedTransactions = HashSet<Long>()
+        contributions.insertEachCounting(onSkip) { c ->
+            check(c.goalId !in otherCurrencyGoalIds) { "Goal ${c.goalId} is in another currency on this device" }
+            val goalId = checkNotNull(goalIdMap[c.goalId]) { "Goal ${c.goalId} not in backup" }
+            val uid = c.uid.ifBlank { java.util.UUID.randomUUID().toString() }
+            if (seenUids.add(uid)) {
+                val transactionId = c.transactionId?.let { transactionIdMap[it] }
+                dao.insertContribution(c.copy(id = 0, uid = uid, goalId = goalId, transactionId = transactionId))
+                transactionId?.let(touchedTransactions::add)
+            }
+        }
+        touchedTransactions.forEach { id ->
+            val amount = database.transactionDao().getTransactionById(id)?.amount ?: return@forEach
+            val capped = com.pennywiseai.tracker.data.repository.GoalRules.capContributions(
+                dao.getContributionsForTransaction(id), amount, LocalDateTime.now()
+            )
+            if (capped.isNotEmpty()) dao.updateContributions(capped)
+        }
+    }
+
+    /**
      * Import merchant mappings with merge
      */
     private suspend fun importMerchantMappingsWithMerge(mappings: List<MerchantMappingEntity>, onSkip: () -> Unit) {
@@ -558,6 +813,17 @@ class BackupImporter @Inject constructor(
         }
     }
     
+    /**
+     * Import merchant aliases with merge. Aliases are keyed by merchant_name
+     * (the PK), so a REPLACE insert lets a backup's alias overwrite any local
+     * one for the same merchant — matching how merchant mappings merge.
+     */
+    private suspend fun importMerchantAliasesWithMerge(aliases: List<MerchantAliasEntity>, onSkip: () -> Unit) {
+        aliases.insertEachCounting(onSkip) { alias ->
+            database.merchantAliasDao().insertOrUpdateAlias(alias)
+        }
+    }
+
     /**
      * Import rules with merge semantics - skip if exists locally
      */
@@ -649,18 +915,71 @@ class BackupImporter @Inject constructor(
     }
 
     /**
+     * Split-bill shares (#346). A share is restored only onto a loan this
+     * import inserted ([loanIdFor]; its principal was sized with the share)
+     * and onto its bill ([transactionIdMap]: new, or an existing one with the
+     * same hash) while that bill can still take it: an unlinked expense in the
+     * loan's currency, room left in its amount, not already split with that
+     * person, under the people limit. Otherwise it is skipped and counted.
+     *
+     * Loans are never changed here: a skipped share's debt stays on its
+     * restored loan, as a loan-linked bill's does, so a restore can't erase
+     * money someone owes. Every touched bill's total is then rebuilt.
+     */
+    private suspend fun importLoanShares(
+        shares: List<LoanShareEntity>,
+        loanIdFor: (Long) -> Long?,
+        transactionIdMap: Map<Long, Long>,
+        onSkip: () -> Unit
+    ) {
+        if (shares.isEmpty()) return
+        val dao = database.loanDao()
+        val touched = HashSet<Long>()
+        shares.insertEachCounting(onSkip) { share ->
+            val loanId = checkNotNull(loanIdFor(share.loanId)) { "Loan ${share.loanId} not restored" }
+            val transactionId = checkNotNull(transactionIdMap[share.transactionId]) { "Transaction ${share.transactionId} not restored" }
+            val bill = checkNotNull(database.transactionDao().getTransactionById(transactionId)) { "Transaction $transactionId missing" }
+            val loan = checkNotNull(dao.getLoanById(loanId)) { "Loan $loanId missing" }
+            check(bill.transactionType == TransactionType.EXPENSE && bill.loanId == null) { "Bill $transactionId can't be split" }
+            check(bill.currency.equals(loan.currency, ignoreCase = true)) { "Share currency differs from its bill" }
+            val existing = dao.getSharesForTransaction(transactionId)
+            check(existing.size < com.pennywiseai.tracker.domain.loan.SplitRules.MAX_PEOPLE) { "Bill $transactionId is full" }
+            check(existing.none { dao.getLoanById(it.loanId)?.personName == loan.personName }) { "Bill $transactionId is already split with that person" }
+            val taken = existing.fold(java.math.BigDecimal.ZERO) { sum, s -> sum + s.amount }
+            check(share.amount.signum() > 0 && taken + share.amount <= bill.amount) { "Shares would exceed bill $transactionId" }
+            dao.insertShare(share.copy(id = 0, loanId = loanId, transactionId = transactionId))
+            touched += transactionId
+        }
+        touched.forEach { database.transactionDao().syncLentSharesTotal(it) }
+    }
+
+    /**
      * Import user preferences
      */
-    private suspend fun importPreferences(preferences: PreferencesSnapshot) {
+    @androidx.annotation.VisibleForTesting
+    internal suspend fun importPreferences(preferences: PreferencesSnapshot) {
         // Theme preferences
         preferences.theme.isDarkThemeEnabled?.let {
             userPreferencesRepository.updateDarkTheme(it)
         }
         userPreferencesRepository.updateDynamicColor(preferences.theme.isDynamicColorEnabled)
+        preferences.theme.hiddenNavTabs?.let {
+            userPreferencesRepository.updateHiddenNavTabs(it.toSet())
+        }
         
         // SMS preferences
         userPreferencesRepository.updateHasSkippedSmsPermission(preferences.sms.hasSkippedSmsPermission)
         userPreferencesRepository.updateSmsScanMonths(preferences.sms.smsScanMonths)
+        // Only enable custom-date mode when a paired date is present. A flag-without-date
+        // state would leave a "Scan from a custom start date" subtitle while the limited-data
+        // banner is suppressed (TransactionsViewModel can't resolve a start date).
+        val restoredCustomDate = preferences.sms.smsScanCustomDate
+        restoredCustomDate?.let {
+            userPreferencesRepository.updateSmsScanCustomDate(it)
+        }
+        userPreferencesRepository.updateSmsScanUseCustomDate(
+            preferences.sms.smsScanUseCustomDate && restoredCustomDate != null
+        )
         preferences.sms.lastScanTimestamp?.let {
             userPreferencesRepository.updateLastScanTimestamp(it)
         }
@@ -675,13 +994,35 @@ class BackupImporter @Inject constructor(
         }
         
         // App preferences
+        BankAccountMergeStore(context)
+            .restore(preferences.app.bankAccountMerges)
         userPreferencesRepository.updateHasShownScanTutorial(preferences.app.hasShownScanTutorial)
         preferences.app.firstLaunchTime?.let {
             userPreferencesRepository.updateFirstLaunchTime(it)
         }
         userPreferencesRepository.updateHasShownReviewPrompt(preferences.app.hasShownReviewPrompt)
+        // Additive: a restore can start ignoring an account but never silently
+        // un-ignores one the user set up on this device (#826).
+        if (preferences.app.ignoredAccounts.isNotEmpty()) {
+            ignoredAccountsStore.replaceAll(
+                ignoredAccountsStore.keys() + preferences.app.ignoredAccounts
+            )
+        }
         preferences.app.lastReviewPromptTime?.let {
             userPreferencesRepository.updateLastReviewPromptTime(it)
+        }
+
+        // Like the license: fills in a missing UPI ID, never replaces one set here (#346).
+        preferences.app.upiId?.takeIf { com.pennywiseai.tracker.domain.loan.UpiRequest.isValidUpiId(it) }?.let { id ->
+            if (userPreferencesRepository.upiId.first() == null) userPreferencesRepository.setUpiId(id)
+        }
+
+        // A license in the backup only overrides when this install has none —
+        // never clobber a key the user already activated here.
+        preferences.app.licenseKey?.let { key ->
+            if (userPreferencesRepository.storedLicense.first() == null) {
+                licenseManager.restore(key, preferences.app.licenseInstanceId)
+            }
         }
     }
 }

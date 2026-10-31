@@ -1,1 +1,1 @@
-PennywiseAI-Firefly
+PennyWise: SMS Expense Tracker

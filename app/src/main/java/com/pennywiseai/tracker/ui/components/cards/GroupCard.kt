@@ -1,5 +1,10 @@
 package com.pennywiseai.tracker.ui.components.cards
 
+import com.pennywiseai.tracker.utils.AppDates
+
+import androidx.compose.ui.res.pluralStringResource
+import com.pennywiseai.tracker.R
+import androidx.compose.ui.res.stringResource
 import androidx.compose.foundation.background
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
@@ -43,7 +48,15 @@ fun GroupCard(
 
     val total = remember(transactions, convertedAmounts, displayCurrency) {
         transactions.fold(BigDecimal.ZERO) { acc, tx ->
-            val amount = convertedAmounts[tx.id] ?: tx.amount
+            // In unified mode a foreign txn missing from convertedAmounts has no
+            // known rate — leave it out rather than adding its face value (#670).
+            // Native mode (displayCurrency == null) and same-currency txns use tx.amount.
+            val amount = convertedAmounts[tx.id]
+                ?: if (displayCurrency != null && !tx.currency.equals(displayCurrency, ignoreCase = true)) {
+                    return@fold acc
+                } else {
+                    tx.amount
+                }
             when (tx.transactionType) {
                 TransactionType.EXPENSE, TransactionType.CREDIT -> acc - amount
                 TransactionType.INCOME -> acc + amount
@@ -58,16 +71,16 @@ fun GroupCard(
         if (isDark) expense_dark else expense_light
     }
 
-    val latestDate = remember(transactions) { transactions.maxOfOrNull { it.dateTime } }
-    val dateText = latestDate?.format(DateTimeFormatter.ofPattern("d MMM")) ?: ""
+    val latestDate = remember(transactions) { transactions.map { it.dateTime }.maxOrNull() }
+    val dateText = latestDate?.format(AppDates.dayMonthFormatter()) ?: ""
     val currency = displayCurrency ?: transactions.firstOrNull()?.currency ?: "INR"
 
-    val countText = "${transactions.size} transaction${if (transactions.size != 1) "s" else ""}"
-    val subtitle = if (dateText.isNotEmpty()) "$countText · $dateText" else countText
+    val countText = pluralStringResource(R.plurals.group_card_transaction_count, transactions.size, transactions.size)
+    val subtitle = if (dateText.isNotEmpty()) stringResource(R.string.group_card_subtitle, countText, dateText) else countText
 
     val sign = if (isPositive) "+" else "-"
 
-    val formattedAmount = "$sign${CurrencyFormatter.formatCurrency(total.abs(), currency)}"
+    val formattedAmount = CurrencyFormatter.signed(sign, CurrencyFormatter.formatCurrency(total.abs(), currency))
 
     ListItemCardV2(
         title = group.name,

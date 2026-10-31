@@ -1,5 +1,5 @@
 # Build stage
-FROM --platform=$BUILDPLATFORM gradle:8.5-jdk21 AS build
+FROM --platform=$BUILDPLATFORM gradle:8.14.5-jdk21 AS build
 
 WORKDIR /app
 
@@ -24,7 +24,8 @@ COPY server/build.gradle.kts ./server/
 COPY server/src ./server/src
 
 # Build the shadow JAR (uber JAR with all dependencies)
-RUN ./gradlew :server:shadowJar --no-daemon
+# The image already has the wrapper's Gradle version, so no download (it timed out in BuildKit).
+RUN gradle :server:shadowJar --no-daemon
 
 # Runtime stage
 FROM eclipse-temurin:21-jre-alpine

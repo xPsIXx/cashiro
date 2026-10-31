@@ -1,11 +1,18 @@
 package com.pennywiseai.tracker.receiver
 
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.util.Log
-import com.pennywiseai.tracker.data.database.PennyWiseDatabase
+import com.pennywiseai.tracker.domain.usecase.DeleteTransactionUseCase
+import com.pennywiseai.tracker.domain.usecase.LearnCategoryUseCase
+import com.pennywiseai.tracker.widget.WidgetRefresher
+import dagger.hilt.EntryPoint
+import dagger.hilt.InstallIn
+import dagger.hilt.android.EntryPointAccessors
+import dagger.hilt.components.SingletonComponent
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -17,6 +24,13 @@ import kotlinx.coroutines.launch
  */
 class NotificationActionReceiver : BroadcastReceiver() {
 
+    @EntryPoint
+    @InstallIn(SingletonComponent::class)
+    interface NotificationActionReceiverEntryPoint {
+        fun learnCategoryUseCase(): LearnCategoryUseCase
+        fun deleteTransactionUseCase(): DeleteTransactionUseCase
+    }
+
     companion object {
         private const val TAG = "NotificationActionReceiver"
 
@@ -26,6 +40,45 @@ class NotificationActionReceiver : BroadcastReceiver() {
         const val EXTRA_TRANSACTION_ID = "transaction_id"
         const val EXTRA_NOTIFICATION_ID = "notification_id"
         const val EXTRA_NEW_CATEGORY = "new_category"
+        const val ACTION_UNDO_LEARN = "com.pennywiseai.tracker.ACTION_UNDO_LEARN"
+        private const val EXTRA_PREVIOUS_CATEGORY = "previous_category"
+        private const val EXTRA_MERCHANT = "merchant"
+        private const val EXTRA_PREVIOUS_MAPPING = "previous_mapping"
+        private const val EXTRA_MOVED_IDS = "moved_ids"
+        private const val EXTRA_MAPPED_AT = "mapped_at"
+
+        /** The learned note's Undo: carries everything [LearnCategoryUseCase.undo] needs. */
+        fun undoIntent(context: Context, requestCode: Int, notificationId: Int, learned: LearnCategoryUseCase.Learned): PendingIntent =
+            PendingIntent.getBroadcast(
+                context,
+                requestCode,
+                Intent(context, NotificationActionReceiver::class.java).apply {
+                    action = ACTION_UNDO_LEARN
+                    putExtra(EXTRA_TRANSACTION_ID, learned.transactionId)
+                    putExtra(EXTRA_NOTIFICATION_ID, notificationId)
+                    putExtra(EXTRA_NEW_CATEGORY, learned.category)
+                    putExtra(EXTRA_PREVIOUS_CATEGORY, learned.previousCategory)
+                    putExtra(EXTRA_MERCHANT, learned.merchant)
+                    putExtra(EXTRA_PREVIOUS_MAPPING, learned.previousMapping)
+                    putExtra(EXTRA_MOVED_IDS, learned.movedIds.toLongArray())
+                    putExtra(EXTRA_MAPPED_AT, learned.mappedAt?.toString())
+                },
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+
+        private fun Intent.toLearned(transactionId: Long): LearnCategoryUseCase.Learned? {
+            val category = getStringExtra(EXTRA_NEW_CATEGORY) ?: return null
+            val previous = getStringExtra(EXTRA_PREVIOUS_CATEGORY) ?: return null
+            return LearnCategoryUseCase.Learned(
+                transactionId = transactionId,
+                category = category,
+                previousCategory = previous,
+                merchant = getStringExtra(EXTRA_MERCHANT),
+                previousMapping = getStringExtra(EXTRA_PREVIOUS_MAPPING),
+                mappedAt = getStringExtra(EXTRA_MAPPED_AT)?.let { runCatching { java.time.LocalDateTime.parse(it) }.getOrNull() },
+                movedIds = getLongArrayExtra(EXTRA_MOVED_IDS)?.toList().orEmpty()
+            )
+        }
     }
 
     private val receiverScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -39,42 +92,66 @@ class NotificationActionReceiver : BroadcastReceiver() {
             return
         }
 
-        when (intent.action) {
-            ACTION_DELETE_TRANSACTION -> {
-                deleteTransaction(context, transactionId, notificationId)
-            }
-            ACTION_CONFIRM_TRANSACTION -> {
-                confirmTransaction(context, notificationId)
-            }
-            ACTION_CHANGE_CATEGORY -> {
-                val newCategory = intent.getStringExtra(EXTRA_NEW_CATEGORY)
-                if (newCategory != null) {
-                    changeCategory(context, transactionId, newCategory, notificationId)
-                } else {
-                    Log.e(TAG, "No category provided")
+        val entryPoint = EntryPointAccessors.fromApplication(
+            context.applicationContext,
+            NotificationActionReceiverEntryPoint::class.java
+        )
+        val deleteTransactionUseCase = entryPoint.deleteTransactionUseCase()
+
+        val pendingResult = goAsync()
+        receiverScope.launch {
+            try {
+                when (intent.action) {
+                    ACTION_DELETE_TRANSACTION -> {
+                        deleteTransaction(context, deleteTransactionUseCase, transactionId, notificationId)
+                    }
+                    ACTION_CONFIRM_TRANSACTION -> {
+                        confirmTransaction(context, notificationId)
+                    }
+                    ACTION_CHANGE_CATEGORY -> {
+                        val newCategory = intent.getStringExtra(EXTRA_NEW_CATEGORY)
+                        if (newCategory != null) {
+                            changeCategory(context, entryPoint.learnCategoryUseCase(), transactionId, newCategory, notificationId)
+                        } else {
+                            Log.e(TAG, "No category provided")
+                        }
+                    }
+                    ACTION_UNDO_LEARN -> {
+                        runCatching {
+                            intent.toLearned(transactionId)?.let { entryPoint.learnCategoryUseCase().undo(it) }
+                            WidgetRefresher.refreshTransactionWidgets(context)
+                        }.onFailure { Log.e(TAG, "Error undoing a learned category", it) }
+                        dismissNotification(context, notificationId)
+                    }
+                    else -> {
+                        Log.w(TAG, "Unknown action: ${intent.action}")
+                    }
                 }
-            }
-            else -> {
-                Log.w(TAG, "Unknown action: ${intent.action}")
+            } finally {
+                pendingResult.finish()
             }
         }
     }
 
-    private fun deleteTransaction(context: Context, transactionId: Long, notificationId: Int) {
-        receiverScope.launch {
-            try {
-                val database = PennyWiseDatabase.getInstance(context)
-                val transactionDao = database.transactionDao()
-
-                // Soft delete the transaction
-                transactionDao.softDeleteTransaction(transactionId)
-                Log.d(TAG, "Deleted transaction: $transactionId")
-
-                // Dismiss the notification
-                dismissNotification(context, notificationId)
-            } catch (e: Exception) {
-                Log.e(TAG, "Error deleting transaction", e)
+    private suspend fun deleteTransaction(
+        context: Context,
+        deleteTransactionUseCase: DeleteTransactionUseCase,
+        transactionId: Long,
+        notificationId: Int
+    ) {
+        try {
+            val deleted = deleteTransactionUseCase(transactionId)
+            if (deleted) {
+                WidgetRefresher.refreshTransactionWidgets(context)
+                Log.d(TAG, "Deleted transaction and shifted balance: $transactionId")
+            } else {
+                Log.w(TAG, "Transaction not found for deletion: $transactionId")
             }
+
+            // Dismiss the notification
+            dismissNotification(context, notificationId)
+        } catch (e: Exception) {
+            Log.e(TAG, "Error deleting transaction", e)
         }
     }
 
@@ -84,31 +161,20 @@ class NotificationActionReceiver : BroadcastReceiver() {
         Log.d(TAG, "Transaction confirmed, notification dismissed")
     }
 
-    private fun changeCategory(context: Context, transactionId: Long, newCategory: String, notificationId: Int) {
-        receiverScope.launch {
-            try {
-                val database = PennyWiseDatabase.getInstance(context)
-                val transactionDao = database.transactionDao()
-
-                // Get the transaction
-                val transaction = transactionDao.getTransactionById(transactionId)
-                if (transaction != null) {
-                    // Update with new category
-                    val updated = transaction.copy(
-                        category = newCategory,
-                        updatedAt = java.time.LocalDateTime.now()
-                    )
-                    transactionDao.updateTransaction(updated)
-                    Log.d(TAG, "Updated transaction $transactionId category to: $newCategory")
-
-                    // Dismiss the notification
-                    dismissNotification(context, notificationId)
-                } else {
-                    Log.e(TAG, "Transaction not found: $transactionId")
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "Error changing category", e)
+    private suspend fun changeCategory(
+        context: Context,
+        learnCategory: LearnCategoryUseCase,
+        transactionId: Long,
+        newCategory: String,
+        notificationId: Int
+    ) {
+        try {
+            learnCategory(transactionId, newCategory) { learned ->
+                SmsBroadcastReceiver.showLearnedNotification(context, notificationId, learned)
             }
+            WidgetRefresher.refreshTransactionWidgets(context)
+        } catch (e: Exception) {
+            Log.e(TAG, "Error changing category", e)
         }
     }
 
@@ -116,6 +182,7 @@ class NotificationActionReceiver : BroadcastReceiver() {
         if (notificationId != -1) {
             val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
             notificationManager.cancel(notificationId)
+            SmsBroadcastReceiver.updateAlertGroup(context, removedId = notificationId)
         }
     }
 }

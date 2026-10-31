@@ -1,5 +1,9 @@
 package com.pennywiseai.tracker.ui.screens.unrecognized
 
+import androidx.compose.ui.platform.LocalContext
+import com.pennywiseai.tracker.receiver.BankNotificationConfig
+import com.pennywiseai.tracker.utils.AppDates
+
 import androidx.compose.animation.*
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
@@ -9,7 +13,6 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.itemsIndexed
 import com.pennywiseai.tracker.ui.effects.overScrollVertical
 import com.pennywiseai.tracker.ui.effects.rememberOverscrollFlingBehavior
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.*
@@ -20,19 +23,25 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
+import androidx.compose.ui.res.pluralStringResource
+import androidx.compose.ui.res.stringResource
+import com.pennywiseai.tracker.R
+import com.pennywiseai.tracker.ui.components.skeleton.TransactionItemSkeleton
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
+import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.pennywiseai.tracker.data.database.entity.UnrecognizedSmsEntity
+import com.pennywiseai.tracker.navigation.AddTransaction
+import com.pennywiseai.tracker.utils.CurrencyFormatter
+import com.pennywiseai.parser.core.ParsedTransaction
+import com.pennywiseai.parser.core.TransactionType
 import com.pennywiseai.tracker.ui.components.CustomTitleTopAppBar
 import com.pennywiseai.tracker.ui.components.PennyWiseEmptyState
-import com.pennywiseai.tracker.ui.components.shimmer
 import com.pennywiseai.tracker.ui.components.cards.PennyWiseCardV2
 import com.pennywiseai.tracker.ui.theme.Dimensions
 import com.pennywiseai.tracker.ui.theme.Spacing
@@ -46,9 +55,11 @@ import java.time.format.DateTimeFormatter
 fun UnrecognizedSmsScreen(
     modifier: Modifier = Modifier,
     onNavigateBack: () -> Unit,
+    onAddSuggestion: (AddTransaction) -> Unit,
     viewModel: UnrecognizedSmsViewModel = hiltViewModel()
 ) {
     val unrecognizedMessages by viewModel.unrecognizedMessages.collectAsStateWithLifecycle()
+    val suggestions by viewModel.suggestions.collectAsStateWithLifecycle()
     val isLoading by viewModel.isLoading.collectAsStateWithLifecycle()
     val showReported by viewModel.showReported.collectAsStateWithLifecycle()
     var selectedMessage by remember { mutableStateOf<UnrecognizedSmsEntity?>(null) }
@@ -78,12 +89,11 @@ fun UnrecognizedSmsScreen(
             CustomTitleTopAppBar(
                 scrollBehaviorSmall = scrollBehaviorSmall,
                 scrollBehaviorLarge = scrollBehaviorLarge,
-                title = "Unrecognized SMS",
+                title = stringResource(R.string.unrecognized_title),
                 hasBackButton = true,
-                hasActionButton = true,
                 navigationContent = {
                     IconButton(onClick = onNavigateBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(R.string.unrecognized_back))
                     }
                 },
                 hazeState = hazeState
@@ -135,15 +145,14 @@ fun UnrecognizedSmsScreen(
                                     tint = MaterialTheme.colorScheme.primary
                                 )
                                 Text(
-                                    text = "Unrecognized Bank Messages",
+                                    text = stringResource(R.string.unrecognized_header_title),
                                     style = MaterialTheme.typography.titleMedium,
                                     fontWeight = FontWeight.Bold
                                 )
                             }
 
                             Text(
-                                text = "These messages from potential banks couldn't be automatically parsed. " +
-                                        "Help improve PennyWise by reporting them so we can add support for more banks.",
+                                text = stringResource(R.string.unrecognized_header_body),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -157,7 +166,7 @@ fun UnrecognizedSmsScreen(
                                 FilterChip(
                                     selected = showReported,
                                     onClick = { viewModel.toggleShowReported() },
-                                    label = { Text("Show Reported") },
+                                    label = { Text(stringResource(R.string.unrecognized_show_reported)) },
                                     leadingIcon = if (showReported) {
                                         { Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(Dimensions.Icon.small)) }
                                     } else null
@@ -174,14 +183,14 @@ fun UnrecognizedSmsScreen(
                                             Badge(
                                                 containerColor = MaterialTheme.colorScheme.primary
                                             ) {
-                                                Text("$unreportedCount new")
+                                                Text(pluralStringResource(R.plurals.unrecognized_new_count, unreportedCount, unreportedCount))
                                             }
                                         }
                                         if (reportedCount > 0) {
                                             Badge(
                                                 containerColor = MaterialTheme.colorScheme.surfaceVariant
                                             ) {
-                                                Text("$reportedCount reported")
+                                                Text(pluralStringResource(R.plurals.unrecognized_reported_count, reportedCount, reportedCount))
                                             }
                                         }
                                     }
@@ -202,8 +211,8 @@ fun UnrecognizedSmsScreen(
                 item {
                     PennyWiseEmptyState(
                         icon = Icons.Outlined.MarkEmailRead,
-                        headline = "All messages recognized",
-                        description = "No unrecognized bank messages found"
+                        headline = stringResource(R.string.unrecognized_empty_title),
+                        description = stringResource(R.string.unrecognized_empty_body)
                     )
                 }
             } else {
@@ -225,8 +234,12 @@ fun UnrecognizedSmsScreen(
                     ) {
                         UnrecognizedSmsItem(
                             message = message,
+                            suggestion = suggestions[message.id]?.transaction,
+                            onAddSuggestion = {
+                                suggestions[message.id]?.let { onAddSuggestion(it.draft()) }
+                            },
                             onReport = {
-                                // Reporting disabled in this fork to prevent issues being sent to the original project
+                                viewModel.reportMessage(message)
                             },
                             onDelete = {
                                 selectedMessage = message
@@ -246,9 +259,9 @@ fun UnrecognizedSmsScreen(
                 showDeleteConfirmation = false
                 selectedMessage = null
             },
-            title = { Text("Delete Message") },
+            title = { Text(stringResource(R.string.unrecognized_delete_title)) },
             text = {
-                Text("Are you sure you want to delete this unrecognized message? This action cannot be undone.")
+                Text(stringResource(R.string.unrecognized_delete_body))
             },
             confirmButton = {
                 TextButton(
@@ -261,7 +274,7 @@ fun UnrecognizedSmsScreen(
                         contentColor = MaterialTheme.colorScheme.error
                     )
                 ) {
-                    Text("Delete")
+                    Text(stringResource(R.string.unrecognized_delete))
                 }
             },
             dismissButton = {
@@ -271,7 +284,7 @@ fun UnrecognizedSmsScreen(
                         selectedMessage = null
                     }
                 ) {
-                    Text("Cancel")
+                    Text(stringResource(R.string.unrecognized_cancel))
                 }
             }
         )
@@ -281,6 +294,8 @@ fun UnrecognizedSmsScreen(
 @Composable
 private fun UnrecognizedSmsItem(
     message: UnrecognizedSmsEntity,
+    suggestion: ParsedTransaction?,
+    onAddSuggestion: (ParsedTransaction) -> Unit,
     onReport: () -> Unit,
     onDelete: () -> Unit,
     modifier: Modifier = Modifier
@@ -288,6 +303,8 @@ private fun UnrecognizedSmsItem(
     PennyWiseCardV2(
         modifier = modifier.fillMaxWidth()
     ) {
+        val context = LocalContext.current
+        val displayName = remember(message.sender) { BankNotificationConfig.displayName(context, message.sender) }
         Column(
             verticalArrangement = Arrangement.spacedBy(Spacing.sm)
         ) {
@@ -299,14 +316,14 @@ private fun UnrecognizedSmsItem(
             ) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = message.sender,
+                        text = displayName,
                         style = MaterialTheme.typography.titleSmall,
                         fontWeight = FontWeight.SemiBold,
                         color = MaterialTheme.colorScheme.primary
                     )
                     Text(
                         text = message.receivedAt.format(
-                            DateTimeFormatter.ofPattern("MMM dd, yyyy • HH:mm")
+                            AppDates.dateTimeFormatter()
                         ),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -318,7 +335,7 @@ private fun UnrecognizedSmsItem(
                         containerColor = MaterialTheme.colorScheme.surfaceVariant
                     ) {
                         Text(
-                            "Reported",
+                            stringResource(R.string.unrecognized_reported_badge),
                             style = MaterialTheme.typography.labelSmall
                         )
                     }
@@ -334,6 +351,10 @@ private fun UnrecognizedSmsItem(
                 color = MaterialTheme.colorScheme.onSurface
             )
 
+            suggestion?.let { tx ->
+                SuggestionLine(tx, onAdd = { onAddSuggestion(tx) })
+            }
+
             // Action buttons
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -346,14 +367,26 @@ private fun UnrecognizedSmsItem(
                     ) {
                         Icon(
                             Icons.Default.Delete,
-                            contentDescription = "Delete",
+                            contentDescription = stringResource(R.string.unrecognized_delete),
                             modifier = Modifier.size(Dimensions.Icon.small)
                         )
                         Spacer(modifier = Modifier.width(Spacing.xs))
-                        Text("Delete")
+                        Text(stringResource(R.string.unrecognized_delete))
                     }
 
-                    // Report button removed in this fork to prevent users from sending issues to the original project
+                    Spacer(modifier = Modifier.width(Spacing.sm))
+
+                    FilledTonalButton(
+                        onClick = onReport
+                    ) {
+                        Icon(
+                            Icons.Default.BugReport,
+                            contentDescription = stringResource(R.string.unrecognized_report),
+                            modifier = Modifier.size(Dimensions.Icon.small)
+                        )
+                        Spacer(modifier = Modifier.width(Spacing.xs))
+                        Text(stringResource(R.string.unrecognized_report))
+                    }
                 } else {
                     TextButton(
                         onClick = onDelete,
@@ -363,14 +396,42 @@ private fun UnrecognizedSmsItem(
                     ) {
                         Icon(
                             Icons.Default.Delete,
-                            contentDescription = "Delete",
+                            contentDescription = stringResource(R.string.unrecognized_delete),
                             modifier = Modifier.size(Dimensions.Icon.small)
                         )
                         Spacer(modifier = Modifier.width(Spacing.xs))
-                        Text("Delete")
+                        Text(stringResource(R.string.unrecognized_delete))
                     }
                 }
             }
+        }
+    }
+}
+
+/** "Looks like: ₹500.00 debit · Test Store · ••1234" with an Add action (#994). */
+@Composable
+private fun SuggestionLine(tx: ParsedTransaction, onAdd: () -> Unit) {
+    val amount = CurrencyFormatter.formatCurrency(tx.amount, tx.currency)
+    val parts = listOfNotNull(
+        if (tx.type == TransactionType.INCOME) stringResource(R.string.unrecognized_suggestion_credit, amount)
+        else stringResource(R.string.unrecognized_suggestion_debit, amount),
+        tx.merchant,
+        tx.accountLast4?.let { "••$it" }
+    )
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = stringResource(R.string.unrecognized_suggestion, parts.joinToString(" · ")),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f)
+        )
+        TextButton(onClick = onAdd) {
+            Text(stringResource(R.string.unrecognized_suggestion_add))
         }
     }
 }
@@ -379,73 +440,5 @@ private fun UnrecognizedSmsItem(
 private fun UnrecognizedSmsItemSkeleton(
     modifier: Modifier = Modifier
 ) {
-    val placeholderColor = MaterialTheme.colorScheme.surfaceContainerHighest
-
-    PennyWiseCardV2(
-        modifier = modifier.fillMaxWidth()
-    ) {
-        Column(
-            verticalArrangement = Arrangement.spacedBy(Spacing.sm)
-        ) {
-            // Sender placeholder
-            Box(
-                modifier = Modifier
-                    .width(140.dp)
-                    .height(14.dp)
-                    .clip(RoundedCornerShape(Dimensions.CornerRadius.small))
-                    .background(placeholderColor)
-                    .shimmer()
-            )
-            // Date placeholder
-            Box(
-                modifier = Modifier
-                    .width(100.dp)
-                    .height(10.dp)
-                    .clip(RoundedCornerShape(Dimensions.CornerRadius.small))
-                    .background(placeholderColor)
-                    .shimmer()
-            )
-            Spacer(modifier = Modifier.height(Spacing.xs))
-            // Message body placeholders (3 lines)
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(12.dp)
-                    .clip(RoundedCornerShape(Dimensions.CornerRadius.small))
-                    .background(placeholderColor)
-                    .shimmer()
-            )
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth(0.9f)
-                    .height(12.dp)
-                    .clip(RoundedCornerShape(Dimensions.CornerRadius.small))
-                    .background(placeholderColor)
-                    .shimmer()
-            )
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth(0.6f)
-                    .height(12.dp)
-                    .clip(RoundedCornerShape(Dimensions.CornerRadius.small))
-                    .background(placeholderColor)
-                    .shimmer()
-            )
-            Spacer(modifier = Modifier.height(Spacing.xs))
-            // Button placeholder
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.End
-            ) {
-                Box(
-                    modifier = Modifier
-                        .width(80.dp)
-                        .height(32.dp)
-                        .clip(RoundedCornerShape(Dimensions.CornerRadius.medium))
-                        .background(placeholderColor)
-                        .shimmer()
-                )
-            }
-        }
-    }
+    TransactionItemSkeleton(modifier = modifier)
 }

@@ -10,14 +10,20 @@ import java.math.BigDecimal
 class MellatBankParser : BaseIranianBankParser() {
 
     private val pattern1 = Regex(
-        """^Ï¡Ï│ÏºÏ¿\d+\s+(Ï¿Ï▒Ï»ÏºÏ┤Ï¬|┘êÏºÏ▒█îÏ▓)\s*([0-9,]+)\s+┘àÏº┘åÏ»┘ç\s*([0-9,]+)\s+\d{2}/\d{2}/\d{2}-\d{2}:\d{2}""",
+        """^حساب\d+\s+(برداشت|واریز)\s*([0-9,]+)\s+مانده\s*([0-9,]+)\s+\d{2}/\d{2}/\d{2}-\d{2}:\d{2}""",
         RegexOption.MULTILINE
     )
     private val pattern2 = Regex(
-        """^┘êÏºÏ▒█îÏ▓ Ï│┘êÏ» ┌®┘êÏ¬Ïº┘ç ┘àÏ»Ï¬\s+Ï¡Ï│ÏºÏ¿\d+\s+┘àÏ¿┘äÏ║\s*([0-9,]+)\s+\d{2}/\d{2}/\d{2}""",
+        """^واریز سود کوتاه مدت\s+حساب\d+\s+مبلغ\s*([0-9,]+)\s+\d{2}/\d{2}/\d{2}""",
         RegexOption.MULTILINE
     )
-    private val accountPattern = Regex("""Ï¡Ï│ÏºÏ¿\s*(\d+)""")
+    // Government subsidy (یارانه) deposit:
+    // "واریز یارانه\nبه حساب 1234567890\nمبلغ 15,000,000 ریال\n1405/08/02"
+    private val subsidyPattern = Regex(
+        """^واریز\s+یارانه\s+(?:به\s+)?حساب\s*\d+\s+مبلغ\s*([0-9,]+)\s*ریال""",
+        RegexOption.MULTILINE
+    )
+    private val accountPattern = Regex("""حساب\s*(\d+)""")
 
     override fun getBankName(): String = "Mellat Bank"
 
@@ -35,7 +41,8 @@ class MellatBankParser : BaseIranianBankParser() {
 
     override fun isTransactionMessage(message: String): Boolean {
         val trimmed = message.trim()
-        return pattern1.containsMatchIn(trimmed) || pattern2.containsMatchIn(trimmed)
+        return pattern1.containsMatchIn(trimmed) || pattern2.containsMatchIn(trimmed) ||
+            subsidyPattern.containsMatchIn(trimmed)
     }
 
     override fun extractAmount(message: String): BigDecimal? {
@@ -48,7 +55,7 @@ class MellatBankParser : BaseIranianBankParser() {
                 null
             }
         }
-        pattern2.find(trimmed)?.let { match ->
+        (pattern2.find(trimmed) ?: subsidyPattern.find(trimmed))?.let { match ->
             val amountStr = match.groupValues[1].replace(",", "")
             return try {
                 BigDecimal(amountStr)
@@ -63,16 +70,20 @@ class MellatBankParser : BaseIranianBankParser() {
         val trimmed = message.trim()
         pattern1.find(trimmed)?.let { match ->
             return when (match.groupValues[1]) {
-                "Ï¿Ï▒Ï»ÏºÏ┤Ï¬" -> TransactionType.EXPENSE
-                "┘êÏºÏ▒█îÏ▓" -> TransactionType.INCOME
+                "برداشت" -> TransactionType.EXPENSE
+                "واریز" -> TransactionType.INCOME
                 else -> null
             }
         }
-        if (pattern2.containsMatchIn(trimmed)) {
+        if (pattern2.containsMatchIn(trimmed) || subsidyPattern.containsMatchIn(trimmed)) {
             return TransactionType.INCOME
         }
         return null
     }
+
+    override fun extractMerchant(message: String, sender: String): String? =
+        if (subsidyPattern.containsMatchIn(message.trim())) "Subsidy Deposit"
+        else super.extractMerchant(message, sender)
 
     override fun extractAccountLast4(message: String): String? {
         accountPattern.find(message)?.let { match ->

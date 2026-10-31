@@ -1,5 +1,6 @@
 package com.pennywiseai.tracker.presentation.loans
 
+import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.pennywiseai.tracker.data.currency.CurrencyConversionService
@@ -8,7 +9,9 @@ import com.pennywiseai.tracker.data.database.entity.LoanStatus
 import com.pennywiseai.tracker.data.database.entity.LoanDirection
 import com.pennywiseai.tracker.data.preferences.UserPreferencesRepository
 import com.pennywiseai.tracker.data.repository.LoanRepository
+import com.pennywiseai.tracker.widget.WidgetRefresher
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -20,6 +23,8 @@ import javax.inject.Inject
 data class LoansUiState(
     val activeLoans: List<LoanEntity> = emptyList(),
     val settledLoans: List<LoanEntity> = emptyList(),
+    /** All loans grouped by person — what the list renders. */
+    val people: List<LoanPerson> = emptyList(),
     val totalLentRemaining: BigDecimal = BigDecimal.ZERO,
     val totalBorrowedRemaining: BigDecimal = BigDecimal.ZERO,
     val summaryCurrency: String = "INR",
@@ -31,13 +36,16 @@ data class LoansUiState(
 class LoansViewModel @Inject constructor(
     private val loanRepository: LoanRepository,
     private val userPreferencesRepository: UserPreferencesRepository,
-    private val currencyConversionService: CurrencyConversionService
+    private val currencyConversionService: CurrencyConversionService,
+    @ApplicationContext private val context: Context
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(LoansUiState())
     val uiState: StateFlow<LoansUiState> = _uiState.asStateFlow()
 
     init {
+        // Corrects active loans whose stored remainder predates #876.
+        viewModelScope.launch { loanRepository.refreshActiveLoans() }
         loadLoans()
     }
 
@@ -80,6 +88,7 @@ class LoansViewModel @Inject constructor(
                 _uiState.value = LoansUiState(
                     activeLoans = inputs.activeLoans,
                     settledLoans = inputs.allLoans.filter { it.status == LoanStatus.SETTLED },
+                    people = groupLoansByPerson(inputs.allLoans),
                     totalLentRemaining = lent,
                     totalBorrowedRemaining = borrowed,
                     summaryCurrency = summaryCurrency,
@@ -105,11 +114,12 @@ class LoansViewModel @Inject constructor(
         var lent = BigDecimal.ZERO
         var borrowed = BigDecimal.ZERO
         for (loan in loans) {
-            val converted = currencyConversionService.convertAmount(
+            // Skip unconvertible loans rather than counting face value (#670).
+            val converted = currencyConversionService.convertAmountOrNull(
                 amount = loan.remainingAmount,
                 fromCurrency = loan.currency,
                 toCurrency = targetCurrency
-            )
+            ) ?: continue
             when (loan.direction) {
                 LoanDirection.LENT -> lent += converted
                 LoanDirection.BORROWED -> borrowed += converted
@@ -126,6 +136,15 @@ class LoansViewModel @Inject constructor(
             .filter { it.direction == LoanDirection.BORROWED }
             .fold(BigDecimal.ZERO) { acc, l -> acc + l.remainingAmount }
         return lent to borrowed
+    }
+
+    /** Settles every open loan with [person]; unpaid balances are forgiven, as with a single loan. */
+    fun settleUp(person: LoanPerson) {
+        viewModelScope.launch {
+            loanRepository.settleLoans(person.activeLoans.map { it.id })
+            // Forgiven balances count as spent, so the widgets' totals move (#938).
+            WidgetRefresher.refreshTransactionWidgets(context)
+        }
     }
 
     fun toggleShowSettled() {

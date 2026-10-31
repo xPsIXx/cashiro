@@ -3,10 +3,15 @@ package com.pennywiseai.tracker.data.repository
 import com.pennywiseai.tracker.data.database.dao.SubscriptionDao
 import com.pennywiseai.tracker.data.database.dao.TransactionDao
 import com.pennywiseai.tracker.data.database.entity.SubscriptionState
+import com.pennywiseai.tracker.data.database.entity.TransactionEntity
 import com.pennywiseai.tracker.data.database.entity.TransactionType
 import com.pennywiseai.tracker.data.model.*
+import com.pennywiseai.tracker.data.currency.CurrencyConversionService
+import com.pennywiseai.tracker.data.preferences.UserPreferencesRepository
+import com.pennywiseai.tracker.utils.forTotals
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.flow.first
 import java.math.BigDecimal
 import java.math.RoundingMode
 import java.time.LocalDate
@@ -21,7 +26,9 @@ import javax.inject.Singleton
 @Singleton
 class AiContextRepository @Inject constructor(
     private val transactionDao: TransactionDao,
-    private val subscriptionDao: SubscriptionDao
+    private val subscriptionDao: SubscriptionDao,
+    private val userPreferencesRepository: UserPreferencesRepository,
+    private val currencyConversionService: CurrencyConversionService
 ) {
     
     /**
@@ -29,13 +36,14 @@ class AiContextRepository @Inject constructor(
      */
     suspend fun getChatContext(): ChatContext = coroutineScope {
         val currentDate = LocalDate.now()
+        val baseCurrency = userPreferencesRepository.baseCurrency.first()
         
         // Launch parallel queries
-        val monthSummaryDeferred = async { getMonthSummary(currentDate) }
-        val recentTransactionsDeferred = async { getRecentTransactions(currentDate) }
-        val activeSubscriptionsDeferred = async { getActiveSubscriptions(currentDate) }
-        val topCategoriesDeferred = async { getTopCategories(currentDate) }
-        val quickStatsDeferred = async { getQuickStats(currentDate) }
+        val monthSummaryDeferred = async { getMonthSummary(currentDate, baseCurrency) }
+        val recentTransactionsDeferred = async { getRecentTransactions(currentDate, baseCurrency) }
+        val activeSubscriptionsDeferred = async { getActiveSubscriptions(currentDate, baseCurrency) }
+        val topCategoriesDeferred = async { getTopCategories(currentDate, baseCurrency) }
+        val quickStatsDeferred = async { getQuickStats(currentDate, baseCurrency) }
         
         ChatContext(
             currentDate = currentDate,
@@ -47,7 +55,7 @@ class AiContextRepository @Inject constructor(
         )
     }
     
-    private suspend fun getMonthSummary(currentDate: LocalDate): MonthSummary {
+    private suspend fun getMonthSummary(currentDate: LocalDate, baseCurrency: String): MonthSummary {
         val yearMonth = YearMonth.from(currentDate)
         val startOfMonth = yearMonth.atDay(1)
         val endOfMonth = yearMonth.atEndOfMonth()
@@ -56,18 +64,24 @@ class AiContextRepository @Inject constructor(
         val transactions = transactionDao.getTransactionsBetweenDatesList(
             startOfMonth.atStartOfDay(),
             endOfMonth.atTime(23, 59, 59)
-        )
-        
+        ).forTotals()  // exclude one-off purchases (#451) and loan-linked transactions from AI summary
+
         var totalIncome = BigDecimal.ZERO
         var totalExpense = BigDecimal.ZERO
         val transactionCount = transactions.size
         
         // Process in a single pass
         transactions.forEach { transaction ->
+            // Skip unconvertible amounts rather than counting face value (#670).
+            val convertedAmount = currencyConversionService.convertAmountOrNull(
+                amount = transaction.amount,
+                fromCurrency = transaction.currency,
+                toCurrency = baseCurrency
+            ) ?: return@forEach
             when (transaction.transactionType) {
-                TransactionType.INCOME -> totalIncome = totalIncome.add(transaction.amount)
-                TransactionType.EXPENSE -> totalExpense = totalExpense.add(transaction.amount)
-                TransactionType.CREDIT -> totalExpense = totalExpense.add(transaction.amount) // Credit counts as expense
+                TransactionType.INCOME -> totalIncome = totalIncome.add(convertedAmount)
+                TransactionType.EXPENSE -> totalExpense = totalExpense.add(convertedAmount)
+                TransactionType.CREDIT -> totalExpense = totalExpense.add(convertedAmount) // Credit counts as expense
                 TransactionType.TRANSFER -> {} // Transfers don't affect income/expense totals
                 TransactionType.INVESTMENT -> {} // Investments are asset reallocation, not expenses
             }
@@ -82,7 +96,7 @@ class AiContextRepository @Inject constructor(
         )
     }
     
-    private suspend fun getRecentTransactions(currentDate: LocalDate, days: Int = 14): List<TransactionSummary> {
+    private suspend fun getRecentTransactions(currentDate: LocalDate, baseCurrency: String, days: Int = 14): List<TransactionSummary> {
         val startDate = currentDate.minusDays(days.toLong())
         
         val transactions = transactionDao.getTransactionsBetweenDatesList(
@@ -93,15 +107,23 @@ class AiContextRepository @Inject constructor(
         return transactions
             .sortedByDescending { it.dateTime } // Most recent first
             .take(20) // Limit to 20 most recent
-            .map { transaction ->
+            .mapNotNull { transaction ->
                 val daysAgo = ChronoUnit.DAYS.between(
                     transaction.dateTime.toLocalDate(),
                     currentDate
                 ).toInt()
-                
+
+                // Drop unconvertible amounts from the AI's view rather than feeding
+                // it a mislabeled face-value figure (#670).
+                val convertedAmount = currencyConversionService.convertAmountOrNull(
+                    amount = transaction.amount,
+                    fromCurrency = transaction.currency,
+                    toCurrency = baseCurrency
+                ) ?: return@mapNotNull null
+
                 TransactionSummary(
                     merchantName = transaction.merchantName,
-                    amount = transaction.amount,
+                    amount = convertedAmount,
                     category = transaction.category ?: "Others",
                     daysAgo = daysAgo,
                     dateTime = transaction.dateTime,
@@ -110,17 +132,23 @@ class AiContextRepository @Inject constructor(
             }
     }
     
-    private suspend fun getActiveSubscriptions(currentDate: LocalDate): List<SubscriptionSummary> {
+    private suspend fun getActiveSubscriptions(currentDate: LocalDate, baseCurrency: String): List<SubscriptionSummary> {
         return subscriptionDao.getSubscriptionsByStateList(SubscriptionState.ACTIVE)
-            .map { subscription ->
+            .mapNotNull { subscription ->
                 val daysUntilPayment = ChronoUnit.DAYS.between(
                     currentDate,
                     subscription.nextPaymentDate
                 ).toInt()
-                
+
+                val convertedAmount = currencyConversionService.convertAmountOrNull(
+                    amount = subscription.amount,
+                    fromCurrency = subscription.currency,
+                    toCurrency = baseCurrency
+                ) ?: return@mapNotNull null
+
                 SubscriptionSummary(
                     merchantName = subscription.merchantName,
-                    amount = subscription.amount,
+                    amount = convertedAmount,
                     nextPaymentDays = daysUntilPayment
                 )
             }
@@ -128,7 +156,14 @@ class AiContextRepository @Inject constructor(
             .take(10) // Limit to 10 subscriptions
     }
     
-    private suspend fun getTopCategories(currentDate: LocalDate): List<CategorySpending> {
+    /** This month's spend in one category, for the chat's lookup tool (#170). Null = nothing found. */
+    suspend fun getCategorySpending(category: String): CategorySpending? {
+        val baseCurrency = userPreferencesRepository.baseCurrency.first()
+        return getTopCategories(LocalDate.now(), baseCurrency, limit = Int.MAX_VALUE)
+            .firstOrNull { it.category.equals(category, ignoreCase = true) }
+    }
+
+    private suspend fun getTopCategories(currentDate: LocalDate, baseCurrency: String, limit: Int = 5): List<CategorySpending> {
         val yearMonth = YearMonth.from(currentDate)
         val startOfMonth = yearMonth.atDay(1)
         val endOfMonth = yearMonth.atEndOfMonth()
@@ -136,8 +171,8 @@ class AiContextRepository @Inject constructor(
         val transactions = transactionDao.getTransactionsBetweenDatesList(
             startOfMonth.atStartOfDay(),
             endOfMonth.atTime(23, 59, 59)
-        )
-        
+        ).forTotals()  // exclude one-off purchases (#451) and loan-linked transactions from AI summary
+
         // Group by category and calculate spending
         val categoryMap = mutableMapOf<String, MutableList<BigDecimal>>()
         var totalExpense = BigDecimal.ZERO
@@ -146,8 +181,13 @@ class AiContextRepository @Inject constructor(
             .filter { it.transactionType == TransactionType.EXPENSE }
             .forEach { transaction ->
                 val category = transaction.category ?: "Others"
-                categoryMap.getOrPut(category) { mutableListOf() }.add(transaction.amount)
-                totalExpense = totalExpense.add(transaction.amount)
+                val convertedAmount = currencyConversionService.convertAmountOrNull(
+                    amount = transaction.amount,
+                    fromCurrency = transaction.currency,
+                    toCurrency = baseCurrency
+                ) ?: return@forEach // skip unconvertible rather than face-value (#670)
+                categoryMap.getOrPut(category) { mutableListOf() }.add(convertedAmount)
+                totalExpense = totalExpense.add(convertedAmount)
             }
         
         return categoryMap.map { (category, amounts) ->
@@ -166,10 +206,10 @@ class AiContextRepository @Inject constructor(
             )
         }
             .sortedByDescending { it.amount }
-            .take(5) // Top 5 categories
+            .take(limit)
     }
     
-    private suspend fun getQuickStats(currentDate: LocalDate): QuickStats {
+    private suspend fun getQuickStats(currentDate: LocalDate, baseCurrency: String): QuickStats {
         val yearMonth = YearMonth.from(currentDate)
         val startOfMonth = yearMonth.atDay(1)
         val endOfMonth = yearMonth.atEndOfMonth()
@@ -177,27 +217,44 @@ class AiContextRepository @Inject constructor(
         val transactions = transactionDao.getTransactionsBetweenDatesList(
             startOfMonth.atStartOfDay(),
             endOfMonth.atTime(23, 59, 59)
-        )
-        
+        ).forTotals()  // exclude one-off purchases (#451) and loan-linked transactions from AI summary
+
         val expenses = transactions.filter { it.transactionType == TransactionType.EXPENSE }
         
         // Calculate average daily spending
-        val totalExpense = expenses.sumOf { it.amount.toDouble() }.toBigDecimal()
+        val convertedAmounts = expenses.mapNotNull {
+            currencyConversionService.convertAmountOrNull(
+                amount = it.amount,
+                fromCurrency = it.currency,
+                toCurrency = baseCurrency
+            )
+        }
+        val totalExpense = convertedAmounts.fold(BigDecimal.ZERO) { acc, amount -> acc.add(amount) }
         val daysElapsed = currentDate.dayOfMonth
         val avgDailySpending = if (daysElapsed > 0) {
             totalExpense.divide(BigDecimal(daysElapsed), 2, RoundingMode.HALF_UP)
         } else BigDecimal.ZERO
         
-        // Find largest expense
-        val largestExpense = expenses.maxByOrNull { it.amount }?.let { transaction ->
+        // Find largest expense (by converted base currency amount for fair comparison)
+        var largestExpenseEntity: TransactionEntity? = null
+        var largestConvertedAmount: BigDecimal = BigDecimal.ZERO
+
+        expenses.zip(convertedAmounts).forEach { (transaction, converted) ->
+            if (converted > largestConvertedAmount) {
+                largestConvertedAmount = converted
+                largestExpenseEntity = transaction
+            }
+        }
+
+        val largestExpense = largestExpenseEntity?.let { transaction ->
             val daysAgo = ChronoUnit.DAYS.between(
                 transaction.dateTime.toLocalDate(),
                 currentDate
             ).toInt()
-            
+
             TransactionSummary(
                 merchantName = transaction.merchantName,
-                amount = transaction.amount,
+                amount = largestConvertedAmount,
                 category = transaction.category ?: "Others",
                 daysAgo = daysAgo
             )

@@ -1,5 +1,10 @@
 package com.pennywiseai.tracker.ui.screens.analytics
 
+import com.pennywiseai.tracker.utils.AppDates
+
+import androidx.compose.ui.res.pluralStringResource
+import com.pennywiseai.tracker.R
+import androidx.compose.ui.res.stringResource
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
@@ -17,11 +22,14 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.pennywiseai.tracker.ui.components.CategoryIcon
-import com.pennywiseai.tracker.ui.components.PennyWiseCard
+import com.pennywiseai.tracker.ui.components.cards.PennyWiseCardV2
 import com.pennywiseai.tracker.ui.icons.CategoryMapping
 import com.pennywiseai.tracker.ui.theme.*
 import com.pennywiseai.tracker.utils.CurrencyFormatter
+import com.pennywiseai.tracker.ui.theme.Spacing
+import com.pennywiseai.tracker.domain.spending.SpendForecast
 import java.math.BigDecimal
+import com.pennywiseai.tracker.ui.icons.categoryLabel
 
 @Composable
 fun AnalyticsSummaryCard(
@@ -32,6 +40,7 @@ fun AnalyticsSummaryCard(
     topCategoryPercentage: Float,
     currency: String,
     isLoading: Boolean = false,
+    forecast: SpendForecast? = null,
     modifier: Modifier = Modifier
 ) {
     // Animate alpha on load: 0 → 1
@@ -44,7 +53,7 @@ fun AnalyticsSummaryCard(
         label = "summary_alpha"
     )
 
-    PennyWiseCard(
+    PennyWiseCardV2(
         modifier = modifier.fillMaxWidth()
     ) {
         Column(
@@ -62,7 +71,7 @@ fun AnalyticsSummaryCard(
                 // Total Amount - bolder typography
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = "TOTAL",
+                        text = stringResource(R.string.analytics_summary_total),
                         style = MaterialTheme.typography.labelMedium,
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -105,7 +114,7 @@ fun AnalyticsSummaryCard(
                             tint = MaterialTheme.colorScheme.onTertiaryContainer
                         )
                         Text(
-                            text = "$transactionCount TXNS",
+                            text = pluralStringResource(R.plurals.analytics_summary_txns, transactionCount, transactionCount),
                             style = MaterialTheme.typography.labelLarge,
                             fontWeight = FontWeight.Bold,
                             color = MaterialTheme.colorScheme.onTertiaryContainer
@@ -116,7 +125,7 @@ fun AnalyticsSummaryCard(
 
             Spacer(modifier = Modifier.height(Spacing.md))
             HorizontalDivider(
-                thickness = 1.5.dp,
+                thickness = Dimensions.Component.dividerThicknessEmphasis,
                 color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
             )
             Spacer(modifier = Modifier.height(Spacing.md))
@@ -130,7 +139,7 @@ fun AnalyticsSummaryCard(
                 // Average Amount with /day suffix
                 Column {
                     Text(
-                        text = "AVERAGE",
+                        text = stringResource(R.string.analytics_summary_average),
                         style = MaterialTheme.typography.labelSmall,
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -148,9 +157,9 @@ fun AnalyticsSummaryCard(
                             color = MaterialTheme.colorScheme.onSurface
                         )
                         Text(
-                            text = " /day",
+                            text = stringResource(R.string.analytics_summary_per_day),
                             style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.padding(bottom = 2.dp)
                         )
                     }
@@ -163,7 +172,7 @@ fun AnalyticsSummaryCard(
 
                     Column(horizontalAlignment = Alignment.End) {
                         Text(
-                            text = "${topCategoryPercentage.toInt()}% of total",
+                            text = stringResource(R.string.analytics_summary_percent_of_total, topCategoryPercentage.toInt()),
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.padding(bottom = 4.dp)
@@ -171,20 +180,20 @@ fun AnalyticsSummaryCard(
                         Row(
                             modifier = Modifier
                                 .background(
-                                    color = categoryInfo.color.copy(alpha = 0.15f),
+                                    color = CategoryMapping.colorFor(topCategory).copy(alpha = 0.15f),
                                     shape = RoundedCornerShape(8.dp)
                                 )
-                                .padding(horizontal = 10.dp, vertical = 6.dp),
+                                .padding(horizontal = Spacing.sm, vertical = Spacing.xs),
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            horizontalArrangement = Arrangement.spacedBy(Spacing.xs)
                         ) {
                             CategoryIcon(
                                 category = topCategory,
                                 size = 16.dp,
-                                tint = categoryInfo.color
+                                tint = CategoryMapping.colorFor(topCategory)
                             )
                             Text(
-                                text = topCategory,
+                                text = categoryLabel(topCategory),
                                 style = MaterialTheme.typography.labelMedium,
                                 fontWeight = FontWeight.Medium,
                                 color = MaterialTheme.colorScheme.onSurface
@@ -193,6 +202,66 @@ fun AnalyticsSummaryCard(
                     }
                 }
             }
+
+            forecast?.let { ForecastSection(it) }
+        }
+    }
+}
+
+/** Month-end forecast under the summary, with the "above your usual" note when it applies. */
+@Composable
+private fun ForecastSection(forecast: SpendForecast) {
+    Spacer(modifier = Modifier.height(Spacing.md))
+    HorizontalDivider(
+        thickness = Dimensions.Component.dividerThicknessEmphasis,
+        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+    )
+    Spacer(modifier = Modifier.height(Spacing.md))
+    Text(
+        text = stringResource(
+            R.string.analytics_forecast_for,
+            forecast.periodEnd.format(AppDates.dayMonthFormatter())
+        ).uppercase(),
+        style = PennyWiseText.overline,
+        color = MaterialTheme.colorScheme.onSurfaceVariant
+    )
+    Text(
+        text = CurrencyFormatter.formatCurrency(forecast.projected, forecast.currency),
+        style = MaterialTheme.typography.titleLarge,
+        fontWeight = FontWeight.SemiBold,
+        color = MaterialTheme.colorScheme.onSurface
+    )
+    val over = forecast.overUsual ?: return
+    Spacer(modifier = Modifier.height(Spacing.sm))
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(
+                color = MaterialTheme.colorScheme.surfaceContainerHighest,
+                shape = RoundedCornerShape(Spacing.sm)
+            )
+            .padding(horizontal = Spacing.smd, vertical = Spacing.sm),
+        verticalArrangement = Arrangement.spacedBy(Spacing.xxs)
+    ) {
+        Text(
+            text = stringResource(
+                R.string.analytics_forecast_above_usual,
+                CurrencyFormatter.formatCurrency(over, forecast.currency)
+            ),
+            style = MaterialTheme.typography.labelLarge,
+            fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.expense
+        )
+        forecast.dailyToStayAtUsual?.let { daily ->
+            Text(
+                text = stringResource(
+                    R.string.analytics_forecast_stay_under,
+                    CurrencyFormatter.formatCurrency(daily, forecast.currency),
+                    CurrencyFormatter.formatCurrency(forecast.usual!!, forecast.currency)
+                ),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
         }
     }
 }

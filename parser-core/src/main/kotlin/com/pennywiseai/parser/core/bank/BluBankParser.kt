@@ -4,21 +4,21 @@ import com.pennywiseai.parser.core.TransactionType
 import java.math.BigDecimal
 
 /**
- * Parser for blu Bank (Ï¿┘ä┘ê), Iran.
+ * Parser for blu Bank (بلو), Iran.
  *
  * Handles line-based Persian SMS such as:
- *   Ï¿┘ä┘ê
- *   Ï¿Ï▒Ï»ÏºÏ┤Ï¬ ┘¥┘ê┘ä
- *   <NAME> Ï╣Ï▓█îÏ▓Ïî 2,500,000 Ï▒█îÏº┘ä ÏºÏ▓ Ï¡Ï│ÏºÏ¿ Ï┤┘àÏº ┘¥Ï▒█îÏ».
- *   ┘à┘êÏ¼┘êÏ»█î: 488,152 Ï▒█îÏº┘ä
- *   █À:█▓█©
- *   █▒█┤█░█Á.█░█│.█▓█▓
+ *   بلو
+ *   برداشت پول
+ *   <NAME> عزیز، 2,500,000 ریال از حساب شما پرید.
+ *   موجودی: 488,152 ریال
+ *   ۷:۲۸
+ *   ۱۴۰۵.۰۳.۲۲
  *
  * Notes:
  * - Amounts use Western digits with comma grouping; only date/time use Persian
  *   digits, which we do not parse (timestamp comes from SMS metadata).
- * - Type signals: "Ï¿Ï▒Ï»ÏºÏ┤Ï¬ ┘¥┘ê┘ä" / "┘¥Ï▒█îÏ»" => EXPENSE (money left the account);
- *   "┘êÏºÏ▒█îÏ▓ ┘¥┘ê┘ä" / "┘åÏ┤Ï│Ï¬" => INCOME (money landed in the account).
+ * - Type signals: "برداشت پول" / "پرید" => EXPENSE (money left the account);
+ *   "واریز پول" / "نشست" => INCOME (money landed in the account).
  * - blu samples carry no card/account number, so accountLast4 is always null.
  * - Currency is Iranian Rial (IRR).
  *
@@ -34,14 +34,14 @@ class BluBankParser : BankParser() {
 
     override fun getCurrency() = "IRR"
 
-    // "Ï¿┘ä┘ê" = blu (bank-name line; strongest in-body signal).
-    private val bankNameMarker = "Ï¿┘ä┘ê"
+    // "بلو" = blu (bank-name line; strongest in-body signal).
+    private val bankNameMarker = "بلو"
 
-    // "Ï▒█îÏº┘ä" = Rial. Main sentence amount: a comma-grouped number before "Ï▒█îÏº┘ä".
-    private val amountPattern = Regex("""([0-9][0-9,]*)\s*Ï▒█îÏº┘ä""")
+    // "ریال" = Rial. Main sentence amount: a comma-grouped number before "ریال".
+    private val amountPattern = Regex("""([0-9][0-9,]*)\s*ریال""")
 
-    // "┘à┘êÏ¼┘êÏ»█î:" = balance, followed by a comma-grouped number before "Ï▒█îÏº┘ä".
-    private val balancePattern = Regex("""┘à┘êÏ¼┘êÏ»█î:\s*([0-9][0-9,]*)\s*Ï▒█îÏº┘ä""")
+    // "موجودی:" = balance, followed by a comma-grouped number before "ریال".
+    private val balancePattern = Regex("""موجودی:\s*([0-9][0-9,]*)\s*ریال""")
 
     override fun canHandle(sender: String): Boolean {
         val digits = sender.filter { it.isDigit() }
@@ -51,12 +51,12 @@ class BluBankParser : BankParser() {
     override fun isTransactionMessage(message: String): Boolean {
         if (!message.contains(bankNameMarker)) return false
         // Must carry one of the action signals.
-        return message.contains("Ï¿Ï▒Ï»ÏºÏ┤Ï¬ ┘¥┘ê┘ä") || message.contains("┘¥Ï▒█îÏ»") ||
-                message.contains("┘êÏºÏ▒█îÏ▓ ┘¥┘ê┘ä") || message.contains("┘åÏ┤Ï│Ï¬")
+        return message.contains("برداشت پول") || message.contains("پرید") ||
+                message.contains("واریز پول") || message.contains("نشست")
     }
 
     override fun extractAmount(message: String): BigDecimal? {
-        // First "<number> Ï▒█îÏº┘ä" is the transaction amount (balance line comes later).
+        // First "<number> ریال" is the transaction amount (balance line comes later).
         amountPattern.find(message)?.let { match ->
             val amountStr = match.groupValues[1].replace(",", "")
             return try {
@@ -69,10 +69,10 @@ class BluBankParser : BankParser() {
     }
 
     override fun extractTransactionType(message: String): TransactionType? {
-        if (message.contains("Ï¿Ï▒Ï»ÏºÏ┤Ï¬ ┘¥┘ê┘ä") || message.contains("┘¥Ï▒█îÏ»")) {
+        if (message.contains("برداشت پول") || message.contains("پرید")) {
             return TransactionType.EXPENSE
         }
-        if (message.contains("┘êÏºÏ▒█îÏ▓ ┘¥┘ê┘ä") || message.contains("┘åÏ┤Ï│Ï¬")) {
+        if (message.contains("واریز پول") || message.contains("نشست")) {
             return TransactionType.INCOME
         }
         return null

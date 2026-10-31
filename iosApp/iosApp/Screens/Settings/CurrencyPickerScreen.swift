@@ -24,7 +24,9 @@ struct CurrencyPickerScreen: View {
                 HStack(spacing: AppSpacing.md) {
                     Text(currency.symbol)
                         .font(.title3)
-                        .frame(width: 32)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.5)
+                        .frame(width: 40)
 
                     VStack(alignment: .leading, spacing: AppSpacing.xs) {
                         Text(currency.code)
@@ -39,7 +41,7 @@ struct CurrencyPickerScreen: View {
 
                     if currencyManager.displayCurrency == currency.code {
                         Image(systemName: "checkmark.circle.fill")
-                            .foregroundStyle(.blue)
+                            .foregroundStyle(ThemeManager.shared.accentColor)
                     }
                 }
                 .contentShape(Rectangle())
@@ -108,5 +110,8 @@ extension CurrencyPickerScreen {
         CurrencyInfo(code: "NGN", name: "Nigerian Naira", symbol: "\u{20A6}"),
         CurrencyInfo(code: "GHS", name: "Ghanaian Cedi", symbol: "GH\u{20B5}"),
         CurrencyInfo(code: "ETB", name: "Ethiopian Birr", symbol: "ETB"),
+        CurrencyInfo(code: "ARS", name: "Argentine Peso", symbol: "AR$"),
+        CurrencyInfo(code: "CLP", name: "Chilean Peso", symbol: "CL$"),
+        CurrencyInfo(code: "UYU", name: "Uruguayan Peso", symbol: "$U"),
     ]
 }

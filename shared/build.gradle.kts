@@ -1,19 +1,23 @@
 plugins {
     alias(libs.plugins.kotlin.multiplatform)
     alias(libs.plugins.android.multiplatform.library)
-    alias(libs.plugins.ksp)
+    alias(libs.plugins.kotlin.serialization)
+    id("com.google.devtools.ksp")
 }
 
 kotlin {
-    androidLibrary {
+    android {
         namespace = "com.pennywiseai.shared"
         compileSdk = 36
         minSdk = 26
+        withHostTest {}
     }
 
-    iosX64()
-    iosArm64()
-    iosSimulatorArm64()
+    if (org.jetbrains.kotlin.konan.target.HostManager.hostIsMac) {
+        iosX64()
+        iosArm64()
+        iosSimulatorArm64()
+    }
 
     targets.withType<org.jetbrains.kotlin.gradle.plugin.mpp.KotlinNativeTarget>().configureEach {
         binaries.framework {
@@ -26,8 +30,11 @@ kotlin {
         val commonMain by getting {
             dependencies {
                 implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2")
+                implementation(libs.kotlinx.serialization.json)
+                implementation("org.jetbrains.kotlinx:kotlinx-datetime:0.7.1") // same as parser-core's
                 implementation(libs.androidx.room.runtime)
                 implementation(libs.androidx.sqlite.bundled)
+                implementation(project(":parser-core"))
             }
         }
         val commonTest by getting {
@@ -37,18 +44,26 @@ kotlin {
             }
         }
         val androidMain by getting {
+            // Bank SMS parsers are platform code in parser-core (no common API),
+            // so the one bridge file compiles into each platform source set.
+            kotlin.srcDir("src/bankParserMain/kotlin")
             dependencies {
                 implementation(libs.pdfbox.android)
             }
+        }
+        if (org.jetbrains.kotlin.konan.target.HostManager.hostIsMac) {
+            iosMain { kotlin.srcDir("src/bankParserMain/kotlin") }
         }
     }
 }
 
 dependencies {
     add("kspAndroid", libs.androidx.room.compiler)
-    add("kspIosX64", libs.androidx.room.compiler)
-    add("kspIosArm64", libs.androidx.room.compiler)
-    add("kspIosSimulatorArm64", libs.androidx.room.compiler)
+    if (org.jetbrains.kotlin.konan.target.HostManager.hostIsMac) {
+        add("kspIosX64", libs.androidx.room.compiler)
+        add("kspIosArm64", libs.androidx.room.compiler)
+        add("kspIosSimulatorArm64", libs.androidx.room.compiler)
+    }
 }
 
 ksp {

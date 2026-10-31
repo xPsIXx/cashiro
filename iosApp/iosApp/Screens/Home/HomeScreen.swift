@@ -9,10 +9,15 @@ struct HomeScreen: View {
     var onSeeAllTransactions: (() -> Void)? = nil
 
     @ObservedObject private var currencyManager = CurrencyManager.shared
+    @ObservedObject private var themeManager = ThemeManager.shared
     @StateObject private var viewModel = HomeViewModel()
     @State private var showAddTransaction = false
     @State private var selectedDetail: SharedRecentTransactionItem?
     @State private var appeared = false
+    @State private var fabExpanded = false
+    @State private var showImportPicker = false
+    @State private var importResult: String?
+    @State private var pendingDelete: SharedRecentTransactionItem?
     @Environment(\.isAmoledActive) private var isAmoled
 
     var body: some View {
@@ -26,9 +31,9 @@ struct HomeScreen: View {
 
                     // Spending Summary Card
                     SpendingSummaryCard(
-                        monthlyExpenseMinor: viewModel.monthlyExpenseMinor,
-                        monthlyIncomeMinor: viewModel.monthlyIncomeMinor,
-                        monthlyNetMinor: viewModel.monthlyNetMinor
+                        expense: viewModel.monthlyExpense,
+                        income: viewModel.monthlyIncome,
+                        net: viewModel.monthlyNet
                     )
                     .opacity(appeared ? 1 : 0)
                     .offset(y: appeared ? 0 : 12)
@@ -64,7 +69,9 @@ struct HomeScreen: View {
                 }
                 .padding(.horizontal, AppSpacing.md)
                 .padding(.top, AppSpacing.sm)
-                .padding(.bottom, 80)
+                // Clears the floating + (56pt + its 24pt padding) so the last
+                // row and the empty state are never under it.
+                .padding(.bottom, 104)
             }
             .refreshable {
                 viewModel.loadHome()
@@ -83,11 +90,47 @@ struct HomeScreen: View {
             NavigationStack {
                 AddEditTransactionView(facade: viewModel.facade, onSave: {
                     viewModel.loadHome()
-                })
+                }, showsCancel: true)
             }
         }
         .sheet(item: $selectedDetail) { item in
-            TransactionDetailSheet(item: item)
+            TransactionDetailSheet(item: item, onUpdate: { viewModel.loadHome() })
+        }
+        .fileImporter(
+            isPresented: $showImportPicker,
+            allowedContentTypes: [.pdf]
+        ) { result in
+            if case .success(let url) = result {
+                importResult = StatementImportService.importPDF(at: url)
+                viewModel.loadHome()
+            }
+        }
+        // Same confirmation as the detail screen's Delete.
+        .alert(
+            "Delete Transaction",
+            isPresented: Binding(
+                get: { pendingDelete != nil },
+                set: { if !$0 { pendingDelete = nil } }
+            ),
+            presenting: pendingDelete
+        ) { item in
+            Button("Delete", role: .destructive) {
+                viewModel.deleteTransaction(id: item.transactionId)
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: { item in
+            Text("Are you sure you want to delete the transaction \"\(item.merchantName)\"?")
+        }
+        .alert(
+            "Statement Import",
+            isPresented: Binding(
+                get: { importResult != nil },
+                set: { if !$0 { importResult = nil } }
+            )
+        ) {
+            Button("OK", role: .cancel) { importResult = nil }
+        } message: {
+            Text(importResult ?? "")
         }
     }
 
@@ -110,13 +153,13 @@ struct HomeScreen: View {
                 emptyTransactionsView
             } else {
                 ForEach(Array(viewModel.recentTransactions.prefix(5))) { item in
-                    TransactionRow(
-                        item: item,
-                        onViewDetails: { selectedDetail = item }
-                    )
+                    Button { selectedDetail = item } label: {
+                        TransactionRow(item: item)
+                    }
+                    .buttonStyle(.plain)
                     .contextMenu {
                         Button(role: .destructive) {
-                            viewModel.deleteTransaction(id: item.transactionId)
+                            pendingDelete = item
                         } label: {
                             Label("Delete", systemImage: "trash")
                         }
@@ -126,21 +169,15 @@ struct HomeScreen: View {
         }
     }
 
-    @ViewBuilder
     private var emptyTransactionsView: some View {
-        VStack(spacing: AppSpacing.md) {
-            Image(systemName: "tray")
-                .font(.largeTitle)
-                .foregroundStyle(.quaternary)
-            Text("No transactions yet")
-                .font(AppTypography.body)
-                .foregroundStyle(.secondary)
-            Text("Tap + to add your first transaction")
-                .font(AppTypography.caption)
-                .foregroundStyle(.tertiary)
+        EmptyStateView(
+            title: "No Transactions Yet",
+            systemImage: "tray",
+            message: "Add one by hand or import a statement."
+        ) {
+            Button("Add Transaction") { showAddTransaction = true }
+                .buttonStyle(.borderedProminent)
         }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, AppSpacing.xl)
     }
 
     // MARK: - Status Messages
@@ -178,30 +215,82 @@ struct HomeScreen: View {
                 .padding(.vertical, AppSpacing.xs)
                 .background(Capsule().fill(Color.indigo.opacity(0.15)))
                 .foregroundStyle(.indigo)
-            Text(CurrencyFormatter.format(
-                amountMinor: viewModel.subscriptionMonthlyTotal,
-                currencyCode: CurrencyManager.shared.displayCurrency
-            ))
-            .font(AppTypography.headline)
-            .foregroundStyle(.primary)
+            // One line per currency: never one cross-currency sum.
+            VStack(alignment: .trailing, spacing: 2) {
+                ForEach(viewModel.subscriptionTotals, id: \.currency) { total in
+                    Text(CurrencyFormatter.format(amountMinor: total.amountMinor, currencyCode: total.currency))
+                        .font(AppTypography.headline)
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                }
+            }
         }
         .padding(AppSpacing.md)
-        .background(RoundedRectangle(cornerRadius: 12).fill(AppColors.secondaryGroupedBackground(isAmoled: isAmoled)))
+        .background(RoundedRectangle(cornerRadius: 12).fill(AppColors.surface(isAmoled: isAmoled)))
     }
 
     // MARK: - Floating Add Button
 
+    /// Android-style speed dial: + expands into labeled actions instead of
+    /// jumping straight to one form, so statement import is one tap away.
     private var addButton: some View {
-        Button {
-            showAddTransaction = true
-        } label: {
-            Image(systemName: "plus")
-                .font(.title2.bold())
-                .foregroundStyle(.white)
-                .frame(width: 56, height: 56)
-                .background(Circle().fill(.blue))
-                .shadow(color: .blue.opacity(0.3), radius: 8, x: 0, y: 4)
+        VStack(alignment: .trailing, spacing: AppSpacing.md) {
+            if fabExpanded {
+                fabAction(
+                    label: "Import Statement",
+                    systemImage: "doc.text.fill"
+                ) {
+                    showImportPicker = true
+                }
+                fabAction(
+                    label: "Add Transaction",
+                    systemImage: "square.and.pencil"
+                ) {
+                    showAddTransaction = true
+                }
+            }
+
+            Button {
+                withAnimation(.spring(response: 0.3, dampingFraction: 0.75)) {
+                    fabExpanded.toggle()
+                }
+            } label: {
+                Image(systemName: "plus")
+                    .font(.title2.bold())
+                    .foregroundStyle(themeManager.onAccentColor)
+                    .rotationEffect(.degrees(fabExpanded ? 45 : 0))
+                    .frame(width: 56, height: 56)
+                    .background(Circle().fill(themeManager.accentColor))
+                    .shadow(color: themeManager.accentColor.opacity(0.3), radius: 8, x: 0, y: 4)
+            }
         }
         .padding(AppSpacing.lg)
+    }
+
+    private func fabAction(
+        label: String,
+        systemImage: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button {
+            withAnimation(.spring(response: 0.3, dampingFraction: 0.75)) {
+                fabExpanded = false
+            }
+            action()
+        } label: {
+            HStack(spacing: AppSpacing.sm) {
+                Text(label)
+                    .font(AppTypography.caption)
+                    .fontWeight(.semibold)
+                Image(systemName: systemImage)
+                    .font(.body)
+            }
+            .foregroundStyle(themeManager.onAccentColor)
+            .padding(.horizontal, AppSpacing.md)
+            .frame(height: 44)
+            .background(Capsule().fill(themeManager.accentColor))
+            .shadow(color: themeManager.accentColor.opacity(0.25), radius: 6, x: 0, y: 3)
+        }
+        .transition(.scale(scale: 0.6, anchor: .bottomTrailing).combined(with: .opacity))
     }
 }

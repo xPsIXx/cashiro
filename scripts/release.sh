@@ -1,7 +1,11 @@
 #!/bin/bash
 
 # Local release script that replicates .github/workflows/release.yml
-# Usage: ./scripts/release.sh [patch|minor|major] [--dry-run]
+# Usage: ./scripts/release.sh [patch|minor|major] [--yes] [--play] [--no-claude] [--web] [--no-relay] [--dry-run]
+#
+# One-shot headless release (build + Claude notes + tag + push + GitHub release
+# + Play Console draft upload):
+#   ./scripts/release.sh patch --yes --play
 
 set -e
 
@@ -35,13 +39,35 @@ cleanup_on_exit() {
 # Set trap for cleanup on exit
 trap cleanup_on_exit EXIT INT TERM
 
-# Parse arguments
-VERSION_BUMP=${1:-patch}
+# Parse arguments (order-independent): bump keyword + flags.
+#   -y, --yes     auto-confirm every prompt (non-interactive / CI)
+#   --play        after building the .aab, upload it to Play Console as a draft
+#                 via scripts/upload-play.sh (implies building the bundle)
+#   --no-claude   skip Claude release-note generation, use the commit-list format
+#   --web         also deploy pennywise-web to Cloudflare
+#   --no-relay    skip the AI relay deploy (it otherwise deploys when relay/ changed)
+#   --dry-run     print the plan + release notes, change nothing
+VERSION_BUMP="patch"
 DRY_RUN=""
-if [ "$2" = "--dry-run" ]; then
-    DRY_RUN="true"
-    echo -e "${YELLOW}🔍 DRY RUN MODE${NC}"
-fi
+AUTO_YES=""
+DO_PLAY=""
+NO_CLAUDE=""
+DO_WEB=""
+NO_RELAY=""
+for arg in "$@"; do
+    case "$arg" in
+        patch|minor|major) VERSION_BUMP="$arg" ;;
+        -y|--yes)          AUTO_YES="true" ;;
+        --play)            DO_PLAY="true" ;;
+        --no-claude)       NO_CLAUDE="true" ;;
+        --web)             DO_WEB="true" ;;
+        --no-relay)        NO_RELAY="true" ;;
+        --dry-run)         DRY_RUN="true"; echo -e "${YELLOW}🔍 DRY RUN MODE${NC}" ;;
+        *) echo -e "${RED}Unknown argument: $arg${NC}"
+           echo "Usage: $0 [patch|minor|major] [--yes] [--play] [--no-claude] [--web] [--no-relay] [--dry-run]"
+           exit 1 ;;
+    esac
+done
 
 echo -e "${GREEN}🚀 Starting release (${VERSION_BUMP} bump)${NC}"
 
@@ -78,64 +104,109 @@ fi
 # 4. Generate changelog
 LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
 
-# Check if claude CLI is available and user wants to use it
+# The AI relay (relay/, ADR 0002) ships with the app: deploy it whenever it
+# changed since the last release, so the live relay matches the app's tools.
+DO_RELAY=""
+if [ -z "$NO_RELAY" ] && { [ -z "$LAST_TAG" ] || ! git diff --quiet "$LAST_TAG" HEAD -- relay/; }; then
+    DO_RELAY="true"
+fi
+
+# Generate release notes via the Claude Agent SDK with schema-enforced
+# structured output. Runs on the local Claude subscription (same auth as the
+# `claude` CLI — no API key). One call returns {summary, highlights[]}; both the
+# GitHub notes and the F-Droid/Play changelog are formatted from it below, so
+# there is never any stray preamble or markdown fence to strip. Needs node + jq;
+# falls back to the commit-list format otherwise (or with --no-claude).
+NOTES_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/release-notes"
+NOTES_JSON=""
 USE_CLAUDE=false
-if command -v claude &> /dev/null; then
-    echo ""
-    read -p "Generate release notes with Claude AI? (y/n) " -n 1 -r
-    echo
-    if [[ $REPLY =~ ^[Yy]$ ]]; then
-        USE_CLAUDE=true
+
+if [ -z "$NO_CLAUDE" ] && [ -n "$LAST_TAG" ] && command -v node &> /dev/null && command -v jq &> /dev/null; then
+    PROCEED_AI=true
+    if [ -z "$AUTO_YES" ]; then
+        echo ""
+        read -p "Generate release notes with Claude? (y/n) " -n 1 -r
+        echo
+        [[ $REPLY =~ ^[Yy]$ ]] || PROCEED_AI=false
+    fi
+
+    if [ "$PROCEED_AI" = true ]; then
+        echo -e "${YELLOW}🤖 Generating release notes with the Claude Agent SDK...${NC}"
+
+        # Install the generator's dependency on first use. `npm ci` installs
+        # exactly what the committed lockfile pins (reproducible; errors if it
+        # has drifted from package.json).
+        if [ ! -d "$NOTES_DIR/node_modules" ]; then
+            (cd "$NOTES_DIR" && npm ci --silent) || echo -e "${YELLOW}⚠️  npm ci failed${NC}"
+        fi
+
+        # Guard against an indefinitely-hanging API call so a release never
+        # blocks on note generation. Use timeout/gtimeout when available.
+        NOTES_RUN=(node "$NOTES_DIR/index.mjs")
+        if command -v timeout &> /dev/null; then
+            NOTES_RUN=(timeout "${RELEASE_NOTES_TIMEOUT:-120}" "${NOTES_RUN[@]}")
+        elif command -v gtimeout &> /dev/null; then
+            NOTES_RUN=(gtimeout "${RELEASE_NOTES_TIMEOUT:-120}" "${NOTES_RUN[@]}")
+        else
+            echo -e "${YELLOW}    Note: no timeout/gtimeout on PATH — the note call has no hard time cap.${NC}"
+            echo -e "${YELLOW}    (install coreutils for one; falling back is still safe either way.)${NC}"
+        fi
+
+        # Capture the generator's stderr so a real failure (bad install, SDK
+        # API change, auth, timeout) is surfaced on fallback instead of lost.
+        NOTES_ERR=$(mktemp)
+        COMMITS=$(git log "$LAST_TAG"..HEAD --pretty=format:"- %s")
+        echo -e "${YELLOW}    → generator: $NOTES_DIR/index.mjs  model: ${RELEASE_NOTES_MODEL:-claude-sonnet-4-6}${NC}"
+        echo -e "${YELLOW}    → this can take 30-120s; it is Ctrl+C-safe (no version changes made yet)...${NC}"
+
+        # Run the generator WITHOUT letting a hiccup abort the release. The
+        # trailing '|| NOTES_EXIT=$?' keeps set -e from firing on a non-zero
+        # exit, so we always reach the fallback below (commit-list changelog)
+        # and print a diagnostic instead of the whole release dying silently.
+        NOTES_EXIT=0
+        NOTES_JSON=$(printf '%s' "$COMMITS" \
+            | RELEASE_VERSION="$NEXT_VERSION" \
+              RELEASE_NOTES_MODEL="${RELEASE_NOTES_MODEL:-claude-sonnet-4-6}" \
+              "${NOTES_RUN[@]}" 2>"$NOTES_ERR") || NOTES_EXIT=$?
+        echo -e "${YELLOW}    → generator exited with code $NOTES_EXIT${NC}"
+
+        if [ "$NOTES_EXIT" -eq 0 ] && [ -n "$NOTES_JSON" ] && printf '%s' "$NOTES_JSON" | jq -e . >/dev/null 2>&1; then
+            USE_CLAUDE=true
+            HL_COUNT=$(printf '%s' "$NOTES_JSON" | jq -r '.highlights | length' 2>/dev/null || echo "?")
+            echo -e "${GREEN}    ✓ structured notes received ($HL_COUNT highlights)${NC}"
+        else
+            echo -e "${YELLOW}⚠️  AI note generation did not succeed (exit $NOTES_EXIT) — falling back to the commit-list changelog.${NC}"
+            if [ -s "$NOTES_ERR" ]; then
+                echo -e "${YELLOW}    ┌─ generator stderr ─────────────────────────────${NC}"
+                sed 's/^/    │ /' "$NOTES_ERR"
+                echo -e "${YELLOW}    └────────────────────────────────────────────────${NC}"
+            else
+                echo -e "${YELLOW}    (generator produced no stderr — likely an empty/invalid response or a kill)${NC}"
+            fi
+            NOTES_JSON=""
+        fi
+        rm -f "$NOTES_ERR"
     fi
 fi
 
-if [ "$USE_CLAUDE" = true ] && [ -n "$LAST_TAG" ]; then
-    echo -e "${YELLOW}🤖 Generating release notes with Claude...${NC}"
-
-    # Get commit messages
-    COMMITS=$(git log $LAST_TAG..HEAD --pretty=format:"- %s (%h)")
-
-    # Create prompt for Claude
-    CLAUDE_PROMPT="Generate concise, user-friendly release notes for version $NEXT_VERSION of PennyWise (an Android expense tracker app that parses bank SMS messages).
-
-    Just return the release notes, don't include any other text. We will directly copy the release notes to the RELEASE_NOTES.md file.
-
-Based on these git commits since $LAST_TAG:
-$COMMITS
-
-Create release notes with these sections:
-1. A brief summary (1-2 sentences)
-2. New Features (if any)
-3. Improvements (if any)
-4. Bug Fixes (if any)
-
-Guidelines:
-- Use clear, non-technical language
-- Group related changes together
-- Highlight the most important changes first
-- Keep it concise (max 500 words)
-- Format in Markdown
-- Don't include commit hashes
-- Focus on user impact, not technical details
-- If commits mention specific banks, mention them by name
-
-Start with '# Release v$NEXT_VERSION' as the title."
-
-    # Use claude CLI to generate release notes
-    if echo "$CLAUDE_PROMPT" | claude > RELEASE_NOTES_TEMP.md 2>/dev/null; then
-        mv RELEASE_NOTES_TEMP.md RELEASE_NOTES.md
-
-        # Append installation section
-        echo "" >> RELEASE_NOTES.md
-        echo "---" >> RELEASE_NOTES.md
-        echo "### Installation" >> RELEASE_NOTES.md
-        echo "Download the APK below and install it on your Android device." >> RELEASE_NOTES.md
-
-        echo -e "${GREEN}✅ AI-powered release notes generated${NC}"
-    else
-        echo -e "${YELLOW}⚠️  Claude generation failed, falling back to standard format${NC}"
-        USE_CLAUDE=false
-    fi
+# Build the GitHub RELEASE_NOTES.md from the structured notes.
+if [ "$USE_CLAUDE" = true ]; then
+    SUMMARY=$(printf '%s' "$NOTES_JSON" | jq -r '.summary // ""')
+    {
+        echo "# Release v$NEXT_VERSION"
+        echo ""
+        if [ -n "$SUMMARY" ]; then
+            echo "$SUMMARY"
+            echo ""
+        fi
+        echo "## What's New"
+        printf '%s' "$NOTES_JSON" | jq -r '.highlights[]? | "- \(.)"'
+        echo ""
+        echo "---"
+        echo "### Installation"
+        echo "Download the APK below and install it on your Android device."
+    } > RELEASE_NOTES.md
+    echo -e "${GREEN}✅ AI-powered release notes generated${NC}"
 fi
 
 # Fallback to standard changelog if Claude not used or failed
@@ -167,6 +238,7 @@ if [ "$DRY_RUN" = "true" ]; then
     echo "Current version: $CURRENT_VERSION"
     echo "Next version: $NEXT_VERSION"
     echo "Version code: $NEXT_CODE"
+    echo "Deploy AI relay: $([ -n "$DO_RELAY" ] && echo yes || echo no)"
     echo ""
     echo "📝 Release Notes:"
     cat RELEASE_NOTES.md
@@ -189,32 +261,20 @@ echo -e "${GREEN}✅ Version updated: $NEXT_VERSION (code: $NEXT_CODE)${NC}"
 # 5a. Update fastlane changelog
 CHANGELOG_FILE="$CHANGELOG_DIR/${NEXT_CODE}.txt"
 
-# Try to use Claude for Play Store changelog if available and already used for main release notes
-if [ "$USE_CLAUDE" = true ]; then
-    echo -e "${YELLOW}🤖 Generating Play Store changelog with Claude...${NC}"
-
-    # Create prompt for Play Store release notes (more concise)
-    PLAYSTORE_PROMPT="Generate very concise Play Store release notes for PennyWise version $NEXT_VERSION (max 500 characters).
-
-Based on these changes:
-$COMMITS
-
-Rules:
-- Maximum 500 characters total
-- Use bullet points (•)
-- Focus only on most important user-facing changes
-- Mention specific banks if added
-- No technical jargon
-- Start with 'What's New in v$NEXT_VERSION'"
-
-    # Use claude CLI to generate Play Store notes
-    if echo "$PLAYSTORE_PROMPT" | claude > "$CHANGELOG_FILE.tmp" 2>/dev/null; then
-        # Truncate to 500 characters if needed
-        head -c 500 "$CHANGELOG_FILE.tmp" > "$CHANGELOG_FILE"
-        rm -f "$CHANGELOG_FILE.tmp"
-        echo -e "${GREEN}✅ Play Store changelog generated with Claude${NC}"
+# Build the F-Droid / Play changelog from the same structured notes.
+if [ "$USE_CLAUDE" = true ] && [ -n "$NOTES_JSON" ]; then
+    echo -e "${YELLOW}🤖 Writing store changelog...${NC}"
+    # Bullets only — no header (F-Droid and Play prepend their own "New in
+    # version X"), no preamble, no fences. Keep whole bullet lines up to 500
+    # characters (the Play Store changelog limit).
+    printf '%s' "$NOTES_JSON" \
+        | jq -r '.highlights[]? | "• \(.)"' \
+        | awk 'BEGIN{n=0} { add=length($0)+1; if (n+add>500) exit; print; n+=add }' \
+        > "$CHANGELOG_FILE"
+    if [ -s "$CHANGELOG_FILE" ]; then
+        echo -e "${GREEN}✅ Store changelog generated${NC}"
     else
-        echo -e "${YELLOW}⚠️  Claude generation failed for Play Store, using standard format${NC}"
+        echo -e "${YELLOW}⚠️  Empty changelog, using standard format${NC}"
         USE_CLAUDE=false
     fi
 fi
@@ -364,10 +424,16 @@ CHANGES_MADE=false  # Changes are now committed, no need to revert
 echo -e "${GREEN}✅ Commit and tag created${NC}"
 
 # 10. Push to GitHub
-echo ""
-read -p "Push to GitHub? (y/n) " -n 1 -r
-echo
+if [ -n "$AUTO_YES" ]; then
+    REPLY=y
+else
+    echo ""
+    read -p "Push to GitHub? (y/n) " -n 1 -r
+    echo
+fi
+PUBLISHED=""
 if [[ $REPLY =~ ^[Yy]$ ]]; then
+    PUBLISHED="true"
     git push origin main
     git push origin "v$NEXT_VERSION"
     echo -e "${GREEN}✅ Pushed to GitHub${NC}"
@@ -393,10 +459,15 @@ if [[ $REPLY =~ ^[Yy]$ ]]; then
     fi
 fi
 
-# 11. Build Play Store Bundle (optional)
-echo ""
-read -p "Build Play Store Bundle (.aab)? (y/n) " -n 1 -r
-echo
+# 11. Build Play Store Bundle (and optionally upload to Play Console)
+# --play implies building the bundle (we need the .aab to upload).
+if [ -n "$AUTO_YES" ] || [ -n "$DO_PLAY" ]; then
+    REPLY=y
+else
+    echo ""
+    read -p "Build Play Store Bundle (.aab)? (y/n) " -n 1 -r
+    echo
+fi
 if [[ $REPLY =~ ^[Yy]$ ]]; then
     echo -e "${YELLOW}🔨 Building App Bundle for Play Store...${NC}"
     ./gradlew bundleStandardRelease
@@ -412,42 +483,88 @@ if [[ $REPLY =~ ^[Yy]$ ]]; then
         SIZE=$(du -h "$AAB_PATH/PennyWise-v${NEXT_VERSION}.aab" | cut -f1)
         echo "Size: $SIZE"
         
-        echo ""
-        echo -e "${YELLOW}📱 Play Store Upload Instructions:${NC}"
-        echo "1. Go to https://play.google.com/console"
-        echo "2. Select PennyWise app"
-        echo "3. Go to Release > Production (or Testing)"
-        echo "4. Create new release"
-        echo "5. Upload: $AAB_PATH/PennyWise-v${NEXT_VERSION}.aab"
-        echo "6. Add release notes from RELEASE_NOTES.md"
+        if [ -n "$DO_PLAY" ]; then
+            # Direct upload to Play Console (draft) via the existing fastlane
+            # wrapper. It reads the same .aab + the fastlane changelog and uses
+            # secrets/play-store-key.json. Left as a DRAFT to roll out by hand.
+            echo ""
+            echo -e "${YELLOW}⬆️  Uploading .aab to Play Console (draft) via upload-play.sh...${NC}"
+            if "$ORIGINAL_DIR/scripts/upload-play.sh" release; then
+                echo -e "${GREEN}✅ Uploaded to Play Console as a DRAFT — review & roll out in Play Console.${NC}"
+            else
+                echo -e "${RED}❌ Play upload failed.${NC} Retry manually: ./scripts/upload-play.sh release"
+            fi
+        else
+            echo ""
+            echo -e "${YELLOW}📱 Play Store Upload Instructions:${NC}"
+            echo "1. Go to https://play.google.com/console"
+            echo "2. Select PennyWise app"
+            echo "3. Go to Release > Production (or Testing)"
+            echo "4. Create new release"
+            echo "5. Upload: $AAB_PATH/PennyWise-v${NEXT_VERSION}.aab"
+            echo "6. Add release notes from RELEASE_NOTES.md"
+        fi
     fi
 fi
 
-# 12. Deploy webapp (optional)
-echo ""
-read -p "Deploy webapp (pennywise-web) to Cloudflare? (y/n) " -n 1 -r
-echo
+# 12. Deploy webapp (optional). Only with explicit --web; plain --yes skips it
+# so a routine app release never redeploys the site by surprise.
+if [ -n "$DO_WEB" ]; then
+    REPLY=y
+elif [ -n "$AUTO_YES" ]; then
+    REPLY=n
+else
+    echo ""
+    read -p "Deploy webapp (pennywise-web) to Cloudflare? (y/n) " -n 1 -r
+    echo
+fi
 if [[ $REPLY =~ ^[Yy]$ ]]; then
     echo -e "${YELLOW}🌐 Deploying webapp to Cloudflare...${NC}"
 
     WEBAPP_DIR="$ORIGINAL_DIR/pennywise-web"
 
     if [ -d "$WEBAPP_DIR" ]; then
-        if [ -f "$WEBAPP_DIR/deploy.sh" ]; then
+        # The deploy script lives at pennywise-web/scripts/deploy.sh (what
+        # `bun run redeploy` runs). Older layouts kept it at the web root, so
+        # accept either.
+        WEB_DEPLOY=""
+        if [ -f "$WEBAPP_DIR/scripts/deploy.sh" ]; then
+            WEB_DEPLOY="scripts/deploy.sh"
+        elif [ -f "$WEBAPP_DIR/deploy.sh" ]; then
+            WEB_DEPLOY="deploy.sh"
+        fi
+
+        if [ -n "$WEB_DEPLOY" ]; then
             cd "$WEBAPP_DIR"
-            if bash deploy.sh; then
+            if bash "$WEB_DEPLOY"; then
                 echo -e "${GREEN}✅ Webapp deployed successfully${NC}"
             else
                 echo -e "${RED}❌ Webapp deployment failed${NC}"
-                echo -e "${YELLOW}You can retry manually: cd pennywise-web && ./deploy.sh${NC}"
+                echo -e "${YELLOW}You can retry manually: cd pennywise-web && bun run redeploy${NC}"
             fi
             cd "$ORIGINAL_DIR"
         else
-            echo -e "${RED}❌ deploy.sh not found in pennywise-web${NC}"
+            echo -e "${RED}❌ deploy script not found (looked for pennywise-web/scripts/deploy.sh and pennywise-web/deploy.sh)${NC}"
         fi
     else
         echo -e "${RED}❌ pennywise-web directory not found${NC}"
     fi
+fi
+
+# 13. Deploy the AI relay + dashboard (ai.pennywise.zynth.dev) when relay/ changed,
+# and only for a release that was pushed: a local-only release keeps the relay as is.
+if [ -n "$DO_RELAY" ] && [ -z "$PUBLISHED" ]; then
+    echo -e "${YELLOW}Skipped the AI relay deploy: the release wasn't pushed.${NC}"
+elif [ -n "$DO_RELAY" ]; then
+    echo -e "${YELLOW}🤖 Deploying AI relay to Cloudflare...${NC}"
+    cd "$ORIGINAL_DIR/relay"
+    if npm ci --silent && npm --prefix dashboard ci --silent && npm test --silent && npm run deploy; then
+        echo -e "${GREEN}✅ AI relay deployed${NC}"
+    else
+        echo -e "${RED}❌ AI relay deployment failed${NC}"
+        echo -e "${YELLOW}You can retry manually: cd relay && npm run deploy${NC}"
+    fi
+    cd "$ORIGINAL_DIR"
 fi
 
 echo ""

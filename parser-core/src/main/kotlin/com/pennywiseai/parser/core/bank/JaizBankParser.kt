@@ -12,9 +12,9 @@ import java.math.BigDecimal
  * Amt:N50.00DR                            (DR -> EXPENSE, CR -> INCOME)
  * Desc:<description>
  * 04-JAN-26 17:46
- * Help:07007730000                        (promo/support ÔÇö ignored)
+ * Help:07007730000                        (promo/support — ignored)
  * Bal:N252.28
- * Buy Airtime, Dial *773*Amount#          (promo ÔÇö ignored)
+ * Buy Airtime, Dial *773*Amount#          (promo — ignored)
  * ```
  * Amounts carry an "N" prefix and a trailing DR/CR suffix.
  *

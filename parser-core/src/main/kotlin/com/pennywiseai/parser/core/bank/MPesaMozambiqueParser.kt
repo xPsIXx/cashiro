@@ -30,6 +30,10 @@ class MPesaMozambiqueParser : BankParser() {
 
     override fun getCurrency() = "MZN"
 
+    // Mobile-money wallet: SMS carries a running balance but no per-account
+    // number (the whole wallet is the account). See ParsedTransaction.isMobileWallet.
+    override fun isMobileWallet() = true
+
     override fun canHandle(sender: String): Boolean {
         val normalizedSender = sender.uppercase()
         // M-Pesa Mozambique uses the same sender ID; differentiation is by content.
@@ -154,7 +158,7 @@ class MPesaMozambiqueParser : BankParser() {
     }
 
     override fun extractBalance(message: String): BigDecimal? {
-        // "novo saldo M-Pesa e de X MT" ÔÇö tolerate extra/irregular spacing around words.
+        // "novo saldo M-Pesa e de X MT" — tolerate extra/irregular spacing around words.
         val balancePattern = Regex(
             """novo\s+saldo\s+M-Pesa\s+e\s+de\s+([0-9,]+(?:\.[0-9]{2})?)\s*MT""",
             RegexOption.IGNORE_CASE

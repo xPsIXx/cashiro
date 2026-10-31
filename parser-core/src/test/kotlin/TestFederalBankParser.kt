@@ -227,6 +227,71 @@ class FederalBankParserTest {
             ),
 
             ParserTestCase(
+                name = "Scapia Federal RuPay Credit Card Transaction",
+                message = "Hi! Your txn of ₹450.00 at Test Store on your Scapia Federal RuPay credit card was successful. Not you? Go to Scapia support on the app.- Federal Bank",
+                sender = "VM-FEDSCP-S",
+                expected = ExpectedTransaction(
+                    amount = BigDecimal("450.00"),
+                    currency = "INR",
+                    type = com.pennywiseai.parser.core.TransactionType.CREDIT,
+                    merchant = "Test Store",
+                    isFromCard = true
+                )
+            ),
+
+            ParserTestCase(
+                name = "Scapia RuPay - merchant with a dot is not replaced by 'Scapia support'",
+                message = scapiaRuPay("TESTSHOP.COM"),
+                sender = "VM-FEDSCP-S",
+                expected = ExpectedTransaction(
+                    amount = BigDecimal("450.00"),
+                    currency = "INR",
+                    type = com.pennywiseai.parser.core.TransactionType.CREDIT,
+                    merchant = "TESTSHOP.COM",
+                    isFromCard = true
+                )
+            ),
+
+            ParserTestCase(
+                name = "Scapia RuPay - UPI VPA merchant shows its handle",
+                message = scapiaRuPay("testshop@ybl"),
+                sender = "VM-FEDSCP-S",
+                expected = ExpectedTransaction(
+                    amount = BigDecimal("450.00"),
+                    currency = "INR",
+                    type = com.pennywiseai.parser.core.TransactionType.CREDIT,
+                    merchant = "testshop",
+                    isFromCard = true
+                )
+            ),
+
+            ParserTestCase(
+                name = "Scapia RuPay - numeric UPI VPA handle is kept",
+                message = scapiaRuPay("000111@ybl"),
+                sender = "VM-FEDSCP-S",
+                expected = ExpectedTransaction(
+                    amount = BigDecimal("450.00"),
+                    currency = "INR",
+                    type = com.pennywiseai.parser.core.TransactionType.CREDIT,
+                    merchant = "000111",
+                    isFromCard = true
+                )
+            ),
+
+            ParserTestCase(
+                name = "Scapia Federal Credit Card Transaction - earned you rewards variant",
+                message = "Your txn of ₹2,351.00 at Amazon on your Scapia Federal Visa credit card earned you 10% rewards! Not you? Call 18002961199. - Federal Bank",
+                sender = "TX-FEDSCP-S",
+                expected = ExpectedTransaction(
+                    amount = BigDecimal("2351.00"),
+                    currency = "INR",
+                    type = com.pennywiseai.parser.core.TransactionType.CREDIT,
+                    merchant = "Amazon",
+                    isFromCard = true
+                )
+            ),
+
+            ParserTestCase(
                 name = "Debit Card Transaction - Masked Card",
                 message = "Rs 1500.00 debited via card XX**3456 at MERCHANT on 14-05-2025 15:30:45. Current Bal: Rs.250.75 -Federal Bank",
                 sender = "AD-FEDBNK",
@@ -325,6 +390,31 @@ class FederalBankParserTest {
                 shouldParse = false
             ),
 
+            // NEFT outgoing transfer - debit SMS (the one that SHOULD be logged) - issue #547
+            ParserTestCase(
+                name = "NEFT Outgoing Debit - should be EXPENSE",
+                message = "Debited Rs 6000 from a/c XX3343 on 24JUN2026 21:35 via NEFT to Jerry.Ref FDRLM4175007432.Bal Rs 76.82.Not you?Call 18004251199 -Federal Bank",
+                sender = "AD-FEDBNK-T",
+                expected = ExpectedTransaction(
+                    amount = BigDecimal("6000"),
+                    currency = "INR",
+                    type = com.pennywiseai.parser.core.TransactionType.EXPENSE,
+                    merchant = "Jerry",
+                    reference = "FDRLM4175007432",
+                    accountLast4 = "3343",
+                    balance = BigDecimal("76.82"),
+                    isFromCard = false
+                )
+            ),
+
+            // NEFT outgoing transfer - confirmation receipt (duplicate) should NOT parse - issue #547
+            ParserTestCase(
+                name = "NEFT Outgoing Confirmation Receipt Should Not Parse (duplicate of debit)",
+                message = "Jerry Joseph has received Rs 6000.000 from your A/c XX3343 via NEFT on 24-06-2026 22:04:04. Ref no. FDRLM4175007432 - Federal Bank",
+                sender = "CP-FEDBNK-S",
+                shouldParse = false
+            ),
+
             // ATM Cash Withdrawal - should not extract phone number as merchant
             ParserTestCase(
                 name = "ATM Cash Withdrawal",
@@ -338,6 +428,21 @@ class FederalBankParserTest {
                     balance = BigDecimal("7517.94"),
                     isFromCard = false
                 )
+            ),
+
+            // New FEDSMS sender (#761)
+            ParserTestCase(
+                name = "Credit from FEDSMS sender",
+                message = "Dear Customer, Rs.123 credited to your A/c XX1234 on 01JAN2026 12:00:00. BAL-Rs.1234.56-Federal Bank",
+                sender = "AX-FEDSMS-S",
+                expected = ExpectedTransaction(
+                    amount = BigDecimal("123"),
+                    currency = "INR",
+                    type = com.pennywiseai.parser.core.TransactionType.INCOME,
+                    accountLast4 = "1234",
+                    balance = BigDecimal("1234.56"),
+                    isFromCard = false
+                )
             )
         )
 
@@ -345,6 +450,8 @@ class FederalBankParserTest {
             "AD-FEDBNK" to true,
             "JM-FEDBNK" to true,
             "AX-FEDBNK-S" to true,
+            "AX-FEDSMS-S" to true,
+            "AD-FEDSMS-S" to true,
             "ADCBAlert" to false,
             "SBI" to false,
             "" to false
@@ -412,5 +519,43 @@ class FederalBankParserTest {
         assertNull(paymentDueResult?.umn, "Payment due notifications don't have UMN")
     }
 
+    @TestFactory
+    fun `factory resolves FEDSMS senders`(): List<DynamicTest> {
+        val message =
+            "Dear Customer, Rs.123 credited to your A/c XX1234 on 01JAN2026 12:00:00. BAL-Rs.1234.56-Federal Bank"
+        val cases = listOf("AX-FEDSMS-S", "AD-FEDSMS-S").map { sender ->
+            com.pennywiseai.parser.core.test.SimpleTestCase(
+                bankName = "Federal Bank",
+                sender = sender,
+                currency = "INR",
+                message = message,
+                expected = ExpectedTransaction(
+                    amount = BigDecimal("123"),
+                    currency = "INR",
+                    type = com.pennywiseai.parser.core.TransactionType.INCOME,
+                    accountLast4 = "1234",
+                    balance = BigDecimal("1234.56"),
+                    isFromCard = false
+                ),
+                shouldHandle = true
+            )
+        }
 
+        return ParserTestUtils.runFactoryTestSuite(cases, "Federal Bank factory tests")
+    }
+
+    @Test
+    fun `Scapia txn message does not capture a fabricated reference`() {
+        val parser = FederalBankParser()
+        val message =
+            "Your txn of ₹2,351.00 at Amazon on your Scapia Federal Visa credit card earned you 10% rewards! Not you? Call 18002961199. - Federal Bank"
+
+        val parsed = parser.parse(message, "TX-FEDSCP-S", 0L)
+
+        assertNotNull(parsed, "Scapia rewards txn should parse")
+        assertNull(parsed?.reference, "The word after 'txn' must not be captured as a reference")
+    }
+
+    private fun scapiaRuPay(merchant: String) =
+        "Hi! Your txn of ₹450.00 at $merchant on your Scapia Federal RuPay credit card was successful. Not you? Go to Scapia support on the app.- Federal Bank"
 }

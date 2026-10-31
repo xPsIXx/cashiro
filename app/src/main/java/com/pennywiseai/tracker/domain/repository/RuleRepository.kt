@@ -12,7 +12,16 @@ interface RuleRepository {
     suspend fun getActiveRulesByTypes(types: List<TransactionType>): List<TransactionRule>
     suspend fun getRuleById(ruleId: String): TransactionRule?
     suspend fun insertRule(rule: TransactionRule)
+
+    /**
+     * Inserts [rules] as one unit. Room runs a list insert in a single
+     * transaction, so a failure part-way through can't leave an imported rule
+     * set half-persisted.
+     */
+    suspend fun insertRules(rules: List<TransactionRule>)
     suspend fun updateRule(rule: TransactionRule)
+    /** Rewrites rules that name category [oldName] to use [newName] (category rename). */
+    suspend fun renameCategory(oldName: String, newName: String)
     suspend fun deleteRule(ruleId: String)
     suspend fun deleteAllRules()
     suspend fun setRuleActive(ruleId: String, isActive: Boolean)

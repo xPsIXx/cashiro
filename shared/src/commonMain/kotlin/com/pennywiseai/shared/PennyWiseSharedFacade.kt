@@ -4,12 +4,21 @@ import com.pennywiseai.shared.data.SharedDataGraph
 import com.pennywiseai.shared.data.local.entity.SharedBudgetCategoryEntity
 import com.pennywiseai.shared.data.local.entity.SharedBudgetEntity
 import com.pennywiseai.shared.data.local.entity.SharedSubscriptionEntity
+import com.pennywiseai.shared.data.model.SharedTransaction
 import com.pennywiseai.shared.data.model.SharedTransactionType
 import com.pennywiseai.shared.data.statement.SharedStatementImportResult
 import com.pennywiseai.shared.data.util.currentTimeMillis
 import com.pennywiseai.shared.data.util.monthStartEpochMillis
 import com.pennywiseai.shared.data.util.monthStartEpochMillisIST
+import com.pennywiseai.shared.domain.money.CurrencyConverter
+import com.pennywiseai.shared.domain.money.MoneyTotals
+import com.pennywiseai.shared.domain.chat.ChatAssistant
+import com.pennywiseai.shared.domain.chat.ChatToolResult
+import com.pennywiseai.shared.domain.chat.PendingChatAction
+import com.pennywiseai.shared.domain.usecase.AiSmsReading
+import com.pennywiseai.shared.domain.usecase.BankSmsImportResult
 import com.pennywiseai.shared.domain.usecase.CreateManualTransactionUseCase
+import com.pennywiseai.shared.domain.usecase.ImportBankSmsUseCase
 import com.pennywiseai.shared.domain.usecase.ImportStatementUseCase
 import com.pennywiseai.shared.domain.usecase.ManualTransactionInput
 import com.pennywiseai.shared.domain.usecase.TransactionMutationResult
@@ -35,14 +44,21 @@ data class SharedBudgetItem(
     val groupType: String,
     val currency: String,
     val isActive: Boolean,
-    val categoryBreakdowns: List<SharedBudgetCategoryBreakdown>
-)
+    val categoryBreakdowns: List<SharedBudgetCategoryBreakdown>,
+    /** The budget's own period, so its label names that period, not today's month. */
+    val startEpochMillis: Long = 0,
+    val endEpochMillis: Long = 0
+) {
+    val percentUsed: Int get() = MoneyTotals.percentUsed(spentMinor, limitMinor)
+}
 
 data class SharedBudgetCategoryBreakdown(
     val categoryName: String,
     val limitMinor: Long,
     val spentMinor: Long
-)
+) {
+    val percentUsed: Int get() = MoneyTotals.percentUsed(spentMinor, limitMinor)
+}
 
 data class SharedAccountItem(
     val bankName: String,
@@ -93,9 +109,12 @@ data class SharedHomeSnapshot(
     val subscriptionCount: Int,
     val budgetCount: Int,
     val accountCount: Int,
-    val monthlyIncomeMinor: Long = 0L,
-    val monthlyExpenseMinor: Long = 0L,
-    val monthlyNetMinor: Long = 0L,
+    /**
+     * This month's INCOME and EXPENSE rows, in their own currencies. Total them
+     * with [PennyWiseSharedFacade.currencyConverter] — never sum them directly.
+     */
+    val monthlyIncome: List<SharedRecentTransactionItem> = emptyList(),
+    val monthlyExpense: List<SharedRecentTransactionItem> = emptyList(),
     val lastImportImported: Int = 0,
     val lastImportParsed: Int = 0,
     val lastImportSkipped: Int = 0,
@@ -124,7 +143,75 @@ class PennyWiseSharedFacade {
     private val graph by lazy { SharedDataGraph.getInstance() }
     private val createUseCase by lazy { CreateManualTransactionUseCase(graph.transactionRepository, graph.accountRepository) }
     private val updateUseCase by lazy { UpdateManualTransactionUseCase(graph.transactionRepository, graph.accountRepository) }
-    private val importStatementUseCase by lazy { ImportStatementUseCase(graph.transactionRepository, graph.accountRepository) }
+    private val importStatementUseCase by lazy {
+        ImportStatementUseCase(graph.transactionRepository, graph.accountRepository, graph.ruleRepository)
+    }
+
+    private val importBankSmsUseCase by lazy {
+        ImportBankSmsUseCase(
+            graph.transactionRepository,
+            graph.accountRepository,
+            graph.merchantMappingRepository,
+            graph.ruleRepository,
+            graph.categoryRepository
+        )
+    }
+
+    /** The Shortcuts "Add bank SMS" action. Can run before the app has ever opened, so it seeds first. */
+    @Throws(Exception::class)
+    fun importBankSms(sender: String?, body: String, receivedAtEpochMillis: Long): BankSmsImportResult =
+        runBlocking {
+            graph.initialize()
+            importBankSmsUseCase.execute(sender, body, receivedAtEpochMillis)
+        }
+
+    /** Saves the on-device model's reading of an SMS [importBankSms] couldn't parse, if it validates. */
+    @Throws(Exception::class)
+    fun importAiReadSms(body: String, receivedAtEpochMillis: Long, reading: AiSmsReading, knownBank: String?): BankSmsImportResult =
+        runBlocking {
+            graph.initialize()
+            importBankSmsUseCase.executeAiReading(body, receivedAtEpochMillis, reading, knownBank)
+        }
+
+    // The iOS chat (Foundation Models). Lookups answer directly; adds, updates and deletes
+    // only return a PendingChatAction, and nothing is written until chatConfirm.
+    private val chatAssistant by lazy {
+        ChatAssistant(graph.transactionRepository, graph.accountRepository, graph.categoryRepository)
+    }
+
+    @Throws(Exception::class)
+    fun chatSystemPrompt(): String = runBlocking { graph.initialize(); chatAssistant.systemPrompt() }
+
+    @Throws(Exception::class)
+    fun chatMonthSummary(): String = runBlocking { chatAssistant.monthSummary() }
+
+    @Throws(Exception::class)
+    fun chatSpendingByCategory(category: String): String = runBlocking { chatAssistant.spendingByCategory(category) }
+
+    @Throws(Exception::class)
+    fun chatProposeAdd(
+        amount: Double,
+        merchant: String,
+        category: String,
+        type: String,
+        account: String,
+        userMessage: String,
+        currency: String
+    ): ChatToolResult = runBlocking { chatAssistant.proposeAdd(amount, merchant, category, type, account, userMessage, currency) }
+
+    @Throws(Exception::class)
+    fun chatProposeChange(
+        delete: Boolean,
+        words: String,
+        amount: Double,
+        daysAgo: Int,
+        newCategory: String,
+        newMerchant: String
+    ): ChatToolResult = runBlocking { chatAssistant.proposeChange(delete, words, amount, daysAgo, newCategory, newMerchant) }
+
+    /** The user tapped the card's confirm button. Null when applied, else why it wasn't. */
+    @Throws(Exception::class)
+    fun chatConfirm(action: PendingChatAction): String? = runBlocking { chatAssistant.confirm(action) }
 
     fun initializeAndLoadHome(): SharedHomeSnapshot = safeSnapshot {
         runBlocking {
@@ -395,12 +482,16 @@ class PennyWiseSharedFacade {
                     val categoryNames = categories.map { it.categoryName }.toSet()
                     val periodTxns = transactions.filter { txn ->
                         txn.occurredAtEpochMillis in budget.startEpochMillis..budget.endEpochMillis &&
-                            txn.transactionType != SharedTransactionType.INCOME &&
+                            // EXPENSE only (mirrors the home totals): a TRANSFER
+                            // between own accounts must not eat budget.
+                            txn.transactionType == SharedTransactionType.EXPENSE &&
+                            // Only the budget's own currency counts toward its limit.
+                            txn.currency == budget.currency &&
                             (categoryNames.isEmpty() || txn.category in categoryNames)
                     }
-                    val totalSpent = periodTxns.sumOf { it.amountMinor }
+                    val totalSpent = periodTxns.fold(0L) { acc, txn -> acc + txn.amountMinor }
                     val breakdowns = categories.map { cat ->
-                        val catSpent = periodTxns.filter { it.category == cat.categoryName }.sumOf { it.amountMinor }
+                        val catSpent = periodTxns.filter { it.category == cat.categoryName }.fold(0L) { acc, txn -> acc + txn.amountMinor }
                         SharedBudgetCategoryBreakdown(cat.categoryName, cat.budgetAmountMinor, catSpent)
                     }
                     SharedBudgetItem(
@@ -412,7 +503,9 @@ class PennyWiseSharedFacade {
                         groupType = budget.groupType,
                         currency = budget.currency,
                         isActive = budget.isActive,
-                        categoryBreakdowns = breakdowns
+                        categoryBreakdowns = breakdowns,
+                        startEpochMillis = budget.startEpochMillis,
+                        endEpochMillis = budget.endEpochMillis
                     )
                 }
             }
@@ -652,6 +745,20 @@ class PennyWiseSharedFacade {
 
     // ── Analytics methods ────────────────────────────────────
 
+    /**
+     * Converts amounts into [baseCurrency] with the stored exchange rates (any age:
+     * a stale rate beats dropping the amount, as on Android). Currencies with no
+     * rate stay unconverted and must be shown on their own.
+     */
+    fun currencyConverter(baseCurrency: String): CurrencyConverter {
+        val rates = try {
+            runBlocking { graph.exchangeRateRepository.observeAll().first() }
+        } catch (_: Throwable) {
+            emptyList()
+        }
+        return CurrencyConverter.fromRates(baseCurrency, rates.map { Triple(it.fromCurrency, it.toCurrency, it.rateMicros) })
+    }
+
     fun getTransactionsForPeriod(
         startDateMs: Long,
         endDateMs: Long,
@@ -740,16 +847,17 @@ class PennyWiseSharedFacade {
     ): Boolean {
         return try {
             runBlocking {
-                val now = currentTimeMillis()
+                // Copy the stored row so an edit keeps what the form doesn't
+                // show (state, next payment, bank, created date).
+                val existing = graph.subscriptionRepository.observeAll().first()
+                    .firstOrNull { it.id == id } ?: return@runBlocking false
                 graph.subscriptionRepository.upsert(
-                    SharedSubscriptionEntity(
-                        id = id,
+                    existing.copy(
                         merchantName = merchantName.trim(),
                         amountMinor = amountMinor,
                         category = category,
                         currency = currency,
-                        createdAtEpochMillis = now,
-                        updatedAtEpochMillis = now
+                        updatedAtEpochMillis = currentTimeMillis()
                     )
                 )
                 true
@@ -910,12 +1018,11 @@ class PennyWiseSharedFacade {
         val monthStart = monthStartEpochMillisIST()
         val thisMonthTxns = transactions.filter { it.occurredAtEpochMillis >= monthStart }
         println("[HomeSnapshot] monthStart=$monthStart, thisMonthTxnCount=${thisMonthTxns.size}, totalTxns=${transactions.size}")
-        val monthlyIncome = thisMonthTxns
-            .filter { it.transactionType == SharedTransactionType.INCOME }
-            .sumOf { it.amountMinor }
-        val monthlyExpense = thisMonthTxns
-            .filter { it.transactionType != SharedTransactionType.INCOME }
-            .sumOf { it.amountMinor }
+        // EXPENSE only, matching Android's home breakdown: TRANSFER moves money
+        // between the user's own accounts, and INVESTMENT/CREDIT are tracked as
+        // their own types.
+        val monthlyIncome = thisMonthTxns.filter { it.transactionType == SharedTransactionType.INCOME }.map { it.toItem() }
+        val monthlyExpense = thisMonthTxns.filter { it.transactionType == SharedTransactionType.EXPENSE }.map { it.toItem() }
 
         return SharedHomeSnapshot(
             categories = categories,
@@ -925,9 +1032,8 @@ class PennyWiseSharedFacade {
             subscriptionCount = subscriptions.size,
             budgetCount = budgets.size,
             accountCount = accounts.size,
-            monthlyIncomeMinor = monthlyIncome,
-            monthlyExpenseMinor = monthlyExpense,
-            monthlyNetMinor = monthlyIncome - monthlyExpense,
+            monthlyIncome = monthlyIncome,
+            monthlyExpense = monthlyExpense,
             lastImportImported = imported,
             lastImportParsed = parsed,
             lastImportSkipped = skipped,

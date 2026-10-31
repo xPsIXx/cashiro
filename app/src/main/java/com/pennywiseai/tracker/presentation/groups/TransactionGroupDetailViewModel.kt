@@ -5,8 +5,9 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.pennywiseai.tracker.data.database.entity.TransactionEntity
 import com.pennywiseai.tracker.data.database.entity.TransactionGroupEntity
-import com.pennywiseai.tracker.data.database.entity.TransactionType
 import com.pennywiseai.tracker.data.repository.TransactionGroupRepository
+import com.pennywiseai.tracker.data.repository.groupTotalsOf
+import com.pennywiseai.tracker.utils.Money
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -15,14 +16,16 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.launch
-import java.math.BigDecimal
 import javax.inject.Inject
 
 data class TransactionGroupDetailUiState(
     val group: TransactionGroupEntity? = null,
     val linkedTransactions: List<TransactionEntity> = emptyList(),
-    val totalExpense: BigDecimal = BigDecimal.ZERO,
-    val totalIncome: BigDecimal = BigDecimal.ZERO,
+    // Per-currency totals — a group can mix currencies, which can't be summed
+    // into one figure. Keyed by currency code.
+    val expenseByCurrency: Map<String, Money> = emptyMap(),
+    val investedByCurrency: Map<String, Money> = emptyMap(),
+    val incomeByCurrency: Map<String, Money> = emptyMap(),
     val isLoading: Boolean = true,
     val showAddSheet: Boolean = false,
     val showDeleteDialog: Boolean = false,
@@ -57,16 +60,13 @@ class TransactionGroupDetailViewModel @Inject constructor(
         }
         viewModelScope.launch {
             repository.getTransactionsForGroup(groupId).collect { txns ->
-                val expense = txns
-                    .filter { it.transactionType == TransactionType.EXPENSE || it.transactionType == TransactionType.CREDIT }
-                    .fold(BigDecimal.ZERO) { acc, t -> acc + t.amount }
-                val income = txns
-                    .filter { it.transactionType == TransactionType.INCOME }
-                    .fold(BigDecimal.ZERO) { acc, t -> acc + t.amount }
+                // Same totals as the list and the Home card, from one definition.
+                val totals = groupTotalsOf(txns)
                 _uiState.value = _uiState.value.copy(
                     linkedTransactions = txns,
-                    totalExpense = expense,
-                    totalIncome = income
+                    expenseByCurrency = totals.expense,
+                    incomeByCurrency = totals.income,
+                    investedByCurrency = totals.invested
                 )
             }
         }

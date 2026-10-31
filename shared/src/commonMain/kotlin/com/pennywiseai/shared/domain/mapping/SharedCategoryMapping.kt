@@ -33,6 +33,38 @@ object SharedCategoryMapping {
         "restaurant",
         "cafe",
         "food",
+        // Generic words, not brands. The list above is brand-heavy, so
+        // everyday Indian eateries fell through to "Others" (#678) — Play
+        // reviewers called out canteens and bakeries specifically.
+        "canteen",
+        "bakery",
+        "bakers",
+        "dhaba",
+        "sweets",
+        "biryani",
+        "biriyani",
+        "idli",
+        "dosa",
+        "chai",
+        "tiffin",
+        "eatery",
+        "diner",
+        "bistro",
+        "juice centre",
+        "juice center",
+        "juice bar",
+        "juice shop",
+        "coffee",
+        "tea stall",
+        "snacks",
+        "chaat",
+        "momos",
+        "shawarma",
+        "catering",
+        "confectionery",
+        "patisserie",
+        "ice cream",
+        "icecream",
         "starbucks",
         "haldiram",
         "barbeque",
@@ -70,7 +102,6 @@ object SharedCategoryMapping {
         "phosphorus",
         "rang indian",
         "moishi",
-        "cravings",
         "the matcha tokyo",
         "shawarma emprator",
         "shawrma alemprator",
@@ -84,7 +115,6 @@ object SharedCategoryMapping {
         "trucillo",
         "p.f. chang's",
         "neychor kada",
-        "salt",
         "koob al gahwa",
         "tanuki",
         "asiankitchen",
@@ -98,9 +128,7 @@ object SharedCategoryMapping {
         "manooshe",
         "awani",
         "sultan saray",
-        "pincode",
         "commonground",
-        "nala",
         "bombay bungalow",
         "punjab by amritsr",
         "the daily",
@@ -215,7 +243,14 @@ object SharedCategoryMapping {
         "salkara",
         "the coffee lab",
         "top cafeteria",
-        "bosporus sharjah"
+        "bosporus sharjah",
+        "uber eats",
+        // Jordan: plurals and staples the singular brand list misses.
+        "bakeries",
+        "cake",
+        "falafel",
+        "kunafa",
+        "knafeh"
     )
 
     private val GROCERY = setOf(
@@ -226,7 +261,9 @@ object SharedCategoryMapping {
         "jiomart",
         "dmart",
         "reliance fresh",
-        "more",
+        "more retail",
+        "more megastore",
+        "more supermarket",
         "grocery",
         "dunzo",
         "careem groceries",
@@ -256,7 +293,6 @@ object SharedCategoryMapping {
         "all day plus",
         "fresh good day",
         "al ghabat city",
-        "zoom",
         "zoom site",
         "all day",
         "all day advantage mini",
@@ -289,7 +325,26 @@ object SharedCategoryMapping {
         "foodland",
         "luluhypermarket",
         "majid al futtaim hypmk",
-        "majid al futtaim hypm"
+        "majid al futtaim hypm",
+        "keells",
+        "glomark",
+        "spar",
+        // Jordan: explicit shop words plus the big local chains. The two
+        // consumer corporations are the state-run grocery chains. Not bare
+        // "market" or "stores": in India those are localities and general
+        // shops ("SAROJINI MARKET", "MOBILE STORES"), and a confident wrong
+        // category stops the alert from asking.
+        "supermarket",
+        "super market",
+        "hypermarket",
+        "minimarket",
+        "mini market",
+        "hypermax",
+        "cozmo",
+        "safeway",
+        "sameh mall",
+        "military consumer",
+        "civil consumer"
     )
 
     private val TRANSPORT = setOf(
@@ -328,17 +383,45 @@ object SharedCategoryMapping {
         "point sbia",
         "ptt",
         "pttst.c",
-        "smart auto"
+        "smart auto",
+        "interchange",
+        "pickme",
+        // Jordan: bus/BRT top-ups, taxis, intercity coaches, fuel. (Not
+        // "manaseer": the fuel chain shares a common family name.)
+        "transport",
+        "taxi",
+        "jett",
+        "jopetrol"
     )
 
     private val SHOPPING = setOf(
         "amazon", "flipkart", "myntra", "ajio", "nykaa", "meesho",
         "snapdeal", "shopclues", "firstcry", "pepperfry", "urban ladder",
-        "store", "mart"
+        "store", "mart",
+        "shein", "temu", "ikea", "centrepoint", "home center", "home centre"
     )
-    private val SHOPPING_EXCLUDE = setOf("jiomart", "dmart")
+    // Shopping is evaluated before Healthcare, so its generic retail words
+    // ("store", "mart") swallowed chemists — "SALT LAKE MEDICAL STORE" came
+    // back as Shopping. Let anything clearly clinical fall through (#678).
+    private val SHOPPING_EXCLUDE = setOf(
+        "jiomart",
+        "dmart",
+        "medical",
+        "pharmacy",
+        "chemist",
+        "clinic",
+        "hospital",
+        "diagnostic",
+    )
 
     private val SHOPPING_EXTENDED = setOf(
+        // Generic retail words — the rest of this list is brands, so an
+        // ordinary cloth shop fell through to "Others" (#678).
+        "textiles",
+        "garments",
+        "readymade",
+        "footwear",
+        "stationery",
         "paypal",
         "gmg consumer",
         "bloomingdales",
@@ -451,7 +534,11 @@ object SharedCategoryMapping {
         "space hub general ware",
         "virgin megastore",
         "empire tower",
-        "the empire tower"
+        "the empire tower",
+        "aliexpress",
+        "arpico",
+        "nolimit",
+        "lady j"
     )
 
     private val UTILITIES = setOf(
@@ -482,7 +569,11 @@ object SharedCategoryMapping {
         "noqsouth energy dwc",
         "tamdeed projects",
         "smart dubai government",
-        "paysolut"
+        "paysolut",
+        "ceypetco",
+        "mobitel",
+        "slt",
+        "dialog axiata"
     )
 
     private val ENTERTAINMENT = setOf(
@@ -500,7 +591,11 @@ object SharedCategoryMapping {
         "www.2c2p ticketmelon",
         "www.2cticketmelon",
         "sfcinemacity",
-        "platinumlist.net"
+        "platinumlist.net",
+        "scope entertainment",
+        "scope cinemas",
+        "cinemas",
+        "telegram premium"
     )
 
     private val HEALTHCARE = setOf(
@@ -521,7 +616,13 @@ object SharedCategoryMapping {
         "lac nutrition for life",
         "mediclinic al sufouh",
         "boots_",
-        "boots_4287 c.world 3 fbangkok th"
+        "boots_4287 c.world 3 fbangkok th",
+        "healthcare",
+        "medihelp",
+        "union chemists",
+        // Kept in step with SHOPPING_EXCLUDE — a merchant we pull out of
+        // Shopping for being clinical has to land somewhere (#678).
+        "chemist", "chemists", "diagnostic", "diagnostics"
     )
 
     private val INVESTMENT = setOf(
@@ -584,7 +685,10 @@ object SharedCategoryMapping {
 
     private val MOBILE = setOf(
         "airtel", "jio", "vodafone", "idea", "bsnl", "recharge", "prepaid", "postpaid", "mobile",
-        "etisalat"
+        "etisalat",
+        // Jordan. "zain" alone is also a first name, and a transfer to a
+        // person must not land in Mobile.
+        "umniah", "zain website", "zain jordan", "orange jordan"
     )
 
     private val FITNESS = setOf(

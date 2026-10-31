@@ -58,7 +58,7 @@ fun AccountBalancesCard(
         Column {
             // Total balance - prominent but minimal
             Text(
-                text = CurrencyFormatter.formatCurrency(totalBalance),
+                text = CurrencyFormatter.formatCurrency(totalBalance, "INR"),
                 style = MaterialTheme.typography.headlineSmall,
                 fontWeight = FontWeight.Bold,
                 color = MaterialTheme.colorScheme.onSurface
@@ -127,7 +127,7 @@ private fun AccountBalanceItem(
         }
 
         Text(
-            text = CurrencyFormatter.formatCurrency(balance.balance),
+            text = CurrencyFormatter.formatCurrency(balance.balance, balance.currency),
             style = MaterialTheme.typography.bodyMedium,
             fontWeight = FontWeight.Medium,
             color = MaterialTheme.colorScheme.onSurface

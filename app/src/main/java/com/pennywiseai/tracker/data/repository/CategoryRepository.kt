@@ -1,29 +1,65 @@
 package com.pennywiseai.tracker.data.repository
 
+import com.pennywiseai.shared.data.bootstrap.DefaultCategoryData
+import androidx.room.withTransaction
+import com.pennywiseai.tracker.data.database.PennyWiseDatabase
 import com.pennywiseai.tracker.data.database.dao.CategoryDao
+import com.pennywiseai.tracker.data.mapper.BuiltinCategoryNames
+import com.pennywiseai.tracker.domain.repository.RuleRepository
 import com.pennywiseai.tracker.data.database.entity.CategoryEntity
+import com.pennywiseai.tracker.data.database.entity.hierarchical
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.flow.map
 import java.time.LocalDateTime
 import javax.inject.Inject
 import javax.inject.Singleton
 
 @Singleton
 class CategoryRepository @Inject constructor(
-    private val categoryDao: CategoryDao
+    private val categoryDao: CategoryDao,
+    private val database: PennyWiseDatabase,
+    private val ruleRepository: RuleRepository
 ) {
     
     fun getAllCategories(): Flow<List<CategoryEntity>> {
-        return categoryDao.getAllCategories()
+        return categoryDao.getAllCategories().map { it.hierarchical() }
     }
     
     fun getExpenseCategories(): Flow<List<CategoryEntity>> {
-        return categoryDao.getExpenseCategories()
+        return categoryDao.getExpenseCategories().map { it.hierarchical() }
     }
     
     fun getIncomeCategories(): Flow<List<CategoryEntity>> {
-        return categoryDao.getIncomeCategories()
+        return categoryDao.getIncomeCategories().map { it.hierarchical() }
     }
-    
+
+    // Visible-only variants for pickers — hidden categories are excluded (#736).
+    fun getVisibleCategories(): Flow<List<CategoryEntity>> {
+        return categoryDao.getVisibleCategories().map { it.hierarchical() }
+    }
+
+    fun getVisibleExpenseCategories(): Flow<List<CategoryEntity>> {
+        return categoryDao.getVisibleExpenseCategories().map { it.hierarchical() }
+    }
+
+    fun getVisibleIncomeCategories(): Flow<List<CategoryEntity>> {
+        return categoryDao.getVisibleIncomeCategories().map { it.hierarchical() }
+    }
+
+    suspend fun setCategoryHidden(categoryId: Long, hidden: Boolean) {
+        categoryDao.setCategoryHidden(categoryId, hidden)
+    }
+
+    /**
+     * Flips a category's hidden flag and returns the row as it now stands.
+     * See [CategoryDao.toggleCategoryHidden] for why this isn't a read,
+     * flip and write from the caller.
+     */
+    suspend fun toggleCategoryHidden(categoryId: Long): CategoryEntity? =
+        categoryDao.toggleCategoryHiddenCascading(categoryId)
+
     suspend fun getCategoryById(categoryId: Long): CategoryEntity? {
         return categoryDao.getCategoryById(categoryId)
     }
@@ -35,11 +71,15 @@ class CategoryRepository @Inject constructor(
     suspend fun createCategory(
         name: String,
         color: String,
-        isIncome: Boolean = false
+        isIncome: Boolean = false,
+        icon: String? = null,
+        parentId: Long? = null
     ): Long {
         val category = CategoryEntity(
             name = name,
             color = color,
+            icon = icon,
+            parentId = parentId,
             isSystem = false,
             isIncome = isIncome,
             displayOrder = 999
@@ -47,16 +87,39 @@ class CategoryRepository @Inject constructor(
         return categoryDao.insertCategory(category)
     }
     
-    suspend fun updateCategory(category: CategoryEntity) {
-        categoryDao.updateCategory(
-            category.copy(updatedAt = LocalDateTime.now())
-        )
+    /**
+     * Saves an edited category. When its name changed, every transaction,
+     * split, budget, merchant mapping, recurring entry, subscription and rule
+     * that stored [previousName] moves to the new name in the same transaction,
+     * so nothing is left pointing at a name that no longer exists.
+     */
+    suspend fun updateCategory(category: CategoryEntity, previousName: String = category.name) {
+        // The built-in name mirror switches inside the transaction, before commit, so
+        // nothing classified after this rename can still get the old name (#823); a
+        // row saved under the new name before commit waits on the write lock and
+        // finds it once the rename lands. If the rename fails, the mirror is rebuilt
+        // from what is actually committed — not from a snapshot, which an overlapping
+        // save that did commit would make stale.
+        try {
+            database.withTransaction {
+                categoryDao.updateCategory(category.copy(updatedAt = LocalDateTime.now()))
+                if (previousName != category.name) {
+                    categoryDao.renameReferences(previousName, category.name)
+                    ruleRepository.renameCategory(previousName, category.name)
+                    BuiltinCategoryNames.update(categoryDao.getAllCategoriesList())
+                }
+            }
+        } catch (e: Throwable) {
+            withContext(NonCancellable) { BuiltinCategoryNames.update(categoryDao.getAllCategoriesList()) }
+            throw e
+        }
     }
     
     suspend fun deleteCategory(categoryId: Long): Boolean {
         // Only delete non-system categories
         val category = categoryDao.getCategoryById(categoryId)
         if (category != null && !category.isSystem) {
+            categoryDao.detachChildren(categoryId)
             categoryDao.deleteCategory(categoryId)
             return true
         }
@@ -70,26 +133,16 @@ class CategoryRepository @Inject constructor(
     suspend fun initializeDefaultCategories() {
         // Only initialize if no categories exist
         if (categoryDao.getCategoryCount() == 0) {
-            val defaultCategories = listOf(
-                CategoryEntity(name = "Food & Dining", color = "#FC8019", isSystem = true, isIncome = false, displayOrder = 1),
-                CategoryEntity(name = "Groceries", color = "#5AC85A", isSystem = true, isIncome = false, displayOrder = 2),
-                CategoryEntity(name = "Transportation", color = "#000000", isSystem = true, isIncome = false, displayOrder = 3),
-                CategoryEntity(name = "Shopping", color = "#FF9900", isSystem = true, isIncome = false, displayOrder = 4),
-                CategoryEntity(name = "Bills & Utilities", color = "#4CAF50", isSystem = true, isIncome = false, displayOrder = 5),
-                CategoryEntity(name = "Entertainment", color = "#E50914", isSystem = true, isIncome = false, displayOrder = 6),
-                CategoryEntity(name = "Healthcare", color = "#10847E", isSystem = true, isIncome = false, displayOrder = 7),
-                CategoryEntity(name = "Investments", color = "#00D09C", isSystem = true, isIncome = false, displayOrder = 8),
-                CategoryEntity(name = "Banking", color = "#004C8F", isSystem = true, isIncome = false, displayOrder = 9),
-                CategoryEntity(name = "Personal Care", color = "#6A4C93", isSystem = true, isIncome = false, displayOrder = 10),
-                CategoryEntity(name = "Education", color = "#673AB7", isSystem = true, isIncome = false, displayOrder = 11),
-                CategoryEntity(name = "Mobile", color = "#2A3890", isSystem = true, isIncome = false, displayOrder = 12),
-                CategoryEntity(name = "Fitness", color = "#FF3278", isSystem = true, isIncome = false, displayOrder = 13),
-                CategoryEntity(name = "Insurance", color = "#0066CC", isSystem = true, isIncome = false, displayOrder = 14),
-                CategoryEntity(name = "Travel", color = "#00BCD4", isSystem = true, isIncome = false, displayOrder = 15),
-                CategoryEntity(name = "Salary", color = "#4CAF50", isSystem = true, isIncome = true, displayOrder = 16),
-                CategoryEntity(name = "Income", color = "#4CAF50", isSystem = true, isIncome = true, displayOrder = 17),
-                CategoryEntity(name = "Others", color = "#757575", isSystem = true, isIncome = false, displayOrder = 18)
-            )
+            val defaultCategories = DefaultCategoryData.ALL.map { seed ->
+                CategoryEntity(
+                    name = seed.name,
+                    color = seed.colorHex,
+                    isSystem = true,
+                    systemName = seed.name,
+                    isIncome = seed.isIncome,
+                    displayOrder = DefaultCategoryData.ALL.indexOf(seed) + 1
+                )
+            }
             categoryDao.insertCategories(defaultCategories)
         }
     }

@@ -3,11 +3,14 @@ package com.pennywiseai.tracker.receiver
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
 import android.util.Log
+import com.pennywiseai.tracker.data.preferences.TrackedNotificationAppsStore
 import com.pennywiseai.tracker.data.repository.BankNotificationRepository
 import com.pennywiseai.tracker.data.repository.TransactionRepository
 import com.pennywiseai.tracker.data.manager.SmsTransactionProcessor
+import com.pennywiseai.tracker.data.manager.TransactionDeduplication
 import com.pennywiseai.parser.core.bank.BankParserFactory
 import com.pennywiseai.tracker.worker.BankNotificationRetryWorker
+import com.pennywiseai.tracker.data.mapper.toEntity
 import dagger.hilt.EntryPoint
 import dagger.hilt.InstallIn
 import dagger.hilt.android.EntryPointAccessors
@@ -33,6 +36,7 @@ class BankNotificationListenerService : NotificationListenerService() {
         fun smsTransactionProcessor(): SmsTransactionProcessor
         fun bankNotificationRepository(): BankNotificationRepository
         fun transactionRepository(): TransactionRepository
+        fun trackedNotificationAppsStore(): TrackedNotificationAppsStore
     }
 
     companion object {
@@ -43,8 +47,15 @@ class BankNotificationListenerService : NotificationListenerService() {
 
     override fun onNotificationPosted(sbn: StatusBarNotification) {
         val packageName = sbn.packageName ?: return
+        // Our own alerts ("Spent … at …?") must never feed back in.
+        if (packageName == this.packageName) return
 
-        if (!BankNotificationConfig.isAllowed(packageName)) {
+        val entryPoint = EntryPointAccessors.fromApplication(
+            applicationContext,
+            NotificationListenerEntryPoint::class.java
+        )
+        val allowed = BankNotificationConfig.isAllowed(packageName)
+        if (!allowed && !entryPoint.trackedNotificationAppsStore().isTracked(packageName)) {
             return
         }
 
@@ -58,10 +69,21 @@ class BankNotificationListenerService : NotificationListenerService() {
             return
         }
 
-        val entryPoint = EntryPointAccessors.fromApplication(
-            applicationContext,
-            NotificationListenerEntryPoint::class.java
-        )
+        // #994 step 4: an app the user picked, with no parser of its own. Offer what
+        // the generic extractor reads as a suggestion; never book it directly.
+        if (!allowed) {
+            serviceScope.launch {
+                try {
+                    // The package is the sender: it keeps two apps with one name apart.
+                    SmsBroadcastReceiver.suggestFromLearnedSender(
+                        applicationContext, packageName, body, sbn.postTime, fromTrackedApp = true
+                    )
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to suggest from tracked app notification", e)
+                }
+            }
+            return
+        }
         val processor = entryPoint.smsTransactionProcessor()
         val notificationRepository = entryPoint.bankNotificationRepository()
         val transactionRepository = entryPoint.transactionRepository()
@@ -82,25 +104,28 @@ class BankNotificationListenerService : NotificationListenerService() {
             }
 
             try {
-                // Cross-dedup: check if SMS already created this transaction.
-                // Parse first to get amount, then look for an existing transaction
-                // with the same amount within a ±2-minute window.
-                val parser = BankParserFactory.getParser(senderAlias)
-                val parsed = parser?.parse(body, senderAlias, timestamp)
+                // Two-layer cross-channel dedup. Layer 1: exact transaction
+                // hash (the same value the SMS path stores) — identical bodies
+                // dedup here. Layer 2: same bank + merchant + amount within a
+                // ±2-minute window — catches the same charge whose sender code
+                // or body text differs between the SMS and the notification.
+                val parsed = BankParserFactory.getParsers(senderAlias)
+                    .firstNotNullOfOrNull { it.parse(body, senderAlias, timestamp) }
                 if (parsed != null) {
+                    val incoming = parsed.toEntity()
+                    val hashMatch = incoming.transactionHash
+                        ?.let { transactionRepository.getTransactionByHash(it) } != null
                     val eventTime = LocalDateTime.ofInstant(
                         Instant.ofEpochMilli(timestamp), ZoneId.systemDefault()
                     )
-                    val windowStart = eventTime.minusMinutes(2)
-                    val windowEnd = eventTime.plusMinutes(2)
-                    val existing = transactionRepository.getTransactionByAmountAndDate(
-                        parsed.amount, windowStart, windowEnd
+                    val nearby = transactionRepository.getTransactionByAmountAndDate(
+                        parsed.amount,
+                        eventTime.minusMinutes(2),
+                        eventTime.plusMinutes(2)
                     )
-                    if (existing.any { it.bankName == parsed.bankName }) {
-                        Log.d(TAG, "Notification skipped: duplicate of SMS transaction")
-                        if (notificationId != null) {
-                            notificationRepository.markProcessed(notificationId, null)
-                        }
+                    if (hashMatch || nearby.any { TransactionDeduplication.isSameCharge(it, incoming) }) {
+                        Log.d(TAG, "Notification matches existing transaction (dedup)")
+                        notificationId?.let { notificationRepository.markProcessed(it, null) }
                         return@launch
                     }
                 }
@@ -110,10 +135,16 @@ class BankNotificationListenerService : NotificationListenerService() {
                     body = body,
                     timestamp = timestamp
                 )
+                if (result.success || result.intentionallySkipped) {
+                    // An ignored account is settled, not failed — leaving it
+                    // unprocessed would have it re-parsed by every retry run
+                    // and never cleared (#826).
+                    notificationId?.let {
+                        notificationRepository.markProcessed(it, result.transactionId)
+                    }
+                }
                 if (!result.success) {
                     Log.d(TAG, "Notification skipped: ${result.reason}")
-                } else if (notificationId != null) {
-                    notificationRepository.markProcessed(notificationId, result.transactionId)
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to process bank notification", e)

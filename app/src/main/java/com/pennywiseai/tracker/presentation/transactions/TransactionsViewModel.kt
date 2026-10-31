@@ -1,5 +1,8 @@
 package com.pennywiseai.tracker.presentation.transactions
 
+import com.pennywiseai.tracker.ui.UiText
+import com.pennywiseai.tracker.R
+import androidx.annotation.StringRes
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.pennywiseai.tracker.data.database.dao.TransactionSplitDao
@@ -7,21 +10,36 @@ import com.pennywiseai.tracker.data.database.entity.BudgetImpactType
 import com.pennywiseai.tracker.data.database.entity.CategoryEntity
 import com.pennywiseai.tracker.data.database.entity.TransactionEntity
 import com.pennywiseai.tracker.data.database.entity.TransactionType
+import com.pennywiseai.tracker.data.database.entity.expandWithChildren
+import com.pennywiseai.tracker.data.database.entity.parentNameOf
 import com.pennywiseai.tracker.data.repository.CategoryRepository
+import com.pennywiseai.tracker.data.repository.MerchantAliasRepository
+import com.pennywiseai.tracker.data.repository.TagRepository
 import com.pennywiseai.tracker.data.repository.TransactionRepository
 import com.pennywiseai.tracker.presentation.common.TimePeriod
 import com.pennywiseai.tracker.presentation.common.TransactionTypeFilter
+import com.pennywiseai.tracker.presentation.common.getCycleAwareDateRange
 import com.pennywiseai.tracker.presentation.common.getDateRangeForPeriod
 import com.pennywiseai.tracker.presentation.common.CurrencyGroupedTotals
 import com.pennywiseai.tracker.presentation.common.CurrencyTotals
+import com.pennywiseai.tracker.presentation.common.AccountOption
+import com.pennywiseai.tracker.presentation.common.accountOptions
 import com.pennywiseai.tracker.presentation.common.buildProfileAccountKeys
+import com.pennywiseai.tracker.presentation.common.filterTransactionsByAccount
 import com.pennywiseai.tracker.presentation.common.filterTransactionsByProfile
 import com.pennywiseai.tracker.core.Constants
 import com.pennywiseai.tracker.data.currency.CurrencyConversionService
 import com.pennywiseai.tracker.data.database.entity.ProfileEntity
 import com.pennywiseai.tracker.data.repository.AccountBalanceRepository
 import com.pennywiseai.tracker.data.repository.ProfileRepository
+import com.pennywiseai.tracker.data.repository.TransactionGroupRepository
+import com.pennywiseai.tracker.data.database.entity.TransactionGroupEntity
+import com.pennywiseai.tracker.domain.usecase.DeleteTransactionUseCase
+import com.pennywiseai.tracker.domain.usecase.RestoreTransactionUseCase
+import com.pennywiseai.tracker.data.preferences.IgnoredAccountsStore
+import com.pennywiseai.tracker.utils.forTotals
 import com.pennywiseai.tracker.utils.CurrencyUtils
+import com.pennywiseai.tracker.utils.SmsReportUrlBuilder
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.FlowPreview
@@ -38,20 +56,48 @@ import javax.inject.Inject
 class TransactionsViewModel @Inject constructor(
     private val transactionRepository: TransactionRepository,
     private val categoryRepository: CategoryRepository,
+    private val tagRepository: TagRepository,
+    private val merchantAliasRepository: MerchantAliasRepository,
     private val transactionSplitDao: TransactionSplitDao,
     private val userPreferencesRepository: com.pennywiseai.tracker.data.preferences.UserPreferencesRepository,
     private val currencyConversionService: CurrencyConversionService,
     private val accountBalanceRepository: AccountBalanceRepository,
+    private val cardRepository: com.pennywiseai.tracker.data.repository.CardRepository,
+    private val ignoredAccountsStore: IgnoredAccountsStore,
     private val profileRepository: ProfileRepository,
+    private val transactionGroupRepository: TransactionGroupRepository,
+    private val deleteTransactionUseCase: DeleteTransactionUseCase,
+    private val restoreTransactionUseCase: RestoreTransactionUseCase,
     private val savedStateHandle: androidx.lifecycle.SavedStateHandle,
     @dagger.hilt.android.qualifiers.ApplicationContext private val context: android.content.Context
 ) : ViewModel() {
-    
+
+    // Keep home-screen widgets in sync with edits made here (delete/undo,
+    // bulk category changes, transfer marking).
+    private fun refreshWidgets() =
+        com.pennywiseai.tracker.widget.WidgetRefresher.refreshTransactionWidgets(context)
+
     private val _searchQuery = MutableStateFlow("")
     val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
+
+    // transactionId -> tag names, kept in sync for in-memory tag search.
+    private val transactionTagsMap: StateFlow<Map<Long, List<String>>> =
+        tagRepository.observeTransactionTagNames()
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyMap())
+
+    // raw merchant name -> user-set display alias (#583), so a merchant's alias
+    // is searchable too, not just its raw name (#691).
+    private val merchantAliases: StateFlow<Map<String, String>> =
+        merchantAliasRepository.getAllAliases()
+            .map { list -> list.associate { it.merchantName to it.alias } }
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyMap())
     
     private val _selectedPeriod = MutableStateFlow(TimePeriod.THIS_MONTH)
     val selectedPeriod: StateFlow<TimePeriod> = _selectedPeriod.asStateFlow()
+
+    /** Drives the period chip's date label (#686). */
+    val budgetCycleStartDay: StateFlow<Int> = userPreferencesRepository.budgetCycleStartDay
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), 1)
     
     private val _categoryFilter = MutableStateFlow<String?>(null)
     val categoryFilter: StateFlow<String?> = _categoryFilter.asStateFlow()
@@ -60,14 +106,37 @@ class TransactionsViewModel @Inject constructor(
     private val _categoriesFilter = MutableStateFlow<List<String>?>(null)
     val categoriesFilter: StateFlow<List<String>?> = _categoriesFilter.asStateFlow()
 
+    // True only when the multi-category filter came from a budget drill-down —
+    // the "totals may differ" banner is about budgets, not the user's own picks (#786).
+    private val _categoriesFromBudget = MutableStateFlow(false)
+    val categoriesFromBudget: StateFlow<Boolean> = _categoriesFromBudget.asStateFlow()
+
     private val _transactionTypeFilter = MutableStateFlow(TransactionTypeFilter.ALL)
     val transactionTypeFilter: StateFlow<TransactionTypeFilter> = _transactionTypeFilter.asStateFlow()
 
     private val _selectedProfileId = MutableStateFlow<Long?>(null)
     val selectedProfileId: StateFlow<Long?> = _selectedProfileId.asStateFlow()
 
+    private val _ignoredAccountKeys = MutableStateFlow<Set<String>>(emptySet())
     private val _profileAccountKeys = MutableStateFlow<Map<Long, Set<String>>>(emptyMap())
     val profileAccountKeys: StateFlow<Map<Long, Set<String>>> = _profileAccountKeys.asStateFlow()
+
+    // Account filter — null means "All accounts". Key is "bankName_accountLast4".
+    private val _accountFilter = MutableStateFlow<String?>(null)
+    val accountFilter: StateFlow<String?> = _accountFilter.asStateFlow()
+
+    // Tag filter — null means "All tags". Matches any transaction that carries the tag.
+    private val _tagFilter = MutableStateFlow<String?>(null)
+    val tagFilter: StateFlow<String?> = _tagFilter.asStateFlow()
+
+    val availableTags: StateFlow<List<String>> = tagRepository.observeAllTagNames()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    // Pickable account options for the account filter dropdown (alias-preferred labels).
+    val accountOptions: StateFlow<List<AccountOption>> =
+        accountBalanceRepository.getAllLatestBalances()
+            .map { accountOptions(it) }
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     val profiles: StateFlow<List<ProfileEntity>> = profileRepository.observeAllProfiles()
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
@@ -109,13 +178,18 @@ class TransactionsViewModel @Inject constructor(
     val currencyGroupedTotals: StateFlow<CurrencyGroupedTotals> = _currencyGroupedTotals.asStateFlow()
 
     // Available currencies for the selected time period
-    val availableCurrencies: StateFlow<List<String>> = combine(selectedPeriod, customDateRange) { period, customRange ->
+    val availableCurrencies: StateFlow<List<String>> = combine(selectedPeriod, customDateRange, budgetCycleStartDay) { period, customRange, _ ->
         period to customRange
     }.flatMapLatest { (period, customRange) ->
         if (period == TimePeriod.ALL) {
             transactionRepository.getAllCurrencies()
         } else if (period == TimePeriod.CUSTOM && customRange != null) {
             val (startDate, endDate) = customRange
+            val startDateTime = startDate.atStartOfDay()
+            val endDateTime = endDate.atTime(23, 59, 59)
+            transactionRepository.getCurrenciesForPeriod(startDateTime, endDateTime)
+        } else if (period.followsBudgetCycle) {
+            val (startDate, endDate) = getCycleRange(period)
             val startDateTime = startDate.atStartOfDay()
             val endDateTime = endDate.atTime(23, 59, 59)
             transactionRepository.getCurrenciesForPeriod(startDateTime, endDateTime)
@@ -154,7 +228,31 @@ class TransactionsViewModel @Inject constructor(
     ) { groupedTotals, currency, isUnified ->
         Triple(groupedTotals, currency, isUnified)
     }.mapLatest { (groupedTotals, currency, isUnified) ->
-        if (isUnified && groupedTotals.totalsByCurrency.size > 1) {
+        resolveTotals(groupedTotals, currency, isUnified)
+    }.stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(5000),
+        initialValue = FilteredTotals()
+    )
+
+    /**
+     * Collapses per-currency grouped totals into the figures for [currency]:
+     * either that one currency's bucket, or — in unified mode — every bucket
+     * converted into it. This is the ONLY way a single-figure total may be
+     * produced from mixed currencies (hard constraint 2); shared by the list
+     * totals and the selection totals so the two cards can never disagree on
+     * the currency rules.
+     */
+    private suspend fun resolveTotals(
+        groupedTotals: CurrencyGroupedTotals,
+        currency: String,
+        isUnified: Boolean
+    ): FilteredTotals {
+        // isNotEmpty, not size > 1: in unified mode even a single-currency set
+        // needs converting when that one currency isn't the display currency —
+        // a selection of only-USD rows under an INR display would otherwise
+        // look up the empty INR bucket and show zeros.
+        return if (isUnified && groupedTotals.totalsByCurrency.isNotEmpty()) {
             // Aggregate all currencies converted to display currency
             var income = BigDecimal.ZERO
             var expenses = BigDecimal.ZERO
@@ -170,15 +268,23 @@ class TransactionsViewModel @Inject constructor(
                     transfer += totals.transfer
                     investment += totals.investment
                 } else {
-                    income += currencyConversionService.convertAmount(totals.income, cur, currency)
-                    expenses += currencyConversionService.convertAmount(totals.expenses, cur, currency)
-                    credit += currencyConversionService.convertAmount(totals.credit, cur, currency)
-                    transfer += currencyConversionService.convertAmount(totals.transfer, cur, currency)
-                    investment += currencyConversionService.convertAmount(totals.investment, cur, currency)
+                    // Skip unconvertible currency pairs (add nothing) rather than
+                    // counting face value (#670). The transactions still appear in
+                    // the list, so `count` below stays complete.
+                    income += currencyConversionService.convertAmountOrNull(totals.income, cur, currency) ?: BigDecimal.ZERO
+                    expenses += currencyConversionService.convertAmountOrNull(totals.expenses, cur, currency) ?: BigDecimal.ZERO
+                    credit += currencyConversionService.convertAmountOrNull(totals.credit, cur, currency) ?: BigDecimal.ZERO
+                    transfer += currencyConversionService.convertAmountOrNull(totals.transfer, cur, currency) ?: BigDecimal.ZERO
+                    investment += currencyConversionService.convertAmountOrNull(totals.investment, cur, currency) ?: BigDecimal.ZERO
                 }
                 count += totals.transactionCount
             }
-            val netBalance = income - expenses - credit - transfer - investment
+            // Net = true cash flow (income − expenses). Credit-card spend,
+            // transfers, and investments are *not* in the visible Expenses tile,
+            // so subtracting them here produced a Net that didn't reconcile with
+            // the user-visible math. Those channels live on the home Cash-Flow
+            // card as deliberately separate categories.
+            val netBalance = income - expenses
             FilteredTotals(income, expenses, credit, transfer, investment, netBalance, count)
         } else {
             val currencyTotals = groupedTotals.getTotalsForCurrency(currency)
@@ -192,15 +298,326 @@ class TransactionsViewModel @Inject constructor(
                 transactionCount = currencyTotals.transactionCount
             )
         }
+    }
+
+    private val _deletedTransaction = MutableStateFlow<TransactionEntity?>(null)
+    val deletedTransaction: StateFlow<TransactionEntity?> = _deletedTransaction.asStateFlow()
+
+    // ─── Bulk-edit selection (#369) ──────────────────────────────────────────
+    //
+    // Selection mode is implicit in [selectedIds.isNotEmpty()] — no separate flag.
+    // Long-press in the list enters this mode and tap-toggles add/remove rows.
+    private val _selectedIds = MutableStateFlow<Set<Long>>(emptySet())
+    val selectedIds: StateFlow<Set<Long>> = _selectedIds.asStateFlow()
+
+    /**
+     * Income / expense / credit totals of just the selected rows (#634),
+     * resolved through [resolveTotals] so the selection card obeys exactly the
+     * same currency rules as the list card — one currency at a time, or
+     * converted in unified mode. Never a raw cross-currency sum.
+     */
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    val selectionTotals: StateFlow<FilteredTotals> = combine(
+        _selectedIds,
+        _uiState,
+        _selectedCurrency,
+        _isUnifiedMode
+    ) { ids, state, currency, isUnified ->
+        val selected = state.transactions.filter { it.id in ids }
+        Triple(selected, currency, isUnified)
+    }.mapLatest { (selected, currency, isUnified) ->
+        resolveTotals(calculateCurrencyGroupedTotals(selected), currency, isUnified)
     }.stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(5000),
         initialValue = FilteredTotals()
     )
-    
-    private val _deletedTransaction = MutableStateFlow<TransactionEntity?>(null)
-    val deletedTransaction: StateFlow<TransactionEntity?> = _deletedTransaction.asStateFlow()
-    
+
+    /** One-shot snackbar payload for a bulk action; cleared by the UI after showing. */
+    data class BulkSnack(val message: UiText, val undo: (() -> Unit)? = null)
+    private val _bulkSnack = MutableStateFlow<BulkSnack?>(null)
+    val bulkSnack: StateFlow<BulkSnack?> = _bulkSnack.asStateFlow()
+    fun consumeBulkSnack() { _bulkSnack.value = null }
+
+    fun toggleSelection(id: Long) {
+        _selectedIds.update { current ->
+            if (current.contains(id)) current - id else current + id
+        }
+    }
+
+    fun clearSelection() { _selectedIds.value = emptySet() }
+
+    init {
+        // Prune selected ids that fall out of the visible list (filter change,
+        // search, delete from elsewhere). Otherwise a bulk op would silently
+        // skip rows the user thinks they had selected.
+        viewModelScope.launch {
+            _uiState
+                .map { it.transactions.mapTo(HashSet()) { tx -> tx.id } }
+                .distinctUntilChanged()
+                .collect { visible ->
+                    _selectedIds.update { it intersect visible }
+                }
+        }
+    }
+
+    /**
+     * Apply [newCategory] to every currently-selected transaction. Captures the
+     * (id → previous-category) pairs first so the snackbar's Undo can restore
+     * them; if a row had its category changed elsewhere in between, the undo
+     * will overwrite that change too — acceptable for an explicit user action.
+     */
+    fun bulkUpdateCategory(newCategory: String) {
+        val ids = _selectedIds.value
+        if (ids.isEmpty()) return
+        viewModelScope.launch {
+            val previous = _uiState.value.transactions
+                .filter { it.id in ids }
+                .associate { it.id to it.category }
+            previous.keys.forEach { id ->
+                transactionRepository.updateCategory(id, newCategory)
+            }
+            refreshWidgets()
+            clearSelection()
+            _bulkSnack.value = BulkSnack(
+                message = UiText.Plural(R.plurals.txn_list_bulk_category_updated, previous.size, listOf(previous.size, UiText.category(newCategory))),
+                undo = {
+                    viewModelScope.launch {
+                        previous.forEach { (id, oldCategory) ->
+                            transactionRepository.updateCategory(id, oldCategory)
+                        }
+                        refreshWidgets()
+                    }
+                }
+            )
+        }
+    }
+
+    // ─── Self-transfer suggestions (#385) ───────────────────────────────────
+    //
+    // Cheap heuristic on the *visible* (filtered) transactions: pair each
+    // EXPENSE with an INCOME row of the same currency + amount that landed on
+    // a different account within ±10 minutes. No silent merge — the UI just
+    // surfaces a "↔ Mark as transfer" chip on the expense row, and the user
+    // confirms with one tap. Confirming flips both rows' transactionType to
+    // TRANSFER (which already excludes them from Net), with Undo restoring
+    // the originals.
+    val suggestedTransferPartnerOf: StateFlow<Map<Long, Long>> = _uiState
+        .map { state -> computeSelfTransferPairs(state.transactions) }
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5000),
+            initialValue = emptyMap()
+        )
+
+
+    /**
+     * User-confirmed self-transfer: flip both rows to TRANSFER and populate
+     * their `fromAccount` / `toAccount` so the detail screen can render the
+     * "From → To" account flow (it falls back to `accountNumber` otherwise).
+     * Undo restores the original `transactionType` + `fromAccount` /
+     * `toAccount` for each row. No structural link is created between the
+     * rows — TRANSFER already excludes them from Net cash flow.
+     */
+    /**
+     * Link the two currently-selected transactions as a transfer (#614) — the
+     * manual counterpart to the auto-detected [suggestedTransferPartnerOf] chip,
+     * for pairs the detector misses (transfer fees, gaps beyond the window, a
+     * single-leg SMS the user pairs by hand). Requires exactly two selected rows,
+     * one outgoing (expense) and one incoming (income); otherwise it surfaces a
+     * hint. Reuses [markPairAsTransfer] so undo behaves identically.
+     */
+    fun bulkMarkAsTransfer() {
+        val ids = _selectedIds.value.toList()
+        if (ids.size != 2) {
+            _bulkSnack.value = BulkSnack(UiText.Res(R.string.txn_list_bulk_transfer_need_two))
+            return
+        }
+        val all = _uiState.value.transactions
+        val a = all.firstOrNull { it.id == ids[0] } ?: return
+        val b = all.firstOrNull { it.id == ids[1] } ?: return
+        val hasExpense = listOf(a, b).any { it.transactionType == TransactionType.EXPENSE }
+        val hasIncome = listOf(a, b).any { it.transactionType == TransactionType.INCOME }
+        if (!(hasExpense && hasIncome)) {
+            _bulkSnack.value = BulkSnack(UiText.Res(R.string.txn_list_bulk_transfer_need_pair))
+            return
+        }
+        clearSelection()
+        markPairAsTransfer(a.id, b.id)
+    }
+
+    fun markPairAsTransfer(aId: Long, bId: Long) {
+        viewModelScope.launch {
+            val all = _uiState.value.transactions
+            val a = all.firstOrNull { it.id == aId } ?: return@launch
+            val b = all.firstOrNull { it.id == bId } ?: return@launch
+
+            // Source of the money = the EXPENSE row's account.
+            // Destination = the INCOME row's account.
+            // A split bill (#346) is money others owe you, not a transfer. Read fresh.
+            if (listOf(aId, bId).any { transactionRepository.getTransactionById(it)?.lentSharesTotal != null }) {
+                _bulkSnack.value = BulkSnack(UiText.Res(R.string.split_error_transfer))
+                return@launch
+            }
+
+            val (expense, income) = if (a.transactionType == TransactionType.EXPENSE) a to b else b to a
+            val fromAcct = expense.accountNumber
+            val toAcct = income.accountNumber
+
+            // Snapshot for Undo: type + the two account fields per row.
+            data class Snapshot(val type: TransactionType, val fromAccount: String?, val toAccount: String?,
+                val fromBankName: String?, val toBankName: String?)
+            val originals = listOf(a, b).associate {
+                it.id to Snapshot(it.transactionType, it.fromAccount, it.toAccount, it.fromBankName, it.toBankName)
+            }
+
+            val now = java.time.LocalDateTime.now()
+            transactionRepository.updateTransaction(
+                a.copy(
+                    transactionType = TransactionType.TRANSFER,
+                    fromAccount = fromAcct,
+                    toAccount = toAcct,
+                    fromBankName = expense.bankName,
+                    toBankName = income.bankName,
+                    updatedAt = now
+                )
+            )
+            transactionRepository.updateTransaction(
+                b.copy(
+                    transactionType = TransactionType.TRANSFER,
+                    fromAccount = fromAcct,
+                    toAccount = toAcct,
+                    fromBankName = expense.bankName,
+                    toBankName = income.bankName,
+                    updatedAt = now
+                )
+            )
+            refreshWidgets()
+            _bulkSnack.value = BulkSnack(
+                message = UiText.Res(R.string.txn_list_bulk_marked_transfer),
+                undo = {
+                    viewModelScope.launch {
+                        val current = _uiState.value.transactions
+                        val nowUndo = java.time.LocalDateTime.now()
+                        originals.forEach { (id, snapshot) ->
+                            current.firstOrNull { it.id == id }?.let { row ->
+                                transactionRepository.updateTransaction(
+                                    row.copy(
+                                        transactionType = snapshot.type,
+                                        fromAccount = snapshot.fromAccount,
+                                        toAccount = snapshot.toAccount,
+                                        fromBankName = snapshot.fromBankName,
+                                        toBankName = snapshot.toBankName,
+                                        updatedAt = nowUndo
+                                    )
+                                )
+                            }
+                        }
+                        refreshWidgets()
+                    }
+                }
+            )
+        }
+    }
+
+    /**
+     * Soft-delete every currently-selected transaction. Undo restores them all
+     * via the same per-row undoDelete path the single-row flow uses.
+     */
+    fun bulkDelete() {
+        val ids = _selectedIds.value
+        if (ids.isEmpty()) return
+        viewModelScope.launch {
+            val snapshot = _uiState.value.transactions.filter { it.id in ids }
+            deleteTransactionUseCase(snapshot)
+            refreshWidgets()
+            clearSelection()
+            _bulkSnack.value = BulkSnack(
+                message = UiText.Plural(R.plurals.txn_list_bulk_deleted, snapshot.size),
+                undo = {
+                    viewModelScope.launch {
+                        // The snapshot predates the delete, and restore skips rows it
+                        // sees as not deleted; it re-reads each row before restoring.
+                        restoreTransactionUseCase(snapshot.map { it.copy(isDeleted = true) })
+                        refreshWidgets()
+                    }
+                }
+            )
+        }
+    }
+
+    // ─── Bulk add-to-group (#506) ────────────────────────────────────────────
+    //
+    // All existing groups, for the bulk "Add to group" picker. A transaction
+    // belongs to at most one group, so adding to a new group moves it off any
+    // group it was already in — the undo below restores the prior membership.
+    val groups: StateFlow<List<TransactionGroupEntity>> =
+        transactionGroupRepository.getAllGroups()
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    /**
+     * Add every currently-selected transaction to the group [groupId]. Captures
+     * each row's previous groupId first so Undo can restore the original
+     * membership (re-linking to the old group, or unlinking if it had none).
+     */
+    fun bulkAddToGroup(groupId: Long, groupName: String) {
+        val ids = _selectedIds.value
+        if (ids.isEmpty()) return
+        viewModelScope.launch {
+            val previous = _uiState.value.transactions
+                .filter { it.id in ids }
+                .associate { it.id to it.groupId }
+            previous.keys.forEach { id ->
+                transactionGroupRepository.addTransactionToGroup(id, groupId)
+            }
+            clearSelection()
+            _bulkSnack.value = BulkSnack(
+                message = UiText.Plural(R.plurals.txn_list_bulk_added_to_group, previous.size, listOf(previous.size, groupName)),
+                undo = { restoreGroupMembership(previous) }
+            )
+        }
+    }
+
+    /**
+     * Create a new group named [name] and add every currently-selected
+     * transaction to it. Undo restores the prior membership and deletes the
+     * now-empty group that was just created.
+     */
+    fun bulkCreateGroupAndAdd(name: String, note: String? = null) {
+        val ids = _selectedIds.value
+        if (ids.isEmpty() || name.isBlank()) return
+        viewModelScope.launch {
+            val previous = _uiState.value.transactions
+                .filter { it.id in ids }
+                .associate { it.id to it.groupId }
+            val groupId = transactionGroupRepository.createGroup(name, note)
+            previous.keys.forEach { id ->
+                transactionGroupRepository.addTransactionToGroup(id, groupId)
+            }
+            clearSelection()
+            _bulkSnack.value = BulkSnack(
+                message = UiText.Plural(R.plurals.txn_list_bulk_added_to_group, previous.size, listOf(previous.size, name.trim())),
+                undo = {
+                    viewModelScope.launch {
+                        restoreGroupMembership(previous).join()
+                        transactionGroupRepository.deleteGroup(groupId)
+                    }
+                }
+            )
+        }
+    }
+
+    private fun restoreGroupMembership(previous: Map<Long, Long?>) =
+        viewModelScope.launch {
+            previous.forEach { (id, oldGroupId) ->
+                if (oldGroupId != null) {
+                    transactionGroupRepository.addTransactionToGroup(id, oldGroupId)
+                } else {
+                    transactionGroupRepository.removeTransactionFromGroup(id)
+                }
+            }
+        }
+
     // Track if initial filters have been applied to prevent resetting on back navigation
     private var hasAppliedInitialFilters = false
 
@@ -241,38 +658,60 @@ class TransactionsViewModel @Inject constructor(
             initialValue = false
         )
 
+    private val smsScanUseCustomDate: StateFlow<Boolean> = userPreferencesRepository.smsScanUseCustomDate
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5000),
+            initialValue = false
+        )
+
+    private val smsScanCustomDate: StateFlow<Long?> = userPreferencesRepository.smsScanCustomDate
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5000),
+            initialValue = null
+        )
+
     fun isShowingLimitedData(): Boolean {
         if (smsScanAllTime.value) return false
 
         val currentPeriod = _selectedPeriod.value
-        val scanMonthsValue = smsScanMonths.value
+        val scanStartDate = getSmsScanStartDate() ?: return false
 
         return when (currentPeriod) {
             TimePeriod.ALL -> true
             TimePeriod.CURRENT_FY -> {
-                // Check if FY start is before scan period
                 val dateRange = getDateRangeForPeriod(TimePeriod.CURRENT_FY)
                 if (dateRange != null) {
                     val (fyStart, _) = dateRange
-                    val scanStart = LocalDate.now().minusMonths(scanMonthsValue.toLong())
-                    fyStart.isBefore(scanStart)
+                    fyStart.isBefore(scanStartDate)
                 } else {
                     false
                 }
             }
             TimePeriod.CUSTOM -> {
-                // Check if custom range start is before scan period
                 val customRange = customDateRange.value
                 if (customRange != null) {
                     val (startDate, _) = customRange
-                    val scanStart = LocalDate.now().minusMonths(scanMonthsValue.toLong())
-                    startDate.isBefore(scanStart)
+                    startDate.isBefore(scanStartDate)
                 } else {
                     false
                 }
             }
             else -> false
         }
+    }
+
+    private fun getSmsScanStartDate(): LocalDate? {
+        if (smsScanUseCustomDate.value) {
+            return smsScanCustomDate.value?.let { millis ->
+                java.time.Instant.ofEpochMilli(millis)
+                    .atZone(java.time.ZoneId.systemDefault())
+                    .toLocalDate()
+            }
+        }
+
+        return LocalDate.now().minusMonths(smsScanMonths.value.toLong())
     }
     
     init {
@@ -285,6 +724,42 @@ class TransactionsViewModel @Inject constructor(
         viewModelScope.launch {
             accountBalanceRepository.getAllLatestBalances().collect { balances ->
                 _profileAccountKeys.value = buildProfileAccountKeys(balances)
+            }
+        }
+        viewModelScope.launch {
+            // An already-imported card purchase is stored under the *card's*
+            // digits, so ignoring the account it draws on wouldn't hide it.
+            // Expand the set once with each linked card's key and the plain
+            // match below covers both (#826).
+            combine(
+                ignoredAccountsStore.keysFlow,
+                cardRepository.getAllCards(),
+                accountBalanceRepository.getAllLatestBalances()
+            ) { ignored, cards, balances ->
+                if (ignored.isEmpty()) return@combine ignored
+                val accountKeys = balances.map {
+                    IgnoredAccountsStore.keyFor(it.bankName, it.accountLast4)
+                }.toSet()
+                ignored + cards.mapNotNull { card ->
+                    val account = card.accountLast4 ?: return@mapNotNull null
+                    if (IgnoredAccountsStore.keyFor(card.bankName, account) !in ignored) {
+                        return@mapNotNull null
+                    }
+                    val cardKey = IgnoredAccountsStore.keyFor(card.bankName, card.cardLast4)
+                    // A card's last four can collide with a real account's at
+                    // the same bank. The stored digits are all the list has to
+                    // match on, so adding the key would hide that account too —
+                    // leave it, and lose only the card rows we can't separate.
+                    if (cardKey in accountKeys && cardKey !in ignored) null else cardKey
+                }
+            }.collect { _ignoredAccountKeys.value = it }
+        }
+        viewModelScope.launch {
+            availableTags.collect { tags ->
+                val current = _tagFilter.value
+                if (current != null && tags.none { it.equals(current, ignoreCase = true) }) {
+                    _tagFilter.value = null
+                }
             }
         }
 
@@ -310,17 +785,41 @@ class TransactionsViewModel @Inject constructor(
         // This drives the category chips row in the UI
         merge(
             selectedPeriod.map { "period" },
+            budgetCycleStartDay.map { "cycle" },
             categoriesFilter.map { "categories" },
             customDateRange.map { "customDate" }
         )
             .transformLatest { _ ->
                 val period = selectedPeriod.value
-                val categories = categoriesFilter.value
+                // A budget drill-down scopes the options to its categories; the user's
+                // own ticks must not — an unticked category has to stay tickable (#786).
+                val categories = categoriesFilter.value.takeIf { _categoriesFromBudget.value }
+                // Always resolve a cycle range up-front; only the cycle-following
+                // periods consume it, but keeping a real Pair avoids nullable
+                // plumbing in the (non-suspend) filter helper.
+                val cycleRange = if (period.followsBudgetCycle) {
+                    getCycleRange(period)
+                } else {
+                    // Use a sentinel range — never read for other periods.
+                    LocalDate.now() to LocalDate.now()
+                }
                 // Get all transactions without category filter applied
-                getFilteredTransactions("", period, null, categories, TransactionTypeFilter.ALL)
-                    .collect { transactions ->
-                        emit(transactions.map { it.category }.distinct().sorted())
+                getFilteredTransactions("", period, null, categories, TransactionTypeFilter.ALL, cycleRange)
+                    .flatMapLatest { transactions ->
+                        // Include split categories, not just each row's parent: a
+                        // category that exists only inside a split is still one the
+                        // user can filter on, and the auto-clear below must not
+                        // discard it (#749). Observed, so a split edit refreshes the chips.
+                        transactionSplitDao.observeSplitsForTransactions(transactions.map { it.id })
+                            .map { splits ->
+                                // Parents of present sub-categories are filterable too (#374),
+                                // and the auto-clear below must not drop them.
+                                val present = (transactions.map { it.category } + splits.map { it.category }).distinct()
+                                val parentOf = this@TransactionsViewModel.categories.value.values.toList().parentNameOf()
+                                (present + present.mapNotNull { parentOf[it] }).distinct().sorted()
+                            }
                     }
+                    .collect { emit(it) }
             }
             .onEach { categories ->
                 _availableCategories.value = categories
@@ -336,15 +835,24 @@ class TransactionsViewModel @Inject constructor(
         merge(
             searchQuery.debounce(300).map { "search" },
             selectedPeriod.map { "period" },
+            budgetCycleStartDay.map { "cycle" },
             categoryFilter.map { "category" },
             categoriesFilter.map { "categories" },
             transactionTypeFilter.map { "typeFilter" },
             _selectedProfileId.map { "profileFilter" },
             _profileAccountKeys.map { "profileAccountKeys" },
+            // Re-filter the moment an account is ignored, rather than at the
+            // next app start (#826).
+            _ignoredAccountKeys.map { "ignoredAccounts" },
+            _accountFilter.map { "accountFilter" },
+            tagFilter.map { "tagFilter" },
             selectedCurrency.map { "currency" },
             _isUnifiedMode.map { "unifiedMode" },
             sortOption.map { "sort" },
-            customDateRange.map { "customDate" }
+            customDateRange.map { "customDate" },
+            transactionTagsMap.map { "tags" },
+            categories.map { "categoryIndex" },
+            merchantAliases.map { "aliases" }
         )
             .transformLatest { trigger ->
                 // Get current values from all StateFlows
@@ -357,12 +865,35 @@ class TransactionsViewModel @Inject constructor(
                 val isUnified = _isUnifiedMode.value
 
                 val profileId = _selectedProfileId.value
+                val accountKey = _accountFilter.value
+                val tag = _tagFilter.value
+
+                // Resolve the cycle window up-front so the inner (non-suspend)
+                // filter helper can reuse it for the cycle-following periods.
+                // Other periods never read this — pass a sentinel pair to keep
+                // the helper signature non-nullable.
+                val cycleRange = if (period.followsBudgetCycle) {
+                    getCycleRange(period)
+                } else {
+                    LocalDate.now() to LocalDate.now()
+                }
 
                 // Get filtered transactions (without currency filter first)
-                getFilteredTransactions(query, period, category, categories, typeFilter)
+                getFilteredTransactions(query, period, category, categories, typeFilter, cycleRange)
                     .collect { allTransactions ->
-                        // Apply profile filter
-                        val transactions = filterByProfile(allTransactions, profileId)
+                        // Apply profile, account, then tag filters
+                        val profileAndAccountFiltered = filterTransactionsByAccount(
+                            filterByProfile(allTransactions, profileId),
+                            accountKey
+                        )
+                        val transactions = if (tag != null) {
+                            profileAndAccountFiltered.filter { tx ->
+                                transactionTagsMap.value[tx.id]
+                                    ?.any { it.equals(tag, ignoreCase = true) } == true
+                            }
+                        } else {
+                            profileAndAccountFiltered
+                        }
                         if (isUnified) {
                             // Show all transactions regardless of currency
                             emit(sortTransactions(transactions, sort))
@@ -426,9 +957,12 @@ class TransactionsViewModel @Inject constructor(
                     val converted = mutableMapOf<Long, BigDecimal>()
                     for (tx in transactions) {
                         if (!tx.currency.equals(displayCurrency, ignoreCase = true)) {
-                            converted[tx.id] = currencyConversionService.convertAmount(
+                            // Omit unconvertible rows from the map; the row then shows
+                            // its native amount + currency instead of a mislabeled
+                            // face-value figure in the display currency (#670).
+                            currencyConversionService.convertAmountOrNull(
                                 tx.amount, tx.currency, displayCurrency
-                            )
+                            )?.let { converted[tx.id] = it }
                         }
                     }
                     _convertedAmounts.value = converted
@@ -462,6 +996,20 @@ class TransactionsViewModel @Inject constructor(
     
     fun setTransactionTypeFilter(filter: TransactionTypeFilter) {
         _transactionTypeFilter.value = filter
+    }
+
+    /** Sets the account filter; null clears it ("All accounts"). */
+    fun setAccountFilter(accountKey: String?) {
+        _accountFilter.value = accountKey
+    }
+
+    /** Sets the tag filter; null clears it ("All tags"). */
+    fun setTagFilter(tag: String?) {
+        _tagFilter.value = tag?.takeIf { it.isNotBlank() }
+    }
+
+    fun clearTagFilter() {
+        _tagFilter.value = null
     }
     
     fun setSelectedProfile(profileId: Long?) {
@@ -508,25 +1056,42 @@ class TransactionsViewModel @Inject constructor(
         }
     }
 
+    /**
+     * The "This Month" / "Last Month" range for the Transactions tab. Honours
+     * the user's configured budget cycle start day (e.g. 25th → 24th) so the
+     * transactions list, totals, and analytics agree on the same window — and
+     * so the two chips stay tiled with no unreachable days between them.
+     *
+     * Only ever called for a period where [TimePeriod.followsBudgetCycle] is
+     * true, so the non-null assertion cannot fire.
+     */
+    private suspend fun getCycleRange(period: TimePeriod): Pair<LocalDate, LocalDate> {
+        val startDay = userPreferencesRepository.getBudgetCycleStartDay()
+        return getCycleAwareDateRange(period, startDay)!!
+    }
+
     fun deleteTransaction(transaction: TransactionEntity) {
         viewModelScope.launch {
             _deletedTransaction.value = transaction
-            transactionRepository.deleteTransaction(transaction)
+            deleteTransactionUseCase(transaction)
+            refreshWidgets()
         }
     }
-    
+
     fun undoDelete() {
         _deletedTransaction.value?.let { transaction ->
             viewModelScope.launch {
-                transactionRepository.undoDeleteTransaction(transaction)
+                restoreTransactionUseCase(transaction)
                 _deletedTransaction.value = null
+                refreshWidgets()
             }
         }
     }
-    
+
     fun undoDeleteTransaction(transaction: TransactionEntity) {
         viewModelScope.launch {
-            transactionRepository.undoDeleteTransaction(transaction)
+            restoreTransactionUseCase(transaction)
+            refreshWidgets()
         }
     }
     
@@ -544,6 +1109,8 @@ class TransactionsViewModel @Inject constructor(
         clearCustomDateRange()
         selectPeriod(TimePeriod.THIS_MONTH)
         setTransactionTypeFilter(TransactionTypeFilter.ALL)
+        setAccountFilter(null)
+        clearTagFilter()
         _selectedProfileId.value = null  // reset local state only; does not update the shared DataStore preference
         setSortOption(SortOption.DATE_NEWEST)
         if (!_isUnifiedMode.value) {
@@ -553,43 +1120,50 @@ class TransactionsViewModel @Inject constructor(
         }
     }
     
+    /** A navigated type name, or All when absent, unknown or not listable (Spending). */
+    private fun navigatedType(type: String?): TransactionTypeFilter =
+        TransactionTypeFilter.entries.firstOrNull { it.name == type && it.inTransactionsList }
+            ?: TransactionTypeFilter.ALL
+
+    private fun decodeUrlParam(value: String): String {
+        return if (value.contains("+") || value.contains("%")) {
+            java.net.URLDecoder.decode(value, "UTF-8")
+        } else value
+    }
+
     fun applyInitialFilters(
         category: String?,
         merchant: String?,
         period: String?,
-        currency: String?
+        currency: String?,
+        startDateEpochDay: Long? = null,
+        endDateEpochDay: Long? = null,
+        account: String? = null,
+        tag: String? = null,
+        type: String? = null
     ) {
         if (!hasAppliedInitialFilters) {
             // Only apply filters once, when first navigating to the screen
             clearCategoryFilter()
             updateSearchQuery("")
             selectPeriod(TimePeriod.THIS_MONTH)
-            setTransactionTypeFilter(TransactionTypeFilter.ALL)
+            setTransactionTypeFilter(navigatedType(type))
             setSortOption(SortOption.DATE_NEWEST)
+            setAccountFilter(account)
+            setTagFilter(tag)
 
             category?.let {
-                val decoded = if (it.contains("+") || it.contains("%")) {
-                    java.net.URLDecoder.decode(it, "UTF-8")
-                } else it
+                val decoded = decodeUrlParam(it)
                 setCategoryFilter(decoded)
             }
 
             merchant?.let {
-                val decoded = if (it.contains("+") || it.contains("%")) {
-                    java.net.URLDecoder.decode(it, "UTF-8")
-                } else it
+                val decoded = decodeUrlParam(it)
                 updateSearchQuery(decoded)
             }
 
             period?.let { periodName ->
-                val timePeriod = when (periodName) {
-                    "THIS_MONTH" -> TimePeriod.THIS_MONTH
-                    "LAST_MONTH" -> TimePeriod.LAST_MONTH
-                    "CURRENT_FY" -> TimePeriod.CURRENT_FY
-                    "ALL" -> TimePeriod.ALL
-                    else -> null
-                }
-                timePeriod?.let { selectPeriod(it) }
+                applyNavigatedPeriod(periodName, startDateEpochDay, endDateEpochDay)
             }
 
             // Only set currency if it's provided (from navigation)
@@ -599,14 +1173,45 @@ class TransactionsViewModel @Inject constructor(
         }
     }
 
+    /**
+     * Maps a navigated period name onto the period filter. A "CUSTOM" period
+     * carries its date range as epoch days (analytics custom range drill-down);
+     * without both dates it is ignored and the current period is kept.
+     */
+    private fun applyNavigatedPeriod(
+        periodName: String,
+        startDateEpochDay: Long?,
+        endDateEpochDay: Long?
+    ) {
+        when (periodName) {
+            "THIS_MONTH" -> selectPeriod(TimePeriod.THIS_MONTH)
+            "LAST_MONTH" -> selectPeriod(TimePeriod.LAST_MONTH)
+            "CURRENT_FY" -> selectPeriod(TimePeriod.CURRENT_FY)
+            "ALL" -> selectPeriod(TimePeriod.ALL)
+            "CUSTOM" -> if (startDateEpochDay != null && endDateEpochDay != null) {
+                setCustomDateRange(
+                    LocalDate.ofEpochDay(startDateEpochDay),
+                    LocalDate.ofEpochDay(endDateEpochDay)
+                )
+            }
+        }
+    }
+
     fun applyNavigationFilters(
         category: String?,
         merchant: String?,
         period: String?,
-        currency: String?
+        currency: String?,
+        startDateEpochDay: Long? = null,
+        endDateEpochDay: Long? = null,
+        account: String? = null,
+        tag: String? = null,
+        type: String? = null
     ) {
         // Create current params to compare
-        val currentParams = NavigationParams(category, merchant, period, currency)
+        val currentParams = NavigationParams(
+            category, merchant, period, currency, startDateEpochDay, endDateEpochDay, account, tag, type
+        )
 
         // Only apply navigation filters if:
         // 1. This is the first time (appliedNavigationParams is null)
@@ -623,32 +1228,23 @@ class TransactionsViewModel @Inject constructor(
         clearCategoryFilter()
         updateSearchQuery("")
         selectPeriod(TimePeriod.THIS_MONTH)
-        setTransactionTypeFilter(TransactionTypeFilter.ALL)
+        setTransactionTypeFilter(navigatedType(type))
         setSortOption(SortOption.DATE_NEWEST)
+        setAccountFilter(account)
+        setTagFilter(tag)
 
         category?.let {
-            val decoded = if (it.contains("+") || it.contains("%")) {
-                java.net.URLDecoder.decode(it, "UTF-8")
-            } else it
+            val decoded = decodeUrlParam(it)
             setCategoryFilter(decoded)
         }
 
         merchant?.let {
-            val decoded = if (it.contains("+") || it.contains("%")) {
-                java.net.URLDecoder.decode(it, "UTF-8")
-            } else it
+            val decoded = decodeUrlParam(it)
             updateSearchQuery(decoded)
         }
 
         period?.let { periodName ->
-            val timePeriod = when (periodName) {
-                "THIS_MONTH" -> TimePeriod.THIS_MONTH
-                "LAST_MONTH" -> TimePeriod.LAST_MONTH
-                "CURRENT_FY" -> TimePeriod.CURRENT_FY
-                "ALL" -> TimePeriod.ALL
-                else -> null
-            }
-            timePeriod?.let { selectPeriod(it) }
+            applyNavigatedPeriod(periodName, startDateEpochDay, endDateEpochDay)
         }
 
         // Only set currency if it's provided (from navigation)
@@ -707,15 +1303,12 @@ class TransactionsViewModel @Inject constructor(
         // Set multiple categories filter
         categories?.let { cats ->
             val categoryList = cats.split(",").map { cat ->
-                if (cat.contains("+") || cat.contains("%")) {
-                    java.net.URLDecoder.decode(cat, "UTF-8")
-                } else {
-                    cat
-                }
+                decodeUrlParam(cat)
             }.filter { it.isNotBlank() }
 
             if (categoryList.isNotEmpty()) {
                 _categoriesFilter.value = categoryList
+                _categoriesFromBudget.value = true
             }
         }
     }
@@ -725,13 +1318,42 @@ class TransactionsViewModel @Inject constructor(
      */
     fun clearCategoriesFilter() {
         _categoriesFilter.value = null
+        _categoriesFromBudget.value = false
+    }
+
+    /**
+     * Include/exclude one category in the list filter (#786). The effective
+     * selection starts as "everything available"; unticking narrows it, and
+     * ticking the last one back returns to no filter. An empty selection is
+     * never stored — it would show nothing and read as a broken list.
+     */
+    fun toggleCategory(category: String, available: List<String>) {
+        val current = _categoriesFilter.value
+            ?: _categoryFilter.value?.let { listOf(it) }
+            ?: available
+        val next = if (category in current) current - category else current + category
+        _categoryFilter.value = null
+        _categoriesFromBudget.value = false
+        _categoriesFilter.value = when {
+            next.isEmpty() -> null
+            next.toSet() == available.toSet() -> null
+            else -> next.filter { it in available }
+        }
     }
 
     private fun filterByProfile(
         transactions: List<TransactionEntity>,
         profileId: Long?
     ): List<TransactionEntity> {
-        return filterTransactionsByProfile(transactions, profileId, _profileAccountKeys.value)
+        // Ignored accounts drop out first, and independently of the profile
+        // filter — that one returns early for "All profiles" and falls back to
+        // Personal for an unattributed transaction, so it can't carry the
+        // exclusion (#826).
+        val ignored = _ignoredAccountKeys.value
+        val tracked = if (ignored.isEmpty()) transactions else transactions.filterNot { tx ->
+            IgnoredAccountsStore.isIgnored(ignored, tx.bankName, tx.accountNumber)
+        }
+        return filterTransactionsByProfile(tracked, profileId, _profileAccountKeys.value)
     }
 
     private fun getFilteredTransactions(
@@ -739,47 +1361,38 @@ class TransactionsViewModel @Inject constructor(
         period: TimePeriod,
         category: String?,
         categories: List<String>?,
-        typeFilter: TransactionTypeFilter
+        typeFilter: TransactionTypeFilter,
+        // Resolved at the call site (which is in a coroutine) so the inner
+        // (non-suspend) Flow builder can branch on THIS_MONTH. For other
+        // periods this is ignored.
+        cycleRange: Pair<LocalDate, LocalDate>
     ): Flow<List<TransactionEntity>> {
         // Start with the base flow based on category filter
-        val baseFlow = if (category != null) {
-            println("DEBUG: Filtering by category: '$category'")
-            transactionRepository.getTransactionsByCategory(category)
-        } else {
-            transactionRepository.getAllTransactions()
-        }
+        // A single category (the Analytics tap-through) is just the one-element case
+        // of the budget filter below, and has to share its split handling: a
+        // transaction split into Groceries + Dining keeps its parent category, so
+        // matching on `category` alone found nothing for either — and the
+        // available-categories auto-clear then dropped the filter and showed
+        // everything (#749).
+        // A parent category includes its sub-categories (#374).
+        val effectiveCategories = (categories?.takeIf { it.isNotEmpty() } ?: category?.let { listOf(it) })
+            ?.let { this.categories.value.values.toList().expandWithChildren(it) }
+        val baseFlow = transactionRepository.getAllTransactions()
 
-        // Apply multiple categories filter (for budget navigation)
-        // This needs to consider split transactions - a transaction should be included
-        // if its main category OR any of its split categories match the budget's categories
-        val categoriesFilteredFlow = if (categories != null && categories.isNotEmpty()) {
+        // Apply the category filter. A transaction is included if its main category OR
+        // any of its split categories matches.
+        val categoriesFilteredFlow = if (effectiveCategories != null) {
             baseFlow.flatMapLatest { transactions ->
-                flow {
-                    // Get all transaction IDs
-                    val txIds = transactions.map { it.id }
-
-                    // Batch fetch all splits for these transactions (efficient single query)
-                    val allSplits = if (txIds.isNotEmpty()) {
-                        transactionSplitDao.getSplitsForTransactions(txIds)
-                    } else {
-                        emptyList()
-                    }
-
-                    // Group splits by transaction ID for quick lookup
-                    val splitsByTxId = allSplits.groupBy { it.transactionId }
-
-                    // Filter transactions
-                    val filtered = transactions.filter { tx ->
-                        // Check main category first (fast path)
-                        if (tx.category in categories) {
-                            true
-                        } else {
-                            // Check if any split category matches
-                            splitsByTxId[tx.id]?.any { it.category in categories } == true
+                // Observe the splits rather than snapshot them, so editing a split while
+                // this list is open re-evaluates the filter instead of leaving it stale.
+                transactionSplitDao.observeSplitsForTransactions(transactions.map { it.id })
+                    .map { allSplits ->
+                        val splitsByTxId = allSplits.groupBy { it.transactionId }
+                        transactions.filter { tx ->
+                            tx.category in effectiveCategories ||
+                                splitsByTxId[tx.id]?.any { it.category in effectiveCategories } == true
                         }
                     }
-                    emit(filtered)
-                }
             }
         } else {
             baseFlow
@@ -797,7 +1410,7 @@ class TransactionsViewModel @Inject constructor(
                         "CUSTOM period selected but no date range set - falling back to THIS_MONTH")
                     // Auto-correct the invalid state
                     _selectedPeriod.value = TimePeriod.THIS_MONTH
-                    val (startDate, endDate) = getDateRangeForPeriod(TimePeriod.THIS_MONTH)!!
+                    val (startDate, endDate) = cycleRange
                     val startDateTime = startDate.atStartOfDay()
                     val endDateTime = endDate.atTime(23, 59, 59)
                     categoriesFilteredFlow.map { transactions ->
@@ -811,6 +1424,14 @@ class TransactionsViewModel @Inject constructor(
                     categoriesFilteredFlow.map { transactions ->
                         transactions.filter { it.dateTime in startDateTime..endDateTime }
                     }
+                }
+            }
+            TimePeriod.THIS_MONTH, TimePeriod.LAST_MONTH -> {
+                val (startDate, endDate) = cycleRange
+                val startDateTime = startDate.atStartOfDay()
+                val endDateTime = endDate.atTime(23, 59, 59)
+                categoriesFilteredFlow.map { transactions ->
+                    transactions.filter { it.dateTime in startDateTime..endDateTime }
                 }
             }
             else -> {
@@ -831,14 +1452,8 @@ class TransactionsViewModel @Inject constructor(
         
         // Apply transaction type filter
         val typeFilteredFlow = periodFilteredFlow.map { transactions ->
-            when (typeFilter) {
-                TransactionTypeFilter.ALL -> transactions
-                TransactionTypeFilter.INCOME -> transactions.filter { it.transactionType == TransactionType.INCOME }
-                TransactionTypeFilter.EXPENSE -> transactions.filter { it.transactionType == TransactionType.EXPENSE }
-                TransactionTypeFilter.CREDIT -> transactions.filter { it.transactionType == TransactionType.CREDIT }
-                TransactionTypeFilter.TRANSFER -> transactions.filter { it.transactionType == TransactionType.TRANSFER }
-                TransactionTypeFilter.INVESTMENT -> transactions.filter { it.transactionType == TransactionType.INVESTMENT }
-            }
+            val types = typeFilter.transactionTypes
+            if (types == null) transactions else transactions.filter { it.transactionType in types }
         }
         
         // Apply search filter
@@ -850,7 +1465,16 @@ class TransactionsViewModel @Inject constructor(
                     // Check merchant name and description
                     val matchesMerchant = transaction.merchantName.contains(searchQuery, ignoreCase = true)
                     val matchesDescription = transaction.description?.contains(searchQuery, ignoreCase = true) == true
-                    
+                    val matchesReference = transaction.reference?.contains(searchQuery, ignoreCase = true) == true
+
+                    // Check user-set tags
+                    val matchesTag = transactionTagsMap.value[transaction.id]
+                        ?.any { it.contains(searchQuery, ignoreCase = true) } == true
+
+                    // Check the merchant's user-set display alias (#691)
+                    val matchesAlias = merchantAliases.value[transaction.merchantName]
+                        ?.contains(searchQuery, ignoreCase = true) == true
+
                     // Check SMS body (full text search)
                     val matchesSmsBody = transaction.smsBody?.contains(searchQuery, ignoreCase = true) == true
                     
@@ -873,7 +1497,7 @@ class TransactionsViewModel @Inject constructor(
                         false
                     }
                     
-                    matchesMerchant || matchesDescription || matchesSmsBody || matchesAmount
+                    matchesMerchant || matchesDescription || matchesReference || matchesTag || matchesAlias || matchesSmsBody || matchesAmount
                 }
             }
         }
@@ -909,8 +1533,13 @@ class TransactionsViewModel @Inject constructor(
     }
     
     private fun calculateCurrencyGroupedTotals(transactions: List<TransactionEntity>): CurrencyGroupedTotals {
-        // Group transactions by currency
-        val transactionsByCurrency = transactions.groupBy { it.currency }
+        // Loan disbursements/repayments and analytics-excluded transactions still
+        // appear in the list (it's the full ledger) but must not count toward the
+        // period's Income/Expense/etc. totals — loans are tracked in the Loans
+        // feature, and excluded txns are opted out of every spend figure by the
+        // user. Matches the Home/Analytics convention (HomeViewModel#1142).
+        val nonLoanTransactions = transactions.forTotals()
+        val transactionsByCurrency = nonLoanTransactions.groupBy { it.currency }
 
         val totalsByCurrency = transactionsByCurrency.mapValues { (currency, currencyTransactions) ->
             // A "Refund" (INCOME + DEDUCT_SPENT) is the reversal of a previous
@@ -922,7 +1551,7 @@ class TransactionsViewModel @Inject constructor(
                     it.transactionType == TransactionType.INCOME &&
                         it.budgetImpactType == BudgetImpactType.DEDUCT_SPENT
                 }
-                .sumOf { it.amount.toDouble() }
+                .map { it.amount.toDouble() }.sum()
                 .toBigDecimal()
 
             val income = currencyTransactions
@@ -930,28 +1559,28 @@ class TransactionsViewModel @Inject constructor(
                     it.transactionType == TransactionType.INCOME &&
                         it.budgetImpactType != BudgetImpactType.DEDUCT_SPENT
                 }
-                .sumOf { it.amount.toDouble() }
+                .map { it.amount.toDouble() }.sum()
                 .toBigDecimal()
 
             val rawExpenses = currencyTransactions
                 .filter { it.transactionType == TransactionType.EXPENSE }
-                .sumOf { it.amount.toDouble() }
+                .map { it.amount.toDouble() }.sum()
                 .toBigDecimal()
             val expenses = (rawExpenses - refundTotal).coerceAtLeast(BigDecimal.ZERO)
 
             val credit = currencyTransactions
                 .filter { it.transactionType == TransactionType.CREDIT }
-                .sumOf { it.amount.toDouble() }
+                .map { it.amount.toDouble() }.sum()
                 .toBigDecimal()
 
             val transfer = currencyTransactions
                 .filter { it.transactionType == TransactionType.TRANSFER }
-                .sumOf { it.amount.toDouble() }
+                .map { it.amount.toDouble() }.sum()
                 .toBigDecimal()
 
             val investment = currencyTransactions
                 .filter { it.transactionType == TransactionType.INVESTMENT }
-                .sumOf { it.amount.toDouble() }
+                .map { it.amount.toDouble() }.sum()
                 .toBigDecimal()
 
             CurrencyTotals(
@@ -975,31 +1604,12 @@ class TransactionsViewModel @Inject constructor(
         return CurrencyGroupedTotals(
             totalsByCurrency = totalsByCurrency,
             availableCurrencies = filteredAvailableCurrencies,
-            transactionCount = transactions.size
+            transactionCount = nonLoanTransactions.size
         )
     }
     
     fun getReportUrl(transaction: TransactionEntity): String {
-        // If we have the original SMS body, create report URL
-        val smsBody = transaction.smsBody ?: ""
-        // Use the original SMS sender if available
-        val sender = transaction.smsSender ?: ""
-        
-        // URL encode the parameters
-        val encodedMessage = java.net.URLEncoder.encode(smsBody, "UTF-8")
-        val encodedSender = java.net.URLEncoder.encode(sender, "UTF-8")
-        
-        // Encrypt device data for verification
-        val encryptedDeviceData = com.pennywiseai.tracker.utils.DeviceEncryption.encryptDeviceData(context)
-        val encodedDeviceData = if (encryptedDeviceData != null) {
-            java.net.URLEncoder.encode(encryptedDeviceData, "UTF-8")
-        } else {
-            ""
-        }
-        
-        // Create the report URL using hash fragment for privacy
-        // Reporting disabled for this fork - point to our GitHub issues
-        return "${Constants.Links.GITHUB_URL}/issues/new"
+        return SmsReportUrlBuilder.buildUrl(context, transaction.smsBody, transaction.smsSender)
     }
     
 }
@@ -1017,20 +1627,20 @@ data class FilterParams(
     val typeFilter: TransactionTypeFilter
 )
 
-enum class DateGroup(val label: String) {
-    TODAY("Today"),
-    YESTERDAY("Yesterday"),
-    THIS_WEEK("This Week"),
-    EARLIER("Earlier")
+enum class DateGroup(@StringRes val labelRes: Int) {
+    TODAY(R.string.txn_list_group_today),
+    YESTERDAY(R.string.txn_list_group_yesterday),
+    THIS_WEEK(R.string.txn_list_group_this_week),
+    EARLIER(R.string.txn_list_group_earlier)
 }
 
-enum class SortOption(val label: String) {
-    DATE_NEWEST("Newest First"),
-    DATE_OLDEST("Oldest First"),
-    AMOUNT_HIGHEST("Highest Amount"),
-    AMOUNT_LOWEST("Lowest Amount"),
-    MERCHANT_AZ("Merchant (A-Z)"),
-    MERCHANT_ZA("Merchant (Z-A)")
+enum class SortOption(@StringRes val labelRes: Int) {
+    DATE_NEWEST(R.string.txn_list_sort_newest),
+    DATE_OLDEST(R.string.txn_list_sort_oldest),
+    AMOUNT_HIGHEST(R.string.txn_list_sort_amount_highest),
+    AMOUNT_LOWEST(R.string.txn_list_sort_amount_lowest),
+    MERCHANT_AZ(R.string.txn_list_sort_merchant_az),
+    MERCHANT_ZA(R.string.txn_list_sort_merchant_za)
 }
 
 data class FilteredTotals(
@@ -1052,7 +1662,12 @@ private data class NavigationParams(
     val category: String?,
     val merchant: String?,
     val period: String?,
-    val currency: String?
+    val currency: String?,
+    val startDateEpochDay: Long? = null,
+    val endDateEpochDay: Long? = null,
+    val account: String? = null,
+    val tag: String? = null,
+    val type: String? = null
 )
 
 /**
@@ -1067,3 +1682,65 @@ private data class BudgetParams(
     val categories: String?,
     val transactionType: String?
 )
+
+/**
+ * Self-transfer suggestion heuristic (#385): pair each EXPENSE with an INCOME row
+ * of the same currency + amount that landed on a *different* account within the
+ * match window, so the UI can surface a "↔ Mark as transfer" chip (the user
+ * confirms — no silent merge). Pure so it can be unit-tested directly.
+ *
+ * Account identity is null when unknown. A transfer moves between two accounts,
+ * so a pair is rejected only when BOTH legs are on the same *known* account;
+ * account-less manual rows (no accountNumber) are still allowed to pair — without
+ * this they'd all share one key and never pair (#611).
+ */
+internal fun computeSelfTransferPairs(
+    txns: List<TransactionEntity>,
+    matchWindowMinutes: Long = 60L
+): Map<Long, Long> {
+    if (txns.size < 2) return emptyMap()
+    val acctOf: (TransactionEntity) -> String? = { tx ->
+        tx.accountNumber?.takeIf { it.isNotBlank() }
+            ?.let { "${tx.bankName.orEmpty()}|$it" }
+    }
+
+    // Bucket INCOME rows by (currency, amount) for O(1) lookup per EXPENSE.
+    val incomesByKey = HashMap<Pair<String, BigDecimal>, MutableList<TransactionEntity>>()
+    for (tx in txns) {
+        if (tx.transactionType == TransactionType.INCOME) {
+            incomesByKey.getOrPut(tx.currency to tx.amount) { mutableListOf() }.add(tx)
+        }
+    }
+    if (incomesByKey.isEmpty()) return emptyMap()
+
+    val pair = HashMap<Long, Long>(txns.size / 8)
+    val claimedIncome = HashSet<Long>()
+    for (expense in txns) {
+        if (expense.transactionType != TransactionType.EXPENSE) continue
+        val candidates = incomesByKey[expense.currency to expense.amount] ?: continue
+        // Closest in time within the window, not on the same known account, not
+        // already claimed by another expense.
+        val expenseAcct = acctOf(expense)
+        val match = candidates
+            .asSequence()
+            .filter { it.id !in claimedIncome }
+            .filter { income ->
+                val incomeAcct = acctOf(income)
+                incomeAcct == null || expenseAcct == null || incomeAcct != expenseAcct
+            }
+            .filter {
+                java.time.Duration.between(expense.dateTime, it.dateTime)
+                    .toMinutes().let { d -> kotlin.math.abs(d) <= matchWindowMinutes }
+            }
+            .minByOrNull {
+                kotlin.math.abs(
+                    java.time.Duration.between(expense.dateTime, it.dateTime).toMinutes()
+                )
+            }
+            ?: continue
+        pair[expense.id] = match.id
+        pair[match.id] = expense.id
+        claimedIncome.add(match.id)
+    }
+    return pair
+}

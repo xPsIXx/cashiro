@@ -1,5 +1,7 @@
 package com.pennywiseai.tracker.presentation.categories
 
+import com.pennywiseai.tracker.R
+import androidx.compose.ui.res.stringResource
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
@@ -19,8 +21,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.unit.dp
-import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
+import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.pennywiseai.tracker.data.database.entity.CategoryEntity
 import com.pennywiseai.tracker.ui.components.CategoryChip
@@ -48,8 +51,9 @@ fun CategoriesScreen(
     val scope = rememberCoroutineScope()
     
     // Show snackbar messages
+    val snackbarText = snackbarMessage?.asString()
     LaunchedEffect(snackbarMessage) {
-        snackbarMessage?.let {
+        snackbarText?.let {
             scope.launch {
                 snackbarHostState.showSnackbar(it)
                 viewModel.clearSnackbarMessage()
@@ -72,12 +76,11 @@ fun CategoriesScreen(
             CustomTitleTopAppBar(
                 scrollBehaviorSmall = scrollBehaviorSmall,
                 scrollBehaviorLarge = scrollBehaviorLarge,
-                title = "Categories",
+                title = stringResource(R.string.categories_title),
                 hasBackButton = true,
-                hasActionButton = true,
                 navigationContent = {
                     IconButton(onClick = onNavigateBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(R.string.categories_back))
                     }
                 },
                 hazeState = hazeState
@@ -90,7 +93,7 @@ fun CategoriesScreen(
                 containerColor = MaterialTheme.colorScheme.primaryContainer,
                 contentColor = MaterialTheme.colorScheme.onPrimaryContainer
             ) {
-                Icon(Icons.Default.Add, contentDescription = "Add Category")
+                Icon(Icons.Default.Add, contentDescription = stringResource(R.string.categories_add))
             }
         }
     ) { paddingValues ->
@@ -114,36 +117,43 @@ fun CategoriesScreen(
             // Expense Categories Section
             if (expenseCategories.isNotEmpty()) {
                 item {
-                    SectionHeaderV2(title = "Expense Categories")
+                    SectionHeaderV2(title = stringResource(R.string.categories_expense_section))
                 }
 
                 items(
                     items = expenseCategories,
                     key = { it.id }
                 ) { category ->
-                    SwipeableCategoryItem(
-                        category = category,
-                        onEdit = { viewModel.showEditDialog(category) },
-                        onDelete = { viewModel.deleteCategory(category) }
-                    )
+                    // Sub-categories sit indented under their parent (#374).
+                    Box(modifier = Modifier.padding(start = if (category.parentId != null) Spacing.lg else Spacing.none)) {
+                        SwipeableCategoryItem(
+                            category = category,
+                            onEdit = { viewModel.showEditDialog(category) },
+                            onDelete = { viewModel.deleteCategory(category) },
+                            onToggleHidden = { viewModel.toggleCategoryHidden(category.id) }
+                        )
+                    }
                 }
             }
 
             // Income Categories Section
             if (incomeCategories.isNotEmpty()) {
                 item {
-                    SectionHeaderV2(title = "Income Categories")
+                    SectionHeaderV2(title = stringResource(R.string.categories_income_section))
                 }
 
                 items(
                     items = incomeCategories,
                     key = { it.id }
                 ) { category ->
-                    SwipeableCategoryItem(
-                        category = category,
-                        onEdit = { viewModel.showEditDialog(category) },
-                        onDelete = { viewModel.deleteCategory(category) }
-                    )
+                    Box(modifier = Modifier.padding(start = if (category.parentId != null) Spacing.lg else Spacing.none)) {
+                        SwipeableCategoryItem(
+                            category = category,
+                            onEdit = { viewModel.showEditDialog(category) },
+                            onDelete = { viewModel.deleteCategory(category) },
+                            onToggleHidden = { viewModel.toggleCategoryHidden(category.id) }
+                        )
+                    }
                 }
             }
         }
@@ -153,9 +163,18 @@ fun CategoriesScreen(
     if (showAddEditDialog) {
         CategoryEditDialog(
             category = editingCategory,
+            // A built-in keeps its type and stays top-level; only name/colour/icon change.
+            lockType = editingCategory?.isSystem == true,
+            parentOptions = if (editingCategory?.isSystem == true) emptyList() else categories,
             onDismiss = { viewModel.hideDialog() },
-            onSave = { name, color, isIncome ->
-                viewModel.saveCategory(name, color, isIncome)
+            onSave = { name, color, isIncome, icon, parentId ->
+                viewModel.saveCategory(name, color, isIncome, icon, parentId)
+            },
+            onDelete = editingCategory?.let { cat ->
+                {
+                    viewModel.deleteCategory(cat)
+                    viewModel.hideDialog()
+                }
             }
         )
     }
@@ -166,7 +185,8 @@ fun CategoriesScreen(
 private fun SwipeableCategoryItem(
     category: CategoryEntity,
     onEdit: () -> Unit,
-    onDelete: () -> Unit
+    onDelete: () -> Unit,
+    onToggleHidden: () -> Unit
 ) {
     val dismissState = rememberSwipeToDismissBoxState()
 
@@ -200,7 +220,7 @@ private fun SwipeableCategoryItem(
                     if (dismissState.targetValue == SwipeToDismissBoxValue.EndToStart) {
                         Icon(
                             imageVector = Icons.Default.Delete,
-                            contentDescription = "Delete",
+                            contentDescription = stringResource(R.string.categories_action_delete),
                             tint = MaterialTheme.colorScheme.onError
                         )
                     }
@@ -210,7 +230,8 @@ private fun SwipeableCategoryItem(
         content = {
             CategoryItem(
                 category = category,
-                onClick = if (!category.isSystem) onEdit else null
+                onClick = onEdit,
+                onToggleHidden = onToggleHidden
             )
         },
         enableDismissFromStartToEnd = false,
@@ -221,7 +242,8 @@ private fun SwipeableCategoryItem(
 @Composable
 private fun CategoryItem(
     category: CategoryEntity,
-    onClick: (() -> Unit)?
+    onClick: (() -> Unit)?,
+    onToggleHidden: () -> Unit = {}
 ) {
     PennyWiseCardV2(
         modifier = Modifier.fillMaxWidth(),
@@ -231,7 +253,9 @@ private fun CategoryItem(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(Dimensions.Padding.content),
+                .padding(Dimensions.Padding.content)
+                // Dim a hidden category so it reads as "tucked away" in the manager.
+                .alpha(if (category.isHidden) 0.5f else 1f),
             verticalAlignment = Alignment.CenterVertically
         ) {
             // Category with colored dot
@@ -240,7 +264,20 @@ private fun CategoryItem(
                 showText = true,
                 modifier = Modifier.weight(1f)
             )
-            
+
+            // Hide / unhide toggle — available for every category, including
+            // system defaults (the whole point of #736).
+            IconButton(onClick = onToggleHidden) {
+                Icon(
+                    imageVector = if (category.isHidden) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                    contentDescription = stringResource(
+                        if (category.isHidden) R.string.categories_show_category else R.string.categories_hide_category
+                    ),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(Dimensions.Icon.medium)
+                )
+            }
+
             // System badge
             if (category.isSystem) {
                 Surface(
@@ -249,7 +286,7 @@ private fun CategoryItem(
                     modifier = Modifier.padding(start = Spacing.sm)
                 ) {
                     Text(
-                        text = "System",
+                        text = stringResource(R.string.categories_system_badge),
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSecondaryContainer,
                         modifier = Modifier.padding(
@@ -262,7 +299,7 @@ private fun CategoryItem(
                 // Edit icon for non-system categories
                 Icon(
                     Icons.Default.Edit,
-                    contentDescription = "Edit",
+                    contentDescription = stringResource(R.string.categories_action_edit),
                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier
                         .size(Dimensions.Icon.medium)

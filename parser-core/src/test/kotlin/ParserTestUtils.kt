@@ -24,7 +24,21 @@ data class ExpectedTransaction(
     val creditLimit: BigDecimal? = null,
     val isFromCard: Boolean? = null,
     val fromAccount: String? = null,
-    val toAccount: String? = null
+    val toAccount: String? = null,
+    val isMobileWallet: Boolean? = null,
+    // Explicitly assert that no per-account number was extracted. `accountLast4 = null` alone
+    // can't express this (a null expectation is treated as "don't check"), so mobile-money
+    // wallets that must consolidate into one account (#682) set this flag.
+    val expectNullAccountLast4: Boolean = false,
+    // Same limitation for merchant: set this when the message names no counterparty
+    // and the parser must not invent one.
+    val expectNullMerchant: Boolean = false,
+    // Currency the account (balance / limit) is kept in, when it differs from the
+    // transaction's — a USD spend on an INR card (#888).
+    val accountCurrency: String? = null,
+    // Assert the parser reports no separate account currency ("same as the
+    // transaction") — a null accountCurrency alone isn't checked.
+    val expectNullAccountCurrency: Boolean = false
 )
 
 data class ParserTestCase(
@@ -118,6 +132,19 @@ object ParserTestUtils {
         expected.isFromCard?.let { if (result.isFromCard != it) errors.add("isFromCard mismatch: expected $it, got ${result.isFromCard}") }
         expected.fromAccount?.let { if (result.fromAccount != it) errors.add("From account mismatch: expected $it, got ${result.fromAccount}") }
         expected.toAccount?.let { if (result.toAccount != it) errors.add("To account mismatch: expected $it, got ${result.toAccount}") }
+        expected.isMobileWallet?.let { if (result.isMobileWallet != it) errors.add("isMobileWallet mismatch: expected $it, got ${result.isMobileWallet}") }
+        if (expected.expectNullAccountLast4 && result.accountLast4 != null) {
+            errors.add("Expected no account number (mobile wallet) but got ${result.accountLast4}")
+        }
+        if (expected.expectNullMerchant && result.merchant != null) {
+            errors.add("Expected no merchant but got ${result.merchant}")
+        }
+        expected.accountCurrency?.let {
+            if (result.accountCurrency != it) errors.add("Account currency mismatch: expected $it, got ${result.accountCurrency}")
+        }
+        if (expected.expectNullAccountCurrency && result.accountCurrency != null) {
+            errors.add("Expected no separate account currency but got ${result.accountCurrency}")
+        }
 
         return errors
     }
@@ -167,6 +194,25 @@ object ParserTestUtils {
             {
                 expected.toAccount?.let {
                     assertEquals(it, parsed.toAccount, "To account mismatch")
+                }
+            },
+            {
+                expected.isMobileWallet?.let {
+                    assertEquals(it, parsed.isMobileWallet, "isMobileWallet mismatch")
+                }
+            },
+            {
+                if (expected.expectNullAccountLast4) {
+                    assertNull(parsed.accountLast4, "Expected no account number (mobile wallet)")
+                }
+                if (expected.expectNullMerchant) {
+                    assertNull(parsed.merchant, "Expected no merchant")
+                }
+                expected.accountCurrency?.let {
+                    assertEquals(it, parsed.accountCurrency, "Account currency mismatch")
+                }
+                if (expected.expectNullAccountCurrency) {
+                    assertNull(parsed.accountCurrency, "Expected no separate account currency")
                 }
             }
         )

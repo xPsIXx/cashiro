@@ -6,21 +6,21 @@ import com.pennywiseai.tracker.data.database.entity.SubscriptionState
 import com.pennywiseai.tracker.data.database.entity.BudgetImpactType
 import com.pennywiseai.tracker.data.database.entity.TransactionEntity
 import com.pennywiseai.tracker.data.database.entity.TransactionType
-import com.pennywiseai.tracker.data.firefly.FireflySyncEngine
+import androidx.room.withTransaction
+import com.pennywiseai.tracker.data.database.PennyWiseDatabase
 import com.pennywiseai.tracker.data.repository.AccountBalanceRepository
 import com.pennywiseai.tracker.data.repository.SubscriptionRepository
-import com.pennywiseai.tracker.data.repository.TransactionRepository
+import com.pennywiseai.tracker.data.repository.TagRepository
 import java.math.BigDecimal
 import java.security.MessageDigest
 import java.time.LocalDateTime
 import javax.inject.Inject
 
 class AddTransactionUseCase @Inject constructor(
-    private val transactionRepository: TransactionRepository,
+    private val database: PennyWiseDatabase,
     private val subscriptionRepository: SubscriptionRepository,
     private val accountBalanceRepository: AccountBalanceRepository,
-    private val fireflySyncEngine: FireflySyncEngine,
-    private val diagnosticLogger: com.pennywiseai.tracker.data.diagnostic.DiagnosticLogger
+    private val tagRepository: TagRepository
 ) {
     suspend fun execute(
         amount: BigDecimal,
@@ -29,6 +29,8 @@ class AddTransactionUseCase @Inject constructor(
         type: TransactionType,
         date: LocalDateTime,
         notes: String? = null,
+        reference: String? = null,
+        tags: List<String> = emptyList(),
         isRecurring: Boolean = false,
         bankName: String? = null,
         accountLast4: String? = null,
@@ -52,6 +54,7 @@ class AddTransactionUseCase @Inject constructor(
             transactionType = type,
             dateTime = date,
             description = notes,
+            reference = reference,
             smsBody = null, // null indicates manual entry
             bankName = bankName ?: "Manual Entry",
             smsSender = null, // null indicates manual entry
@@ -67,82 +70,121 @@ class AddTransactionUseCase @Inject constructor(
             budgetImpactType = budgetImpactType
         )
 
-        // Insert the transaction
-        val transactionId = transactionRepository.insertTransaction(transaction)
-
-        // Update account balance if account was selected
-        if (transactionId != -1L && bankName != null && accountLast4 != null) {
-            updateAccountBalance(
+        // Insert the transaction, its tags, and any recurring subscription as a
+        // single atomic unit: if tag-linking (or the subscription insert) fails
+        // after the row is written, the whole add rolls back rather than leaving a
+        // persisted-but-untagged transaction the user might re-save as a duplicate.
+        // Room's withTransaction is reentrant, so insertTransactionWithBalance and
+        // setTagsForTransaction (which each open their own) join this outer one.
+        database.withTransaction {
+            // For manual/cash accounts the helper pins the opening anchor from the
+            // PRE-insert snapshot before inserting, so the recompute includes this
+            // new transaction. No-op balance side for SMS / no-account adds.
+            val transactionId = accountBalanceRepository.insertTransactionWithBalance(
+                transaction = transaction,
                 bankName = bankName,
-                accountLast4 = accountLast4,
-                amount = amount,
-                type = type,
-                date = date,
-                transactionId = transactionId
+                accountLast4 = accountLast4
             )
-        }
-        
-        // If marked as recurring, create a subscription
-        if (isRecurring && transactionId != -1L) {
-            val nextPaymentDate = date.toLocalDate().plusMonths(1) // Default to monthly
-            
-            val subscription = SubscriptionEntity(
-                merchantName = merchant,
-                amount = amount,
-                nextPaymentDate = nextPaymentDate,
-                state = SubscriptionState.ACTIVE,
-                bankName = "Manual Entry",
-                category = category,
-                currency = currency,
-                createdAt = LocalDateTime.now(),
-                updatedAt = LocalDateTime.now()
-            )
-            
-            subscriptionRepository.insertSubscription(subscription)
-        }
 
-        // Opt-in: push manual transaction to Firefly III (add-on engine handles
-        // config check, state storage and logging).
-        if (transactionId != -1L) {
-            runCatching {
-                fireflySyncEngine.onTransactionSaved(transaction.copy(id = transactionId))
-            }.onFailure { e ->
-                diagnosticLogger.e("AddTransaction", "Unexpected error during Firefly sync trigger", e)
+            // Link tags (create-or-select handled in the repository)
+            if (transactionId != -1L && tags.isNotEmpty()) {
+                tagRepository.setTagsForTransaction(transactionId, tags)
+            }
+
+            // If marked as recurring, create a subscription
+            if (isRecurring && transactionId != -1L) {
+                val nextPaymentDate = date.toLocalDate().plusMonths(1) // Default to monthly
+
+                val subscription = SubscriptionEntity(
+                    merchantName = merchant,
+                    amount = amount,
+                    nextPaymentDate = nextPaymentDate,
+                    state = SubscriptionState.ACTIVE,
+                    // Carry the funding account onto the auto-created subscription so
+                    // marking it paid later moves that account's balance — otherwise
+                    // this whole class of subscriptions silently skips the #570 fix.
+                    bankName = bankName ?: "Manual Entry",
+                    accountLast4 = accountLast4,
+                    category = category,
+                    currency = currency,
+                    createdAt = LocalDateTime.now(),
+                    updatedAt = LocalDateTime.now()
+                )
+
+                subscriptionRepository.insertSubscription(subscription)
             }
         }
     }
     
-    private suspend fun updateAccountBalance(
-        bankName: String,
-        accountLast4: String,
+    /**
+     * Manual account-to-account TRANSFER (#622). Records a single TRANSFER
+     * transaction — its `fromAccount`/`toAccount` last4s drive the two-leg
+     * balance move in [AccountBalanceRepository.insertTransferWithBalance] — and
+     * links any tags. Cross-currency transfers are rejected upstream in the
+     * ViewModel (we never sum across currencies); this path assumes both legs
+     * share [currency].
+     */
+    suspend fun executeTransfer(
         amount: BigDecimal,
-        type: TransactionType,
         date: LocalDateTime,
-        transactionId: Long
+        notes: String? = null,
+        reference: String? = null,
+        tags: List<String> = emptyList(),
+        currency: String = "INR",
+        fromBankName: String,
+        fromLast4: String,
+        toBankName: String,
+        toLast4: String
     ) {
-        // Get current account balance
-        val currentAccount = accountBalanceRepository.getLatestBalance(bankName, accountLast4)
+        // Unique hash incorporating both legs — with bank names, not just last4 —
+        // so two distinct transfers (e.g. Kotak ••9999 vs HDFC ••9999 to the same
+        // destination for the same amount at the same second) never collide on the
+        // unique hash index and silently no-op the second one.
+        val transactionHash = generateTransferHash(
+            amount = amount,
+            fromBankName = fromBankName,
+            fromLast4 = fromLast4,
+            toBankName = toBankName,
+            toLast4 = toLast4,
+            date = date
+        )
 
-        if (currentAccount != null) {
-            // Calculate new balance based on transaction type
-            val newBalance = when (type) {
-                TransactionType.INCOME -> currentAccount.balance + amount
-                TransactionType.EXPENSE, TransactionType.CREDIT -> currentAccount.balance - amount
-                TransactionType.TRANSFER -> currentAccount.balance - amount  // Simplified - from account
-                TransactionType.INVESTMENT -> currentAccount.balance - amount
-            }
+        val transaction = TransactionEntity(
+            amount = amount,
+            merchantName = "Transfer",
+            category = "Others",
+            transactionType = TransactionType.TRANSFER,
+            dateTime = date,
+            description = notes,
+            reference = reference,
+            smsBody = null, // null indicates manual entry
+            bankName = fromBankName,
+            smsSender = null,
+            accountNumber = fromLast4,
+            balanceAfter = null,
+            transactionHash = transactionHash,
+            currency = currency,
+            fromAccount = fromLast4,
+            toAccount = toLast4,
+            createdAt = LocalDateTime.now(),
+            updatedAt = LocalDateTime.now()
+        )
 
-            // Insert new balance record
-            accountBalanceRepository.insertBalance(
-                currentAccount.copy(
-                    id = 0,  // Auto-generate new ID
-                    balance = newBalance,
-                    timestamp = date,
-                    transactionId = transactionId,
-                    sourceType = "TRANSACTION",
-                    smsSource = null
-                )
+        // Insert + both-leg balance move + tag-linking as one atomic unit.
+        // Room's withTransaction is reentrant, so the repository's own
+        // withTransaction and setTagsForTransaction join this outer one.
+        database.withTransaction {
+            val transactionId = accountBalanceRepository.insertTransferWithBalance(
+                transaction = transaction,
+                fromBankName = fromBankName,
+                fromLast4 = fromLast4,
+                toBankName = toBankName,
+                toLast4 = toLast4
             )
+
+            if (transactionId != -1L && tags.isNotEmpty()) {
+                tagRepository.setTagsForTransaction(transactionId, tags)
+            }
         }
     }
 
@@ -154,6 +196,22 @@ class AddTransactionUseCase @Inject constructor(
         // Create a unique hash for manual transactions
         // Format: MANUAL_<amount>_<merchant>_<datetime>
         val data = "MANUAL_${amount}_${merchant}_${date}"
+
+        return MessageDigest.getInstance("MD5")
+            .digest(data.toByteArray())
+            .joinToString("") { "%02x".format(it) }
+    }
+
+    private fun generateTransferHash(
+        amount: BigDecimal,
+        fromBankName: String,
+        fromLast4: String,
+        toBankName: String,
+        toLast4: String,
+        date: LocalDateTime
+    ): String {
+        // Format: TRANSFER_<amount>_<fromBank>_<from>_<toBank>_<to>_<datetime>
+        val data = "TRANSFER_${amount}_${fromBankName}_${fromLast4}_${toBankName}_${toLast4}_${date}"
 
         return MessageDigest.getInstance("MD5")
             .digest(data.toByteArray())

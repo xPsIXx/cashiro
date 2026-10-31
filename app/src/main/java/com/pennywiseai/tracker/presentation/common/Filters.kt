@@ -1,27 +1,73 @@
 package com.pennywiseai.tracker.presentation.common
 
+import androidx.annotation.StringRes
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.ReadOnlyComposable
+import androidx.compose.ui.res.stringResource
+import com.pennywiseai.tracker.R
 import com.pennywiseai.tracker.data.database.entity.AccountBalanceEntity
 import com.pennywiseai.tracker.data.database.entity.ProfileEntity
 import com.pennywiseai.tracker.data.database.entity.TransactionEntity
+import com.pennywiseai.tracker.data.database.entity.TransactionType
+import com.pennywiseai.tracker.domain.model.BudgetCycle
+import com.pennywiseai.tracker.utils.DateRangeUtils
 import java.time.LocalDate
 import java.time.YearMonth
 
-enum class TimePeriod(val label: String) {
-    THIS_MONTH("This Month"),
-    LAST_MONTH("Last Month"),
-    CURRENT_FY("Current FY"),
-    ALL("All Time"),
-    CUSTOM("Custom Range")
+enum class TimePeriod(@StringRes val labelRes: Int) {
+    THIS_MONTH(R.string.filter_period_this_month),
+    LAST_MONTH(R.string.filter_period_last_month),
+    CURRENT_FY(R.string.filter_period_current_fy),
+    ALL(R.string.filter_period_all_time),
+    CUSTOM(R.string.filter_period_custom_range);
+
+    /**
+     * True for the two "month" periods, which resolve against the user's budget
+     * cycle rather than the calendar month. See [getCycleAwareDateRange].
+     */
+    val followsBudgetCycle: Boolean
+        get() = this == THIS_MONTH || this == LAST_MONTH
 }
 
-enum class TransactionTypeFilter(val label: String) {
-    ALL("All"),
-    INCOME("Income"),
-    EXPENSE("Expense"),
-    CREDIT("Credit"),
-    TRANSFER("Transfer"),
-    INVESTMENT("Investment")
+enum class TransactionTypeFilter(@StringRes val labelRes: Int) {
+    ALL(R.string.filter_type_all),
+    INCOME(R.string.filter_type_income),
+    EXPENSE(R.string.filter_type_expense),
+    CREDIT(R.string.filter_type_credit),
+    /** Expense + credit-card spend together (#898). Analytics-only, see [inTransactionsList]. */
+    SPENDING(R.string.filter_type_spending),
+    TRANSFER(R.string.filter_type_transfer),
+    INVESTMENT(R.string.filter_type_investment);
+
+    /** The transaction types this filter shows; null means every type. */
+    val transactionTypes: Set<TransactionType>?
+        get() = when (this) {
+            ALL -> null
+            INCOME -> setOf(TransactionType.INCOME)
+            EXPENSE -> setOf(TransactionType.EXPENSE)
+            CREDIT -> setOf(TransactionType.CREDIT)
+            SPENDING -> setOf(TransactionType.EXPENSE, TransactionType.CREDIT)
+            TRANSFER -> setOf(TransactionType.TRANSFER)
+            INVESTMENT -> setOf(TransactionType.INVESTMENT)
+        }
+
+    /** Spend views that net refunds (INCOME + DEDUCT_SPENT) off their totals (#629). */
+    val netsRefunds: Boolean
+        get() = this == EXPENSE || this == SPENDING
+
+    /**
+     * Offered in the Transactions screen's type menu. SPENDING is an Analytics
+     * view (#898); the list already shows expense and credit totals side by side.
+     */
+    val inTransactionsList: Boolean
+        get() = this != SPENDING
 }
+
+val TimePeriod.label: String
+    @Composable @ReadOnlyComposable get() = stringResource(labelRes)
+
+val TransactionTypeFilter.label: String
+    @Composable @ReadOnlyComposable get() = stringResource(labelRes)
 
 fun getDateRangeForPeriod(period: TimePeriod): Pair<LocalDate, LocalDate>? {
     val today = LocalDate.now()
@@ -60,6 +106,50 @@ fun getDateRangeForPeriod(period: TimePeriod): Pair<LocalDate, LocalDate>? {
 }
 
 /**
+ * The date range for [period], honouring the user's configured budget cycle
+ * start day (e.g. 25th → 24th) for the two "month" periods.
+ *
+ * "This Month" already followed the cycle everywhere; "Last Month" did not, so
+ * with any start day other than the 1st the two windows neither met nor
+ * overlapped and the days in between were unreachable from either chip (#740).
+ * Resolving both from [BudgetCycle] keeps them tiled: "Last Month" always ends
+ * the day before "This Month" starts.
+ *
+ * With the default start day of 1 this is identical to the calendar months
+ * [getDateRangeForPeriod] returns.
+ */
+fun getCycleAwareDateRange(
+    period: TimePeriod,
+    cycleStartDay: Int,
+    today: LocalDate = LocalDate.now()
+): Pair<LocalDate, LocalDate>? = when (period) {
+    TimePeriod.THIS_MONTH -> BudgetCycle.currentCycle(today, cycleStartDay)
+    TimePeriod.LAST_MONTH -> BudgetCycle.previousCycle(
+        BudgetCycle.currentCycle(today, cycleStartDay),
+        cycleStartDay
+    )
+    else -> getDateRangeForPeriod(period)
+}
+
+/**
+ * Chip text for a period. A cycle-following period on a non-calendar cycle
+ * shows its resolved dates ("Sep 11 - Oct 10") — a bare "This Month" made
+ * the chart look truncated at the cycle boundary (#686). Otherwise [label],
+ * the period's translated name.
+ */
+fun TimePeriod.chipLabel(
+    cycleStartDay: Int,
+    customRangeLabel: String?,
+    label: String,
+    today: LocalDate = LocalDate.now()
+): String = when {
+    this == TimePeriod.CUSTOM && customRangeLabel != null -> customRangeLabel
+    followsBudgetCycle && cycleStartDay != 1 ->
+        DateRangeUtils.formatDateRange(getCycleAwareDateRange(this, cycleStartDay, today)) ?: label
+    else -> label
+}
+
+/**
  * Filters transactions by the selected profile.
  *
  * A transaction's effective profile is:
@@ -67,7 +157,7 @@ fun getDateRangeForPeriod(period: TimePeriod): Pair<LocalDate, LocalDate>? {
  *   - otherwise inherited from the account it belongs to (looked up via [profileAccountKeys])
  *
  * @param selectedProfileId null means "All profiles" (no filtering)
- * @param profileAccountKeys map of profileId ÔåÆ set of "bankName_accountLast4" keys
+ * @param profileAccountKeys map of profileId → set of "bankName_accountLast4" keys
  */
 fun filterTransactionsByProfile(
     transactions: List<TransactionEntity>,
@@ -88,7 +178,7 @@ fun filterTransactionsByProfile(
 }
 
 /**
- * Builds a map of profileId ÔåÆ set of "bankName_accountLast4" keys from account balances.
+ * Builds a map of profileId → set of "bankName_accountLast4" keys from account balances.
  */
 fun buildProfileAccountKeys(accounts: List<AccountBalanceEntity>): Map<Long, Set<String>> {
     return accounts.groupBy { it.profileId }
@@ -118,7 +208,7 @@ fun filterTransactionsByAccount(
  * A pickable account option for the account filter dropdown.
  *
  * @param key the account key `"${bankName}_${accountLast4}"`
- * @param label the display label (alias if set, else "$bankName ÔÇóÔÇó$accountLast4")
+ * @param label the display label (alias if set, else "$bankName ••$accountLast4")
  */
 data class AccountOption(
     val key: String,
@@ -128,16 +218,14 @@ data class AccountOption(
 /**
  * Builds the list of [AccountOption]s for the account picker from account balances.
  *
- * The label prefers the account [AccountBalanceEntity.alias] when non-blank,
- * otherwise falls back to "$bankName ÔÇóÔÇó$accountLast4". Deduped by key.
+ * The label is [AccountBalanceEntity.displayLabel] — the user-set alias when
+ * one exists, otherwise "$bankName ••$accountLast4". Deduped by key.
  */
 fun accountOptions(accounts: List<AccountBalanceEntity>): List<AccountOption> {
     return accounts
         .map { account ->
             val key = "${account.bankName}_${account.accountLast4}"
-            val alias = account.alias?.takeIf { it.isNotBlank() }
-            val label = alias ?: "${account.bankName} ÔÇóÔÇó${account.accountLast4}"
-            AccountOption(key = key, label = label)
+            AccountOption(key = key, label = account.displayLabel)
         }
         .distinctBy { it.key }
         .sortedBy { it.label.lowercase() }

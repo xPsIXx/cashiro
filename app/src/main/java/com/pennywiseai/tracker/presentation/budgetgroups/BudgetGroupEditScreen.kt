@@ -1,5 +1,12 @@
 package com.pennywiseai.tracker.presentation.budgetgroups
 
+import com.pennywiseai.tracker.utils.AppDates
+
+import java.time.format.TextStyle
+import java.time.DayOfWeek
+import com.pennywiseai.tracker.R
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.res.stringResource
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.Spring
@@ -38,17 +45,22 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
+import androidx.hilt.navigation.compose.hiltViewModel
 import com.pennywiseai.tracker.ui.components.CategoryIcon
 import com.pennywiseai.tracker.ui.components.CustomTitleTopAppBar
 import com.pennywiseai.tracker.ui.components.cards.PennyWiseCardV2
 import com.pennywiseai.tracker.ui.components.cards.SectionHeaderV2
+import com.pennywiseai.tracker.ui.components.ColorSwatchRow
 import com.pennywiseai.tracker.ui.icons.CategoryMapping
 import com.pennywiseai.tracker.ui.theme.*
 import dev.chrisbanes.haze.HazeState
 import dev.chrisbanes.haze.hazeSource
 import com.pennywiseai.tracker.utils.CurrencyFormatter
+import com.pennywiseai.tracker.data.database.entity.BudgetPeriodType
 import java.math.BigDecimal
+import java.time.LocalDate
+import java.time.format.DateTimeFormatter
+import com.pennywiseai.tracker.ui.icons.categoryLabel
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -61,6 +73,8 @@ fun BudgetGroupEditScreen(
     var showAddCategoryDropdown by remember { mutableStateOf(false) }
     var isEditingName by remember { mutableStateOf(false) }
     var isEditingAmount by remember { mutableStateOf(false) }
+    var showStartDatePicker by remember { mutableStateOf(false) }
+    var showEndDatePicker by remember { mutableStateOf(false) }
 
     LaunchedEffect(uiState.saveComplete) {
         if (uiState.saveComplete) {
@@ -89,12 +103,11 @@ fun BudgetGroupEditScreen(
             CustomTitleTopAppBar(
                 scrollBehaviorSmall = scrollBehaviorSmall,
                 scrollBehaviorLarge = scrollBehaviorLarge,
-                title = if (isEditing) "Edit Budget" else "New Budget",
+                title = stringResource(if (isEditing) R.string.budget_edit_title_edit else R.string.budget_edit_title_new),
                 hasBackButton = true,
-                hasActionButton = true,
                 navigationContent = {
                     IconButton(onClick = onNavigateBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(R.string.budgets_back))
                     }
                 },
                 actionContent = {
@@ -102,7 +115,7 @@ fun BudgetGroupEditScreen(
                         IconButton(onClick = { showDeleteDialog = true }) {
                             Icon(
                                 Icons.Default.Delete,
-                                contentDescription = "Delete budget",
+                                contentDescription = stringResource(R.string.budgets_delete),
                                 tint = MaterialTheme.colorScheme.error
                             )
                         }
@@ -151,7 +164,7 @@ fun BudgetGroupEditScreen(
                                 modifier = Modifier.size(Dimensions.Icon.small)
                             )
                             Spacer(modifier = Modifier.width(Spacing.xs))
-                            Text(if (isEditing) "Save Changes" else "Create Budget")
+                            Text(stringResource(if (isEditing) R.string.budget_edit_save else R.string.budget_edit_create))
                         }
                     }
                 }
@@ -206,9 +219,142 @@ fun BudgetGroupEditScreen(
                 )
             }
 
+            // Color (#763) — shown as a dot next to the name wherever the budget appears.
+            item {
+                SectionHeaderV2(title = stringResource(R.string.budget_edit_color))
+                Spacer(modifier = Modifier.height(Spacing.xs))
+                PennyWiseCardV2(modifier = Modifier.fillMaxWidth()) {
+                    ColorSwatchRow(selected = uiState.color, onSelect = { viewModel.updateColor(it) })
+                }
+            }
+
+            // Budget Period — three cadences:
+            //   Weekly  → pick the day-of-week the week starts on. Recurring.
+            //   Monthly → pick the day-of-month the cycle starts on. Recurring.
+            //   One-time → pick an exact start and end date. No rolling.
+            //
+            // The cadence chip row sits at the top of the card; the form
+            // below rebuilds to match. The "Ends on" line at the bottom
+            // shows the resolved *current* window for the picked cadence
+            // (the row's persisted [startDate, endDate] cache is refreshed
+            // on save so the home card / widget stay in sync).
+            item {
+                SectionHeaderV2(title = stringResource(R.string.budget_edit_period))
+                Spacer(modifier = Modifier.height(Spacing.xs))
+                PennyWiseCardV2(modifier = Modifier.fillMaxWidth()) {
+                    Column(verticalArrangement = Arrangement.spacedBy(Spacing.sm)) {
+                        val dateFormatter = AppDates.dateFormatter()
+                        val longDateFormatter = AppDates.dayMonthFormatter()
+
+                        // Cadence chip row — Weekly / Monthly / One-time.
+                        // FlowRow wraps the "One-time" chip onto a new line
+                        // when the screen is too narrow to fit all three
+                        // horizontally, so the chips never get clipped.
+                        FlowRow(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(Spacing.xs),
+                            verticalArrangement = Arrangement.spacedBy(Spacing.xs)
+                        ) {
+                            listOf(
+                                BudgetPeriodType.WEEKLY to R.string.budget_edit_period_weekly,
+                                BudgetPeriodType.MONTHLY to R.string.budget_edit_period_monthly,
+                                BudgetPeriodType.CUSTOM to R.string.budget_edit_period_one_time
+                            ).forEach { (period, label) ->
+                                FilterChip(
+                                    selected = uiState.periodType == period,
+                                    onClick = { viewModel.updatePeriodType(period) },
+                                    label = { Text(stringResource(label)) }
+                                )
+                            }
+                        }
+
+                        HorizontalDivider(
+                            color = MaterialTheme.colorScheme.outlineVariant.copy(
+                                alpha = Dimensions.Alpha.divider
+                            )
+                        )
+
+                        // Mode-specific form.
+                        when (uiState.periodType) {
+                            BudgetPeriodType.WEEKLY -> {
+                                WeekdayAnchorRow(
+                                    weekStartDay = uiState.weekStartDay,
+                                    onWeekdaySelected = viewModel::updateWeekStartDay
+                                )
+                            }
+                            BudgetPeriodType.MONTHLY -> {
+                                MonthAnchorRow(
+                                    monthStartDay = uiState.monthStartDay,
+                                    onMonthDaySelected = viewModel::updateMonthStartDay
+                                )
+                            }
+                            BudgetPeriodType.CUSTOM -> {
+                                OneTimeDateRow(
+                                    label = stringResource(R.string.budget_edit_start_date),
+                                    date = uiState.startDate,
+                                    formatter = dateFormatter,
+                                    onClick = { showStartDatePicker = true }
+                                )
+                                OneTimeDateRow(
+                                    label = stringResource(R.string.budget_edit_end_date),
+                                    date = uiState.endDate,
+                                    formatter = dateFormatter,
+                                    onClick = { showEndDatePicker = true }
+                                )
+                            }
+                        }
+
+                        HorizontalDivider(
+                            color = MaterialTheme.colorScheme.outlineVariant.copy(
+                                alpha = Dimensions.Alpha.divider
+                            )
+                        )
+
+                        // Read-only "current window" line. Shows the window
+                        // the budget will track *now* — same logic the home
+                        // card and widget use at read time.
+                        val anchorCaption = when (uiState.periodType) {
+                            BudgetPeriodType.WEEKLY ->
+                                stringResource(R.string.budget_edit_resets_every, dayOfWeekName(uiState.weekStartDay))
+                            BudgetPeriodType.MONTHLY ->
+                                stringResource(R.string.budget_edit_resets_on_day, uiState.monthStartDay)
+                            BudgetPeriodType.CUSTOM ->
+                                stringResource(R.string.budget_edit_runs_once)
+                        }
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.EventAvailable,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Spacer(modifier = Modifier.width(Spacing.sm))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = stringResource(R.string.budget_edit_current_window),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Text(
+                                    text = stringResource(
+                                        R.string.budget_edit_window_caption,
+                                        uiState.startDate.format(longDateFormatter),
+                                        uiState.endDate.format(longDateFormatter),
+                                        anchorCaption
+                                    ),
+                                    style = MaterialTheme.typography.bodyMedium
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
             // Categories Section
             item {
-                SectionHeaderV2(title = "Category Limits (optional)")
+                SectionHeaderV2(title = stringResource(R.string.budget_edit_category_limits))
                 Spacer(modifier = Modifier.height(Spacing.xs))
                 PennyWiseCardV2(
                     modifier = Modifier
@@ -225,7 +371,7 @@ fun BudgetGroupEditScreen(
                     ) {
                         if (uiState.categories.isEmpty()) {
                             Text(
-                                text = "No categories added. This budget will track all expenses.",
+                                text = stringResource(R.string.budget_edit_no_categories),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 modifier = Modifier.padding(vertical = Spacing.sm)
@@ -256,14 +402,14 @@ fun BudgetGroupEditScreen(
                             when {
                                 diff > BigDecimal.ZERO -> {
                                     Text(
-                                        text = "Unallocated: ${CurrencyFormatter.formatCurrency(diff, uiState.currency)}",
+                                        text = stringResource(R.string.budget_edit_unallocated, CurrencyFormatter.formatCurrency(diff, uiState.currency)),
                                         style = MaterialTheme.typography.labelMedium,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
                                 }
                                 diff < BigDecimal.ZERO -> {
                                     Text(
-                                        text = "Category limits exceed budget by ${CurrencyFormatter.formatCurrency(diff.abs(), uiState.currency)}",
+                                        text = stringResource(R.string.budget_edit_over_allocated, CurrencyFormatter.formatCurrency(diff.abs(), uiState.currency)),
                                         style = MaterialTheme.typography.labelMedium,
                                         color = MaterialTheme.colorScheme.error
                                     )
@@ -276,7 +422,8 @@ fun BudgetGroupEditScreen(
                             FilledTonalButton(
                                 onClick = { showAddCategoryDropdown = true },
                                 modifier = Modifier.fillMaxWidth(),
-                                enabled = uiState.availableCategories.isNotEmpty(),
+                                enabled = uiState.availableCategories.isNotEmpty() ||
+                                    uiState.availableTypeBuckets.isNotEmpty(),
                                 shape = RoundedCornerShape(Dimensions.CornerRadius.medium)
                             ) {
                                 Icon(
@@ -285,7 +432,7 @@ fun BudgetGroupEditScreen(
                                     modifier = Modifier.size(Dimensions.Icon.small)
                                 )
                                 Spacer(modifier = Modifier.width(Spacing.xs))
-                                Text("Add Category")
+                                Text(stringResource(R.string.budget_edit_add_category))
                             }
 
                             DropdownMenu(
@@ -305,16 +452,45 @@ fun BudgetGroupEditScreen(
                                                     modifier = Modifier
                                                         .size(32.dp)
                                                         .clip(CircleShape)
-                                                        .background(catInfo.color.copy(alpha = 0.15f)),
+                                                        .background(CategoryMapping.colorFor(categoryName).copy(alpha = 0.15f)),
                                                     contentAlignment = Alignment.Center
                                                 ) {
                                                     CategoryIcon(category = categoryName, size = 18.dp)
                                                 }
-                                                Text(categoryName)
+                                                Text(categoryLabel(categoryName))
                                             }
                                         },
                                         onClick = {
                                             viewModel.addCategory(categoryName)
+                                            showAddCategoryDropdown = false
+                                        }
+                                    )
+                                }
+                                // Transaction-type buckets (e.g. Investments) —
+                                // track a whole transaction type, not a category.
+                                uiState.availableTypeBuckets.forEach { option ->
+                                    DropdownMenuItem(
+                                        text = {
+                                            Row(
+                                                horizontalArrangement = Arrangement.spacedBy(Spacing.sm),
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                val catInfo = CategoryMapping.categories[option.displayName]
+                                                    ?: CategoryMapping.categories["Others"]!!
+                                                Box(
+                                                    modifier = Modifier
+                                                        .size(32.dp)
+                                                        .clip(CircleShape)
+                                                        .background(CategoryMapping.colorFor(option.displayName).copy(alpha = 0.15f)),
+                                                    contentAlignment = Alignment.Center
+                                                ) {
+                                                    CategoryIcon(category = option.displayName, size = 18.dp)
+                                                }
+                                                Text(stringResource(R.string.budget_edit_type_bucket_all, categoryLabel(option.displayName)))
+                                            }
+                                        },
+                                        onClick = {
+                                            viewModel.addTypeBucket(option)
                                             showAddCategoryDropdown = false
                                         }
                                     )
@@ -327,11 +503,60 @@ fun BudgetGroupEditScreen(
         }
 
         // Delete confirmation dialog
+        if (showStartDatePicker) {
+            val datePickerState = rememberDatePickerState(
+                initialSelectedDateMillis = uiState.startDate.toEpochDay() * 86_400_000
+            )
+            DatePickerDialog(
+                onDismissRequest = { showStartDatePicker = false },
+                confirmButton = {
+                    TextButton(onClick = {
+                        datePickerState.selectedDateMillis?.let { millis ->
+                            viewModel.updateStartDate(LocalDate.ofEpochDay(millis / 86_400_000))
+                        }
+                        showStartDatePicker = false
+                    }) { Text(stringResource(R.string.budgets_action_ok)) }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showStartDatePicker = false }) {
+                        Text(stringResource(R.string.budgets_action_cancel))
+                    }
+                }
+            ) {
+                DatePicker(state = datePickerState)
+            }
+        }
+
+        // End-date picker — Custom mode only.
+        if (showEndDatePicker) {
+            val datePickerState = rememberDatePickerState(
+                initialSelectedDateMillis = uiState.endDate.toEpochDay() * 86_400_000
+            )
+            DatePickerDialog(
+                onDismissRequest = { showEndDatePicker = false },
+                confirmButton = {
+                    TextButton(onClick = {
+                        datePickerState.selectedDateMillis?.let { millis ->
+                            viewModel.updateEndDate(LocalDate.ofEpochDay(millis / 86_400_000))
+                        }
+                        showEndDatePicker = false
+                    }) { Text(stringResource(R.string.budgets_action_ok)) }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showEndDatePicker = false }) {
+                        Text(stringResource(R.string.budgets_action_cancel))
+                    }
+                }
+            ) {
+                DatePicker(state = datePickerState)
+            }
+        }
+
         if (showDeleteDialog) {
             AlertDialog(
                 onDismissRequest = { showDeleteDialog = false },
-                title = { Text("Delete Budget") },
-                text = { Text("Are you sure you want to delete \"${uiState.name}\"? This cannot be undone.") },
+                title = { Text(stringResource(R.string.budgets_delete_title)) },
+                text = { Text(stringResource(R.string.budgets_delete_message, uiState.name)) },
                 confirmButton = {
                     Button(
                         onClick = {
@@ -342,12 +567,12 @@ fun BudgetGroupEditScreen(
                             containerColor = MaterialTheme.colorScheme.error
                         )
                     ) {
-                        Text("Delete")
+                        Text(stringResource(R.string.budgets_action_delete))
                     }
                 },
                 dismissButton = {
                     TextButton(onClick = { showDeleteDialog = false }) {
-                        Text("Cancel")
+                        Text(stringResource(R.string.budgets_action_cancel))
                     }
                 }
             )
@@ -410,7 +635,7 @@ private fun BudgetHeaderCard(
                             Box {
                                 if (name.isEmpty()) {
                                     Text(
-                                        text = "Budget name",
+                                        text = stringResource(R.string.budget_edit_name_placeholder),
                                         style = MaterialTheme.typography.titleMedium,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
@@ -420,17 +645,30 @@ private fun BudgetHeaderCard(
                         }
                     )
                 } else {
-                    Text(
-                        text = name.ifEmpty { "Budget name" },
-                        style = MaterialTheme.typography.titleMedium,
-                        color = if (name.isEmpty()) MaterialTheme.colorScheme.onSurfaceVariant
-                        else MaterialTheme.colorScheme.onSurface,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(Spacing.xs),
                         modifier = Modifier
                             .clickable { onNameTap() }
                             .padding(vertical = Spacing.xs)
-                    )
+                    ) {
+                        Text(
+                            text = name.ifEmpty { stringResource(R.string.budget_edit_name_placeholder) },
+                            style = MaterialTheme.typography.titleMedium,
+                            color = if (name.isEmpty()) MaterialTheme.colorScheme.onSurfaceVariant
+                            else MaterialTheme.colorScheme.onSurface,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false)
+                        )
+                        // Affordance: the name looked static, so users never found it (#763)
+                        Icon(
+                            Icons.Default.Edit,
+                            contentDescription = stringResource(R.string.budget_edit_edit_name),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(Dimensions.Icon.small)
+                        )
+                    }
                 }
             }
 
@@ -530,7 +768,7 @@ private fun CategoryBudgetRow(
             modifier = Modifier
                 .size(40.dp)
                 .clip(CircleShape)
-                .background(categoryInfo.color.copy(alpha = 0.15f)),
+                .background(CategoryMapping.colorFor(categoryName).copy(alpha = 0.15f)),
             contentAlignment = Alignment.Center
         ) {
             CategoryIcon(category = categoryName, size = 22.dp)
@@ -538,12 +776,12 @@ private fun CategoryBudgetRow(
 
         Column(modifier = Modifier.weight(1f)) {
             Text(
-                text = categoryName,
+                text = categoryLabel(categoryName),
                 style = MaterialTheme.typography.bodyMedium
             )
             if (currentSpending > BigDecimal.ZERO) {
                 Text(
-                    text = "Spent: ${CurrencyFormatter.formatCurrency(currentSpending, currency)}",
+                    text = stringResource(R.string.budget_edit_spent, CurrencyFormatter.formatCurrency(currentSpending, currency)),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -579,9 +817,172 @@ private fun CategoryBudgetRow(
         ) {
             Icon(
                 Icons.Default.Close,
-                contentDescription = "Remove",
+                contentDescription = stringResource(R.string.budget_edit_remove),
                 modifier = Modifier.size(Dimensions.Icon.small),
                 tint = MaterialTheme.colorScheme.error
+            )
+        }
+    }
+}
+
+// ── Budget Period helpers ───────────────────────────────────────────────
+
+/**
+ * Returns the localized full name for a [DayOfWeek] from its `value`
+ * (1=Mon..7=Sun per `java.time.DayOfWeek.value`), clamping out-of-range inputs.
+ */
+// App locale, not Locale.getDefault(), so it matches the per-app language.
+@Composable
+@ReadOnlyComposable
+private fun dayOfWeekName(value: Int): String =
+    DayOfWeek.of(value.coerceIn(1, 7)).getDisplayName(TextStyle.FULL, LocalConfiguration.current.locales[0])
+
+/**
+ * Weekly cadence row — dropdown to pick the day-of-week the week starts
+ * on. Selecting a day calls [onWeekdaySelected] which the viewmodel turns
+ * into a "this week's window" start..end.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun WeekdayAnchorRow(
+    weekStartDay: Int,
+    onWeekdaySelected: (Int) -> Unit
+) {
+    var expanded by remember { mutableStateOf(false) }
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(
+            imageVector = Icons.Default.CalendarMonth,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.primary
+        )
+        Spacer(modifier = Modifier.width(Spacing.sm))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = stringResource(R.string.budget_edit_week_starts_on),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            ExposedDropdownMenuBox(
+                expanded = expanded,
+                onExpandedChange = { expanded = it }
+            ) {
+                OutlinedTextField(
+                    value = dayOfWeekName(weekStartDay),
+                    onValueChange = {},
+                    readOnly = true,
+                    singleLine = true,
+                    trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
+                    modifier = Modifier
+                        .menuAnchor()
+                        .fillMaxWidth()
+                )
+                ExposedDropdownMenu(
+                    expanded = expanded,
+                    onDismissRequest = { expanded = false }
+                ) {
+                    (1..7).forEach { day ->
+                        DropdownMenuItem(
+                            text = { Text(dayOfWeekName(day)) },
+                            onClick = {
+                                onWeekdaySelected(day)
+                                expanded = false
+                            }
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Monthly cadence row — stepper for 1..31. Clamps at 31 (the resolver
+ * handles the Feb-30/31 case at read time).
+ */
+@Composable
+private fun MonthAnchorRow(
+    monthStartDay: Int,
+    onMonthDaySelected: (Int) -> Unit
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(
+            imageVector = Icons.Default.CalendarMonth,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.primary
+        )
+        Spacer(modifier = Modifier.width(Spacing.sm))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = stringResource(R.string.budget_edit_month_starts_on),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Text(
+                text = monthStartDay.toString(),
+                style = MaterialTheme.typography.bodyLarge
+            )
+        }
+        // – / + stepper row. A real NumberPicker would be more accurate
+        // for tapping the precise day, but a stepper is enough for the
+        // common case (1..31) and matches the rest of the app's stepper
+        // pattern.
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            OutlinedIconButton(
+                onClick = { onMonthDaySelected(monthStartDay - 1) },
+                enabled = monthStartDay > 1
+            ) {
+                Icon(Icons.Default.KeyboardArrowDown, contentDescription = stringResource(R.string.budget_edit_decrease_day))
+            }
+            Spacer(modifier = Modifier.width(Spacing.xs))
+            OutlinedIconButton(
+                onClick = { onMonthDaySelected(monthStartDay + 1) },
+                enabled = monthStartDay < 31
+            ) {
+                Icon(Icons.Default.KeyboardArrowUp, contentDescription = stringResource(R.string.budget_edit_increase_day))
+            }
+        }
+    }
+}
+
+/**
+ * One-time (CUSTOM) cadence row — tap-to-pick date label, reused for
+ * both start and end.
+ */
+@Composable
+private fun OneTimeDateRow(
+    label: String,
+    date: java.time.LocalDate,
+    formatter: DateTimeFormatter,
+    onClick: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(vertical = Spacing.xs),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(
+            imageVector = Icons.Default.CalendarMonth,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.primary
+        )
+        Spacer(modifier = Modifier.width(Spacing.sm))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Text(
+                text = date.format(formatter),
+                style = MaterialTheme.typography.bodyLarge
             )
         }
     }

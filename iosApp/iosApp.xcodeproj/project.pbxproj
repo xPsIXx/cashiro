@@ -23,6 +23,7 @@
 		AA0007002D39B001007A8A11 /* CategoryChip.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0007002D39B001007A8A11 /* CategoryChip.swift */; };
 		AA0008002D39B001007A8A11 /* AmountText.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0008002D39B001007A8A11 /* AmountText.swift */; };
 		AA0009002D39B001007A8A11 /* StatPill.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0009002D39B001007A8A11 /* StatPill.swift */; };
+		AA0F1A2B3C4D5E6F70819201 /* EmptyStateView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0F1A2B3C4D5E6F70819201 /* EmptyStateView.swift */; };
 		AA0010002D39B001007A8A11 /* TransactionDetailSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0010002D39B001007A8A11 /* TransactionDetailSheet.swift */; };
 		AA0011002D39B001007A8A11 /* HomeViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0011002D39B001007A8A11 /* HomeViewModel.swift */; };
 		AA0012002D39B001007A8A11 /* DateFormatting.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0012002D39B001007A8A11 /* DateFormatting.swift */; };
@@ -52,6 +53,7 @@
 		JJ0004002D39B001007A8A11 /* CurrencyManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = JJ0001002D39B001007A8A11 /* CurrencyManager.swift */; };
 		JJ0005002D39B001007A8A11 /* CurrencyFormatter.swift in Sources */ = {isa = PBXBuildFile; fileRef = JJ0002002D39B001007A8A11 /* CurrencyFormatter.swift */; };
 		JJ0006002D39B001007A8A11 /* CurrencyPickerScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = JJ0003002D39B001007A8A11 /* CurrencyPickerScreen.swift */; };
+		JJ0009002D39B001007A8A11 /* StatementImportService.swift in Sources */ = {isa = PBXBuildFile; fileRef = JJ0008002D39B001007A8A11 /* StatementImportService.swift */; };
 		LL0002002D39B001007A8A11 /* ThemeManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = LL0001002D39B001007A8A11 /* ThemeManager.swift */; };
 		LL0004002D39B001007A8A11 /* AppearanceScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = LL0003002D39B001007A8A11 /* AppearanceScreen.swift */; };
 		MM0003002D39B001007A8A11 /* FAQScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = MM0001002D39B001007A8A11 /* FAQScreen.swift */; };
@@ -75,6 +77,12 @@
 		SS0004002D39B001007A8A11 /* RulesScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = SS0001002D39B001007A8A11 /* RulesScreen.swift */; };
 		SS0005002D39B001007A8A11 /* AddEditRuleScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = SS0002002D39B001007A8A11 /* AddEditRuleScreen.swift */; };
 		SS0006002D39B001007A8A11 /* RulesViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = SS0003002D39B001007A8A11 /* RulesViewModel.swift */; };
+		5E5A00012E9A0001007A8A11 /* PennyWiseIntents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E5A00022E9A0001007A8A11 /* PennyWiseIntents.swift */; };
+		5E5A00032E9A0001007A8A11 /* BankSmsSetupScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E5A00042E9A0001007A8A11 /* BankSmsSetupScreen.swift */; };
+		5E5B00012E9A0001007A8A11 /* OnDeviceAI.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E5B00022E9A0001007A8A11 /* OnDeviceAI.swift */; };
+		5E5B00032E9A0001007A8A11 /* ChatScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E5B00042E9A0001007A8A11 /* ChatScreen.swift */; };
+		5E5B00052E9A0001007A8A11 /* ChatViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E5B00062E9A0001007A8A11 /* ChatViewModel.swift */; };
+		5E5B00072E9A0001007A8A11 /* AiSmsReaderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E5B00082E9A0001007A8A11 /* AiSmsReaderTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -96,6 +104,7 @@
 		BB0007002D39B001007A8A11 /* CategoryChip.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CategoryChip.swift; sourceTree = "<group>"; };
 		BB0008002D39B001007A8A11 /* AmountText.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AmountText.swift; sourceTree = "<group>"; };
 		BB0009002D39B001007A8A11 /* StatPill.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatPill.swift; sourceTree = "<group>"; };
+		BB0F1A2B3C4D5E6F70819201 /* EmptyStateView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EmptyStateView.swift; sourceTree = "<group>"; };
 		BB0010002D39B001007A8A11 /* TransactionDetailSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TransactionDetailSheet.swift; sourceTree = "<group>"; };
 		BB0011002D39B001007A8A11 /* HomeViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeViewModel.swift; sourceTree = "<group>"; };
 		BB0012002D39B001007A8A11 /* DateFormatting.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DateFormatting.swift; sourceTree = "<group>"; };
@@ -123,6 +132,7 @@
 		JJ0001002D39B001007A8A11 /* CurrencyManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CurrencyManager.swift; sourceTree = "<group>"; };
 		JJ0002002D39B001007A8A11 /* CurrencyFormatter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CurrencyFormatter.swift; sourceTree = "<group>"; };
 		JJ0003002D39B001007A8A11 /* CurrencyPickerScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CurrencyPickerScreen.swift; sourceTree = "<group>"; };
+		JJ0008002D39B001007A8A11 /* StatementImportService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatementImportService.swift; sourceTree = "<group>"; };
 		LL0001002D39B001007A8A11 /* ThemeManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThemeManager.swift; sourceTree = "<group>"; };
 		LL0003002D39B001007A8A11 /* AppearanceScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppearanceScreen.swift; sourceTree = "<group>"; };
 		MM0001002D39B001007A8A11 /* FAQScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FAQScreen.swift; sourceTree = "<group>"; };
@@ -148,6 +158,13 @@
 		SS0001002D39B001007A8A11 /* RulesScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RulesScreen.swift; sourceTree = "<group>"; };
 		SS0002002D39B001007A8A11 /* AddEditRuleScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AddEditRuleScreen.swift; sourceTree = "<group>"; };
 		SS0003002D39B001007A8A11 /* RulesViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RulesViewModel.swift; sourceTree = "<group>"; };
+		5E5A00022E9A0001007A8A11 /* PennyWiseIntents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PennyWiseIntents.swift; sourceTree = "<group>"; };
+		5E5A00042E9A0001007A8A11 /* BankSmsSetupScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BankSmsSetupScreen.swift; sourceTree = "<group>"; };
+		5E5B00022E9A0001007A8A11 /* OnDeviceAI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnDeviceAI.swift; sourceTree = "<group>"; };
+		5E5B00042E9A0001007A8A11 /* ChatScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatScreen.swift; sourceTree = "<group>"; };
+		5E5B00062E9A0001007A8A11 /* ChatViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatViewModel.swift; sourceTree = "<group>"; };
+		5E5B00082E9A0001007A8A11 /* AiSmsReaderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AiSmsReaderTests.swift; sourceTree = "<group>"; };
+		5E5B00102E9A0001007A8A11 /* iosAppTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = iosAppTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -166,6 +183,7 @@
 			isa = PBXGroup;
 			children = (
 				D10B8F7B2D39B001007A8A11 /* iosApp */,
+				5E5B000A2E9A0001007A8A11 /* iosAppTests */,
 				D20B8F7B2D39B001007A8A11 /* Frameworks */,
 				D30B8F7B2D39B001007A8A11 /* Products */,
 			);
@@ -199,6 +217,7 @@
 			isa = PBXGroup;
 			children = (
 				B00B8F7B2D39B001007A8A11 /* iosApp.app */,
+				5E5B00102E9A0001007A8A11 /* iosAppTests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -207,6 +226,8 @@
 			isa = PBXGroup;
 			children = (
 				BB0001002D39B001007A8A11 /* MainTabView.swift */,
+				5E5A00022E9A0001007A8A11 /* PennyWiseIntents.swift */,
+				5E5B00022E9A0001007A8A11 /* OnDeviceAI.swift */,
 			);
 			path = App;
 			sourceTree = "<group>";
@@ -222,6 +243,7 @@
 				DD0006002D39B001007A8A11 /* Settings */,
 				RR0007002D39B001007A8A11 /* Subscriptions */,
 				QQ0011002D39B001007A8A11 /* Onboarding */,
+				5E5B00092E9A0001007A8A11 /* Chat */,
 			);
 			path = Screens;
 			sourceTree = "<group>";
@@ -283,6 +305,7 @@
 			children = (
 				BB0005002D39B001007A8A11 /* SettingsPlaceholderScreen.swift */,
 				FF0001002D39B001007A8A11 /* SettingsScreen.swift */,
+				5E5A00042E9A0001007A8A11 /* BankSmsSetupScreen.swift */,
 				FF0002002D39B001007A8A11 /* CategoriesScreen.swift */,
 				FF0003002D39B001007A8A11 /* AddEditCategoryScreen.swift */,
 				JJ0003002D39B001007A8A11 /* CurrencyPickerScreen.swift */,
@@ -305,6 +328,7 @@
 				BB0007002D39B001007A8A11 /* CategoryChip.swift */,
 				BB0008002D39B001007A8A11 /* AmountText.swift */,
 				BB0009002D39B001007A8A11 /* StatPill.swift */,
+				BB0F1A2B3C4D5E6F70819201 /* EmptyStateView.swift */,
 				BB0010002D39B001007A8A11 /* TransactionDetailSheet.swift */,
 				BB0020002D39B001007A8A11 /* SpendingSummaryCard.swift */,
 				PP0001002D39B001007A8A11 /* GreetingCard.swift */,
@@ -339,6 +363,7 @@
 				BB0013002D39B001007A8A11 /* AmountFormatting.swift */,
 				JJ0001002D39B001007A8A11 /* CurrencyManager.swift */,
 				JJ0002002D39B001007A8A11 /* CurrencyFormatter.swift */,
+				JJ0008002D39B001007A8A11 /* StatementImportService.swift */,
 			);
 			path = Extensions;
 			sourceTree = "<group>";
@@ -374,6 +399,23 @@
 			path = Subscriptions;
 			sourceTree = "<group>";
 		};
+		5E5B00092E9A0001007A8A11 /* Chat */ = {
+			isa = PBXGroup;
+			children = (
+				5E5B00042E9A0001007A8A11 /* ChatScreen.swift */,
+				5E5B00062E9A0001007A8A11 /* ChatViewModel.swift */,
+			);
+			path = Chat;
+			sourceTree = "<group>";
+		};
+		5E5B000A2E9A0001007A8A11 /* iosAppTests */ = {
+			isa = PBXGroup;
+			children = (
+				5E5B00082E9A0001007A8A11 /* AiSmsReaderTests.swift */,
+			);
+			path = iosAppTests;
+			sourceTree = "<group>";
+		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
@@ -395,7 +437,41 @@
 			productReference = B00B8F7B2D39B001007A8A11 /* iosApp.app */;
 			productType = "com.apple.product-type.application";
 		};
+		5E5B000C2E9A0001007A8A11 /* iosAppTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 5E5B000D2E9A0001007A8A11 /* Build configuration list for PBXNativeTarget "iosAppTests" */;
+			buildPhases = (
+				5E5B000B2E9A0001007A8A11 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				5E5B000E2E9A0001007A8A11 /* PBXTargetDependency */,
+			);
+			name = iosAppTests;
+			productName = iosAppTests;
+			productReference = 5E5B00102E9A0001007A8A11 /* iosAppTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 /* End PBXNativeTarget section */
+
+/* Begin PBXContainerItemProxy section */
+		5E5B000F2E9A0001007A8A11 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = F00B8F7B2D39B001007A8A11 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = E00B8F7B2D39B001007A8A11;
+			remoteInfo = iosApp;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXTargetDependency section */
+		5E5B000E2E9A0001007A8A11 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = E00B8F7B2D39B001007A8A11 /* iosApp */;
+			targetProxy = 5E5B000F2E9A0001007A8A11 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin PBXProject section */
 		F00B8F7B2D39B001007A8A11 /* Project object */ = {
@@ -424,6 +500,7 @@
 			projectRoot = "";
 			targets = (
 				E00B8F7B2D39B001007A8A11 /* iosApp */,
+				5E5B000C2E9A0001007A8A11 /* iosAppTests */,
 			);
 		};
 /* End PBXProject section */
@@ -480,6 +557,7 @@
 				AA0007002D39B001007A8A11 /* CategoryChip.swift in Sources */,
 				AA0008002D39B001007A8A11 /* AmountText.swift in Sources */,
 				AA0009002D39B001007A8A11 /* StatPill.swift in Sources */,
+				AA0F1A2B3C4D5E6F70819201 /* EmptyStateView.swift in Sources */,
 				AA0010002D39B001007A8A11 /* TransactionDetailSheet.swift in Sources */,
 				AA0011002D39B001007A8A11 /* HomeViewModel.swift in Sources */,
 				AA0012002D39B001007A8A11 /* DateFormatting.swift in Sources */,
@@ -493,6 +571,11 @@
 				EE0005002D39B001007A8A11 /* AppTypography.swift in Sources */,
 				EE0006002D39B001007A8A11 /* AppSpacing.swift in Sources */,
 				FF0004002D39B001007A8A11 /* SettingsScreen.swift in Sources */,
+				5E5A00032E9A0001007A8A11 /* BankSmsSetupScreen.swift in Sources */,
+				5E5A00012E9A0001007A8A11 /* PennyWiseIntents.swift in Sources */,
+				5E5B00012E9A0001007A8A11 /* OnDeviceAI.swift in Sources */,
+				5E5B00032E9A0001007A8A11 /* ChatScreen.swift in Sources */,
+				5E5B00052E9A0001007A8A11 /* ChatViewModel.swift in Sources */,
 				FF0005002D39B001007A8A11 /* CategoriesScreen.swift in Sources */,
 				FF0006002D39B001007A8A11 /* AddEditCategoryScreen.swift in Sources */,
 				FF0008002D39B001007A8A11 /* CategoriesViewModel.swift in Sources */,
@@ -507,6 +590,7 @@
 				JJ0004002D39B001007A8A11 /* CurrencyManager.swift in Sources */,
 				JJ0005002D39B001007A8A11 /* CurrencyFormatter.swift in Sources */,
 				JJ0006002D39B001007A8A11 /* CurrencyPickerScreen.swift in Sources */,
+				JJ0009002D39B001007A8A11 /* StatementImportService.swift in Sources */,
 				NN0003002D39B001007A8A11 /* AppLockManager.swift in Sources */,
 				NN0004002D39B001007A8A11 /* LockScreenView.swift in Sources */,
 				LL0002002D39B001007A8A11 /* ThemeManager.swift in Sources */,
@@ -531,6 +615,14 @@
 				SS0006002D39B001007A8A11 /* RulesViewModel.swift in Sources */,
 				VV0001002D39B001007A8A11 /* TransactionTotalsCard.swift in Sources */,
 				SK0001002D39B001007A8A11 /* TransactionRowSkeleton.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		5E5B000B2E9A0001007A8A11 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				5E5B00072E9A0001007A8A11 /* AiSmsReaderTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -632,8 +724,8 @@
 			buildSettings = {
 				CLANG_ENABLE_OBJC_WEAK = YES;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = "";
+				CURRENT_PROJECT_VERSION = 9;
+				DEVELOPMENT_TEAM = F9FY44V4RR;
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited)",
 					"$(SRCROOT)/../shared/build/xcode-frameworks/$(CONFIGURATION)/$(SDK_NAME)",
@@ -646,7 +738,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.2;
 				PRODUCT_BUNDLE_IDENTIFIER = com.pennywiseai.iosApp;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -660,8 +752,8 @@
 			buildSettings = {
 				CLANG_ENABLE_OBJC_WEAK = YES;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = "";
+				CURRENT_PROJECT_VERSION = 9;
+				DEVELOPMENT_TEAM = F9FY44V4RR;
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited)",
 					"$(SRCROOT)/../shared/build/xcode-frameworks/$(CONFIGURATION)/$(SDK_NAME)",
@@ -674,12 +766,52 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.2;
 				PRODUCT_BUNDLE_IDENTIFIER = com.pennywiseai.iosApp;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		5E5B00112E9A0001007A8A11 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = F9FY44V4RR;
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(SRCROOT)/../shared/build/xcode-frameworks/$(CONFIGURATION)/$(SDK_NAME)",
+				);
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.pennywiseai.iosAppTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/iosApp.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/iosApp";
+			};
+			name = Debug;
+		};
+		5E5B00122E9A0001007A8A11 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = F9FY44V4RR;
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(SRCROOT)/../shared/build/xcode-frameworks/$(CONFIGURATION)/$(SDK_NAME)",
+				);
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.pennywiseai.iosAppTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/iosApp.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/iosApp";
 			};
 			name = Release;
 		};
@@ -700,6 +832,15 @@
 			buildConfigurations = (
 				I30B8F7B2D39B001007A8A11 /* Debug */,
 				I40B8F7B2D39B001007A8A11 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		5E5B000D2E9A0001007A8A11 /* Build configuration list for PBXNativeTarget "iosAppTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				5E5B00112E9A0001007A8A11 /* Debug */,
+				5E5B00122E9A0001007A8A11 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

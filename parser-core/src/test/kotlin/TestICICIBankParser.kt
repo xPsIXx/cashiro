@@ -253,6 +253,45 @@ class ICICIBankParserTest {
                     accountLast4 = "123",
                     balance = BigDecimal("325000.04")
                 )
+            ),
+            ParserTestCase(
+                name = "ATM cash withdrawal (CAM* marker)",
+                message = "ICICI Bank Acc XX611 debited Rs. 6,500.00 on 19-Jun-26 CAM*62712SRY*. Avb Bal Rs. 10,079.44. To dispute Call 18002662 or SMS BLOCK 611 to 9215676766",
+                sender = "VM-ICICIT-S",
+                expected = ExpectedTransaction(
+                    amount = BigDecimal("6500.00"),
+                    currency = "INR",
+                    type = TransactionType.EXPENSE,
+                    merchant = "ATM Withdrawal",
+                    accountLast4 = "611",
+                    balance = BigDecimal("10079.44")
+                )
+            ),
+            ParserTestCase(
+                name = "NEFT credit extracts payer name as merchant",
+                message = "ICICI Bank Account XX378 credited:Rs. 6,000.00 on 24-Jun-26. Info NEFT-FDRLM4175907234-JOHN JOSE. Available Balance is Rs. 16,079.44.",
+                sender = "VK-ICICIT-S",
+                expected = ExpectedTransaction(
+                    amount = BigDecimal("6000.00"),
+                    currency = "INR",
+                    type = TransactionType.INCOME,
+                    merchant = "JOHN JOSE",
+                    accountLast4 = "378",
+                    balance = BigDecimal("16079.44")
+                )
+            ),
+            ParserTestCase(
+                name = "Bill-pay biller (InfoBIL* marker)",
+                message = "ICICI Bank Acc XX342 debited Rs. 8,927.00 on 07-Jun-26 InfoBIL*Auto Loan.Avl Bal Rs. 1,248.78.To dispute call 18002662 or SMS BLOCK 342 to 9215676766",
+                sender = "JD-ICICIT-S",
+                expected = ExpectedTransaction(
+                    amount = BigDecimal("8927.00"),
+                    currency = "INR",
+                    type = TransactionType.EXPENSE,
+                    merchant = "Auto Loan",
+                    accountLast4 = "342",
+                    balance = BigDecimal("1248.78")
+                )
             )
         )
 

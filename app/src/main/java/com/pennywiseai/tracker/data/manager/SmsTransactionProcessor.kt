@@ -1,8 +1,13 @@
 package com.pennywiseai.tracker.data.manager
 
+import com.pennywiseai.tracker.data.preferences.BankAccountMergeStore
+
 import android.content.Context
+import android.util.Log
+import androidx.room.withTransaction
 import com.pennywiseai.parser.core.ParsedTransaction
 import com.pennywiseai.parser.core.bank.BankParserFactory
+import com.pennywiseai.tracker.data.database.PennyWiseDatabase
 import com.pennywiseai.tracker.data.database.entity.AccountBalanceEntity
 import com.pennywiseai.tracker.data.database.entity.ProfileEntity
 import com.pennywiseai.tracker.data.database.entity.CardType
@@ -10,21 +15,22 @@ import com.pennywiseai.tracker.data.database.entity.TransactionEntity
 import com.pennywiseai.tracker.data.database.entity.TransactionType
 import com.pennywiseai.tracker.data.mapper.toEntity
 import com.pennywiseai.tracker.data.mapper.toEntityType
-import com.pennywiseai.tracker.data.firefly.FireflySyncEngine
+import com.pennywiseai.tracker.utils.BalanceCalculator
 import com.pennywiseai.tracker.data.repository.AccountBalanceRepository
 import com.pennywiseai.tracker.data.repository.CardRepository
+import com.pennywiseai.tracker.data.preferences.IgnoredAccountsStore
 import com.pennywiseai.tracker.data.repository.MerchantMappingRepository
+import com.pennywiseai.tracker.data.repository.mappingFits
 import com.pennywiseai.tracker.data.repository.SubscriptionRepository
+import com.pennywiseai.tracker.data.repository.TagRepository
 import com.pennywiseai.tracker.data.repository.TransactionRepository
+import com.pennywiseai.tracker.domain.model.rule.tagChanges
 import com.pennywiseai.tracker.domain.repository.RuleRepository
 import com.pennywiseai.tracker.domain.service.RuleEngine
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.launch
 import java.math.BigDecimal
 import java.time.Instant
+import com.pennywiseai.tracker.receiver.BankNotificationConfig
+import kotlinx.coroutines.sync.withLock
 import java.time.LocalDateTime
 import java.time.ZoneId
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -45,10 +51,11 @@ class SmsTransactionProcessor @Inject constructor(
     private val subscriptionRepository: SubscriptionRepository,
     private val ruleRepository: RuleRepository,
     private val ruleEngine: RuleEngine,
-    private val fireflySyncEngine: FireflySyncEngine,
-    private val diagnosticLogger: com.pennywiseai.tracker.data.diagnostic.DiagnosticLogger
+    private val tagRepository: TagRepository,
+    private val ignoredAccountsStore: IgnoredAccountsStore,
+    private val database: PennyWiseDatabase
 ) {
-    private val syncScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val bankAccountMerges = BankAccountMergeStore(appContext)
     companion object {
         private const val TAG = "SmsTransactionProcessor"
     }
@@ -59,7 +66,13 @@ class SmsTransactionProcessor @Inject constructor(
     data class ProcessingResult(
         val success: Boolean,
         val transactionId: Long? = null,
-        val reason: String? = null
+        val reason: String? = null,
+        /**
+         * True when nothing was saved on purpose (the account is ignored), as
+         * opposed to a parse or storage failure. Callers that queue a message
+         * for retry should treat this as settled, not as something to try again.
+         */
+        val intentionallySkipped: Boolean = false
     )
 
     /**
@@ -76,24 +89,26 @@ class SmsTransactionProcessor @Inject constructor(
         timestamp: Long
     ): ProcessingResult {
         try {
-            // Get the appropriate parser for this sender
-            val parser = BankParserFactory.getParser(sender)
-            if (parser == null) {
+            // Some senders are shared by multiple parsers (e.g. M-Pesa
+            // Kenya/Tanzania/Mozambique all use "M-Pesa"), so try every parser
+            // that handles this sender and use the first whose content parses.
+            val parsers = BankParserFactory.getParsers(sender)
+            if (parsers.isEmpty()) {
                 return ProcessingResult(false, reason = "No parser found for sender: $sender")
             }
 
             // Parse the SMS
-            val parsedTransaction = parser.parse(body, sender, timestamp)
+            val parsedTransaction = parsers.firstNotNullOfOrNull { it.parse(body, sender, timestamp) }
             if (parsedTransaction == null) {
                 return ProcessingResult(false, reason = "Could not parse transaction from SMS")
             }
 
-            diagnosticLogger.d("SmsProcessor", "Parsed transaction: ${parsedTransaction.amount} from ${parsedTransaction.bankName}")
+            Log.d(TAG, "Parsed transaction: ${parsedTransaction.amount} from ${parsedTransaction.bankName}")
 
             // Save the transaction
             return saveParsedTransaction(parsedTransaction, body)
         } catch (e: Exception) {
-            diagnosticLogger.e("SmsProcessor", "Error processing SMS", e)
+            Log.e(TAG, "Error processing SMS", e)
             return ProcessingResult(false, reason = e.message)
         }
     }
@@ -107,29 +122,85 @@ class SmsTransactionProcessor @Inject constructor(
      * - Balance updates
      */
     suspend fun saveParsedTransaction(
-        parsedTransaction: ParsedTransaction,
+        parsedInput: ParsedTransaction,
         smsBody: String
-    ): ProcessingResult {
-        return try {
+    ): ProcessingResult = BankAccountMergeStore.mutationMutex.withLock {
+        // One lock across the SMS receiver and the notification listener: a bank
+        // that texts and pushes at the same moment would otherwise let both pass
+        // the duplicate check before either insert lands.
+        try {
+            val parsedTransaction = bankAccountMerges.resolve(parsedInput)
             // Convert to entity
             val entity = parsedTransaction.toEntity()
+
+            // An ignored account's messages are dropped before anything is
+            // stored, so no row and no notification (#826). A debit-card
+            // purchase reports the card's digits while the money leaves the
+            // linked account, so check both — ignoring the account has to stop
+            // its card spend too.
+            val linkedAccountLast4 = if (parsedTransaction.isFromCard) {
+                parsedTransaction.accountLast4?.let {
+                    cardRepository.getCard(parsedTransaction.bankName, it)?.accountLast4
+                }
+            } else null
+            if (ignoredAccountsStore.isIgnored(
+                    entity.bankName,
+                    entity.accountNumber,
+                    linkedAccountLast4
+                )
+            ) {
+                return ProcessingResult(
+                    success = false,
+                    reason = "Account is ignored",
+                    intentionallySkipped = true
+                )
+            }
 
             // Check if this transaction was previously deleted by the user
             val existingTransaction = transactionRepository.getTransactionByHash(entity.transactionHash)
             if (existingTransaction != null) {
                 if (existingTransaction.isDeleted) {
-                    diagnosticLogger.d("SmsProcessor", "Skipping previously deleted transaction with hash: ${entity.transactionHash}")
+                    Log.d(TAG, "Skipping previously deleted transaction with hash: ${entity.transactionHash}")
                     return ProcessingResult(false, reason = "Transaction was previously deleted")
                 }
                 // Transaction already exists and not deleted - normal deduplication
-                diagnosticLogger.d("SmsProcessor", "Transaction already exists: ${entity.transactionHash}")
+                Log.d(TAG, "Transaction already exists: ${entity.transactionHash}")
                 return ProcessingResult(false, reason = "Duplicate transaction")
+            }
+
+            // Same SMS already stored under an older hash (a parser fix changed the
+            // amount): never insert it twice, and repair a known-bad amount. (#886)
+            entity.smsBody?.let { body ->
+                transactionRepository.getAnyBySms(body, entity.smsSender)?.let { stored ->
+                    if (!stored.isDeleted && TransactionDeduplication.isParseArtifact(stored, entity)) {
+                        transactionRepository.correctParsedAmount(stored, entity)
+                    }
+                    return ProcessingResult(false, reason = "Duplicate transaction")
+                }
+            }
+
+            // Same charge already booked from the bank's other channel (SMS vs app
+            // notification). Runs under saveLock, together with the insert below.
+            if (entity.bankName in BankNotificationConfig.notificationBankNames) {
+                val nearby = transactionRepository.getTransactionByAmountAndDate(
+                    entity.amount,
+                    entity.dateTime.minusMinutes(2),
+                    entity.dateTime.plusMinutes(2)
+                )
+                if (TransactionDeduplication.isBookedByOtherChannel(
+                        entity, nearby, BankNotificationConfig.notificationAliases
+                    )
+                ) {
+                    Log.d(TAG, "Already booked from the other channel: ${entity.transactionHash}")
+                    return ProcessingResult(false, reason = "Duplicate transaction")
+                }
             }
 
             // Check for custom merchant mapping
             val customCategory = merchantMappingRepository.getCategoryForMerchant(entity.merchantName)
+                ?.takeIf { mappingFits(database.categoryDao().getCategoryByName(it)?.isIncome, entity.transactionType) }
             val entityWithMapping = if (customCategory != null) {
-                diagnosticLogger.d("SmsProcessor", "Found custom category mapping: ${entity.merchantName} -> $customCategory")
+                Log.d(TAG, "Found custom category mapping: ${entity.merchantName} -> $customCategory")
                 entity.copy(category = customCategory)
             } else {
                 entity
@@ -146,7 +217,7 @@ class SmsTransactionProcessor @Inject constructor(
             )
 
             if (blockingRule != null) {
-                diagnosticLogger.d("SmsProcessor", "Transaction blocked by rule: ${blockingRule.name}")
+                Log.d(TAG, "Transaction blocked by rule: ${blockingRule.name}")
                 return ProcessingResult(false, reason = "Blocked by rule: ${blockingRule.name}")
             }
 
@@ -157,7 +228,7 @@ class SmsTransactionProcessor @Inject constructor(
             )
 
             if (ruleApplications.isNotEmpty()) {
-                diagnosticLogger.d("SmsProcessor", "Applied ${ruleApplications.size} rules to transaction")
+                Log.d(TAG, "Applied ${ruleApplications.size} rules to transaction")
             }
 
             // Check if this transaction matches an active subscription
@@ -165,43 +236,61 @@ class SmsTransactionProcessor @Inject constructor(
                 entityWithRules.merchantName,
                 entityWithRules.amount
             )
-
             val finalEntity = if (matchedSubscription != null) {
-                diagnosticLogger.d("SmsProcessor", "Transaction matched to active subscription: ${matchedSubscription.merchantName}")
-                subscriptionRepository.updateNextPaymentDateAfterCharge(
-                    matchedSubscription.id,
-                    entityWithRules.dateTime.toLocalDate()
-                )
+                Log.d(TAG, "Matched subscription ${matchedSubscription.id}")
                 entityWithRules.copy(isRecurring = true)
             } else {
                 entityWithRules
             }
 
-            val rowId = transactionRepository.insertTransaction(finalEntity)
+            val rowId = if (matchedSubscription != null) {
+                // Atomicity: advance the billing cycle only if the charge row commits.
+                // Insert returning -1L (duplicate hash) or a throw must leave
+                // next_payment_date untouched. Callees are DAO passthroughs; no
+                // nested transactions.
+                database.withTransaction {
+                    val id = transactionRepository.insertTransaction(finalEntity)
+                    if (id != -1L) {
+                        subscriptionRepository.updateNextPaymentDateAfterCharge(
+                            matchedSubscription.id,
+                            finalEntity.dateTime.toLocalDate()
+                        )
+                    }
+                    id
+                }
+            } else {
+                transactionRepository.insertTransaction(finalEntity)
+            }
             if (rowId != -1L) {
-                diagnosticLogger.d("SmsProcessor", "Saved new transaction with ID: $rowId${if (finalEntity.isRecurring) " (Recurring)" else ""}")
+                Log.d(TAG, "Saved new transaction with ID: $rowId${if (finalEntity.isRecurring) " (Recurring)" else ""}")
 
-                // Save rule applications if any rules were applied
+                // Save rule applications if any rules were applied. The engine ran
+                // before the insert, so each application still carries the entity's
+                // placeholder id of 0 — remap to the real row id, as the SMS worker
+                // does, or the FK on rule_applications.transaction_id rejects the write
+                // and the throw skips the tag/balance/widget work below.
                 if (ruleApplications.isNotEmpty()) {
-                    ruleRepository.saveRuleApplications(ruleApplications)
+                    ruleRepository.saveRuleApplications(
+                        ruleApplications.map { it.copy(transactionId = rowId.toString()) }
+                    )
+                    // ADD_TAG / REMOVE_TAG live in the tag table, not on the row (#748).
+                    val (add, remove) = ruleApplications.tagChanges()
+                    if (add.isNotEmpty() || remove.isNotEmpty()) tagRepository.applyTagChanges(rowId, add, remove)
                 }
 
                 // Process balance updates
                 processBalanceUpdate(parsedTransaction, finalEntity, rowId)
 
-                // Trigger widget refresh for recent transactions
-                com.pennywiseai.tracker.widget.RecentTransactionsWidgetUpdateWorker.enqueueOneShot(appContext)
-
-                // Opt-in: push newly parsed SMS transaction to user's Firefly III instance
-                triggerFireflySyncIfEnabled(rowId, finalEntity)
+                // Trigger widget refresh for the transaction-derived widgets
+                com.pennywiseai.tracker.widget.WidgetRefresher.refreshTransactionWidgets(appContext)
 
                 return ProcessingResult(true, transactionId = rowId)
             } else {
-                diagnosticLogger.d("SmsProcessor", "Transaction already exists (duplicate): ${entity.transactionHash}")
+                Log.d(TAG, "Transaction already exists (duplicate): ${entity.transactionHash}")
                 return ProcessingResult(false, reason = "Duplicate transaction")
             }
         } catch (e: Exception) {
-            diagnosticLogger.e("SmsProcessor", "Error saving transaction: ${e.message}")
+            Log.e(TAG, "Error saving transaction: ${e.message}")
             return ProcessingResult(false, reason = e.message)
         }
     }
@@ -211,7 +300,16 @@ class SmsTransactionProcessor @Inject constructor(
         entity: TransactionEntity,
         rowId: Long
     ) {
-        if (parsedTransaction.accountLast4 == null) return
+        if (parsedTransaction.accountLast4 == null) {
+            // Mobile-money wallets (eMola, M-Pesa Mozambique) have no per-account
+            // number — the whole wallet is one account. Derive a single service-level
+            // account row from the running balance the SMS carries, so the wallet shows
+            // up as an account and counts toward the total balance.
+            if (parsedTransaction.isMobileWallet && parsedTransaction.balance != null) {
+                upsertWalletBalance(parsedTransaction, entity, rowId)
+            }
+            return
+        }
 
         val isFromCard = parsedTransaction.isFromCard
 
@@ -235,7 +333,7 @@ class SmsTransactionProcessor @Inject constructor(
             }
 
             if (card == null) {
-                diagnosticLogger.w("SmsProcessor", "Could not create/find card for ${parsedTransaction.bankName}")
+                Log.w(TAG, "Could not create/find card for ${parsedTransaction.bankName}")
                 null
             } else {
                 // Update card's balance
@@ -270,69 +368,97 @@ class SmsTransactionProcessor @Inject constructor(
                 targetAccountLast4
             )
 
-            val newBalance = when {
-                parsedTransaction.balance != null -> parsedTransaction.balance!!
-                isCreditCard -> {
-                    val currentBalance = existingAccount?.balance ?: BigDecimal.ZERO
-                    currentBalance + parsedTransaction.amount
+            val resolvedIsCreditCard = BalanceCalculator.resolvedIsCreditCard(isCreditCard, existingAccount)
+
+            // The account keeps its own currency; a foreign-currency spend isn't
+            // added to it (see BalanceCalculator.balanceAfter).
+            val accountCurrency = existingAccount?.currency
+                ?: parsedTransaction.accountCurrency
+                ?: parsedTransaction.currency
+            // Moves from the balance just before this SMS in time, not the newest
+            // row, the same rule as the inbox scan (#982).
+            accountBalanceRepository.insertSmsTransactionBalance(
+                parsedTransaction.bankName, targetAccountLast4, entity.dateTime
+            ) { before ->
+                val newBalance = BalanceCalculator.balanceAfter(
+                    explicitBalance = parsedTransaction.balance,
+                    // A loan account's balance is owed too: a payment lowers it (#792).
+                    isCreditCard = resolvedIsCreditCard || existingAccount?.isLoan == true,
+                    transactionType = parsedTransaction.type.toEntityType(),
+                    transactionAmount = parsedTransaction.amount,
+                    transactionCurrency = parsedTransaction.currency,
+                    accountCurrency = accountCurrency,
+                    currentBalance = before
+                )
+
+                // Credit-card SMS report the AVAILABLE limit, not the total. The UI derives
+                // available = creditLimit − balance, so store total = available + outstanding
+                // (the post-transaction balance) to keep that math correct. Falls back to the
+                // existing stored limit when the SMS carries no limit. (#486)
+                val resolvedCreditLimit = if (resolvedIsCreditCard && parsedTransaction.creditLimit != null) {
+                    parsedTransaction.creditLimit!! + newBalance
+                } else {
+                    existingAccount?.creditLimit
                 }
-                existingAccount?.isCreditCard == true && parsedTransaction.type.toEntityType() == TransactionType.INCOME -> {
-                    val currentBalance = existingAccount.balance ?: BigDecimal.ZERO
-                    (currentBalance - parsedTransaction.amount).max(BigDecimal.ZERO)
-                }
-                else -> {
-                    // SMS doesn't have explicit balance - calculate based on transaction type
-                    val currentBalance = existingAccount?.balance ?: BigDecimal.ZERO
-                    when (parsedTransaction.type.toEntityType()) {
-                        TransactionType.INCOME -> {
-                            // Money coming in - add to balance
-                            currentBalance + parsedTransaction.amount
-                        }
-                        TransactionType.EXPENSE, TransactionType.INVESTMENT -> {
-                            // Money going out - subtract from balance
-                            (currentBalance - parsedTransaction.amount).max(BigDecimal.ZERO)
-                        }
-                        TransactionType.CREDIT, TransactionType.TRANSFER -> {
-                            // Keep existing balance for transfers (complex logic needed)
-                            // Credit should be handled above, this is fallback
-                            currentBalance
-                        }
-                    }
-                }
+
+                AccountBalanceEntity(
+                    bankName = parsedTransaction.bankName,
+                    accountLast4 = targetAccountLast4,
+                    balance = newBalance,
+                    timestamp = entity.dateTime,
+                    transactionId = if (rowId != -1L) rowId else null,
+                    creditLimit = resolvedCreditLimit,
+                    isCreditCard = resolvedIsCreditCard,
+                    smsSource = parsedTransaction.smsBody.take(500),
+                    sourceType = "TRANSACTION",
+                    accountType = BalanceCalculator.preservedAccountType(existingAccount),
+                    currency = accountCurrency,
+                    profileId = existingAccount?.profileId ?: ProfileEntity.PERSONAL_ID,
+                    alias = existingAccount?.alias,
+                    lowBalanceThreshold = existingAccount?.lowBalanceThreshold
+                )
             }
-
-            val balanceEntity = AccountBalanceEntity(
-                bankName = parsedTransaction.bankName,
-                accountLast4 = targetAccountLast4,
-                balance = newBalance,
-                timestamp = entity.dateTime,
-                transactionId = if (rowId != -1L) rowId else null,
-                creditLimit = existingAccount?.creditLimit,
-                isCreditCard = isCreditCard || (existingAccount?.isCreditCard ?: false),
-                smsSource = parsedTransaction.smsBody.take(500),
-                sourceType = "TRANSACTION",
-                currency = parsedTransaction.currency,
-                profileId = existingAccount?.profileId ?: ProfileEntity.PERSONAL_ID,
-                alias = existingAccount?.alias
-            )
-
-            accountBalanceRepository.insertBalance(balanceEntity)
-            diagnosticLogger.d("SmsProcessor", "Saved balance update for ${parsedTransaction.bankName} **$targetAccountLast4")
+            Log.d(TAG, "Saved balance update for ${parsedTransaction.bankName} **$targetAccountLast4")
         }
     }
 
     /**
-     * Fire-and-forget sync of a newly parsed SMS transaction to Firefly III
-     * (engine no-ops unless the user enabled the integration).
-     * Runs off the main processing thread to avoid blocking SMS receipt.
+     * Derives a single service-level account row for a mobile-money wallet
+     * (eMola, M-Pesa Mozambique). These SMS carry the running balance but no
+     * per-account number, so the account is keyed on bankName with the
+     * [AccountBalanceEntity.WALLET_ACCOUNT_MARKER] sentinel and the balance is
+     * taken straight from the SMS (never a card, never credit).
      */
-    private fun triggerFireflySyncIfEnabled(transactionId: Long, entity: TransactionEntity) {
-        syncScope.launch {
-            runCatching {
-                fireflySyncEngine.onTransactionSaved(entity.copy(id = transactionId))
-            }.onFailure { e ->
-                diagnosticLogger.e("SmsProcessor", "Unexpected error during Firefly sync trigger", e)
-            }
-        }
+    private suspend fun upsertWalletBalance(
+        parsedTransaction: ParsedTransaction,
+        entity: TransactionEntity,
+        rowId: Long
+    ) {
+        val balance = parsedTransaction.balance ?: return
+        val existingAccount = accountBalanceRepository.getLatestBalance(
+            parsedTransaction.bankName,
+            AccountBalanceEntity.WALLET_ACCOUNT_MARKER
+        )
+
+        val balanceEntity = AccountBalanceEntity(
+            bankName = parsedTransaction.bankName,
+            accountLast4 = AccountBalanceEntity.WALLET_ACCOUNT_MARKER,
+            balance = balance,
+            timestamp = entity.dateTime,
+            transactionId = if (rowId != -1L) rowId else null,
+            creditLimit = null,
+            isCreditCard = false,
+            smsSource = parsedTransaction.smsBody.take(500),
+            sourceType = "TRANSACTION",
+            accountType = BalanceCalculator.preservedAccountType(existingAccount),
+            // The balance is in the account's currency, which can differ from the spend's.
+            currency = parsedTransaction.accountCurrency ?: parsedTransaction.currency,
+            profileId = existingAccount?.profileId ?: ProfileEntity.PERSONAL_ID,
+            alias = existingAccount?.alias,
+            lowBalanceThreshold = existingAccount?.lowBalanceThreshold
+        )
+
+        accountBalanceRepository.insertBalance(balanceEntity)
+        Log.d(TAG, "Saved wallet balance for ${parsedTransaction.bankName}")
     }
 }

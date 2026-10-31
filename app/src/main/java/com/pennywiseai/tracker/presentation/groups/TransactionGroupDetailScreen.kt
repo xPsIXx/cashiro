@@ -1,5 +1,9 @@
 package com.pennywiseai.tracker.presentation.groups
 
+import com.pennywiseai.tracker.utils.AppDates
+
+import com.pennywiseai.tracker.R
+import androidx.compose.ui.res.stringResource
 import androidx.compose.foundation.background
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
@@ -21,15 +25,17 @@ import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.unit.dp
-import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
+import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.pennywiseai.tracker.data.database.entity.TransactionEntity
 import com.pennywiseai.tracker.data.database.entity.TransactionType
+import com.pennywiseai.tracker.presentation.transactions.ExportTransactionsDialog
 import com.pennywiseai.tracker.ui.components.CustomTitleTopAppBar
 import com.pennywiseai.tracker.ui.components.cards.PennyWiseCardV2
 import com.pennywiseai.tracker.ui.effects.overScrollVertical
 import com.pennywiseai.tracker.ui.effects.rememberOverscrollFlingBehavior
 import com.pennywiseai.tracker.ui.theme.*
+import com.pennywiseai.tracker.ui.theme.investment
 import com.pennywiseai.tracker.utils.CurrencyFormatter
 import dev.chrisbanes.haze.HazeState
 import dev.chrisbanes.haze.hazeSource
@@ -46,6 +52,7 @@ fun TransactionGroupDetailScreen(
     val scrollBehaviorSmall = TopAppBarDefaults.pinnedScrollBehavior()
     val scrollBehaviorLarge = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
     val hazeState = remember { HazeState() }
+    var showExportDialog by remember { mutableStateOf(false) }
 
     LaunchedEffect(uiState.isDeleted) {
         if (uiState.isDeleted) onNavigateBack()
@@ -60,31 +67,37 @@ fun TransactionGroupDetailScreen(
             CustomTitleTopAppBar(
                 scrollBehaviorSmall = scrollBehaviorSmall,
                 scrollBehaviorLarge = scrollBehaviorLarge,
-                title = group?.name ?: "Group",
+                title = group?.name ?: stringResource(R.string.group_detail_title_fallback),
                 hasBackButton = true,
-                hasActionButton = true,
                 navigationContent = {
                     IconButton(onClick = onNavigateBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(R.string.group_back))
                     }
                 },
                 actionContent = {
                     if (group != null) {
                         var showMenu by remember { mutableStateOf(false) }
                         IconButton(onClick = { showMenu = true }) {
-                            Icon(Icons.Default.MoreVert, contentDescription = "More")
+                            Icon(Icons.Default.MoreVert, contentDescription = stringResource(R.string.group_detail_more))
                         }
                         DropdownMenu(
                             expanded = showMenu,
                             onDismissRequest = { showMenu = false }
                         ) {
                             DropdownMenuItem(
-                                text = { Text("Edit") },
+                                text = { Text(stringResource(R.string.group_detail_edit)) },
                                 onClick = { showMenu = false; viewModel.showEditDialog() },
                                 leadingIcon = { Icon(Icons.Default.Edit, null) }
                             )
+                            if (uiState.linkedTransactions.isNotEmpty()) {
+                                DropdownMenuItem(
+                                    text = { Text(stringResource(R.string.group_detail_export_csv)) },
+                                    onClick = { showMenu = false; showExportDialog = true },
+                                    leadingIcon = { Icon(Icons.Default.FileDownload, null) }
+                                )
+                            }
                             DropdownMenuItem(
-                                text = { Text("Delete", color = MaterialTheme.colorScheme.error) },
+                                text = { Text(stringResource(R.string.group_delete), color = MaterialTheme.colorScheme.error) },
                                 onClick = { showMenu = false; viewModel.showDeleteDialog() },
                                 leadingIcon = {
                                     Icon(
@@ -102,7 +115,7 @@ fun TransactionGroupDetailScreen(
         },
         floatingActionButton = {
             FloatingActionButton(onClick = { viewModel.showAddSheet() }) {
-                Icon(Icons.Default.Add, contentDescription = "Add transaction")
+                Icon(Icons.Default.Add, contentDescription = stringResource(R.string.group_detail_add_transaction))
             }
         }
     ) { paddingValues ->
@@ -158,13 +171,17 @@ fun TransactionGroupDetailScreen(
                             )
                         }
                         HorizontalDivider(modifier = Modifier.padding(vertical = Spacing.xs))
-                        Row(
+                        // Up to four figures (count, spent, invested, received),
+                        // each possibly listing several currencies — wrap onto a
+                        // second line on narrow screens instead of squeezing.
+                        FlowRow(
                             modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceEvenly
+                            horizontalArrangement = Arrangement.SpaceEvenly,
+                            verticalArrangement = Arrangement.spacedBy(Spacing.sm)
                         ) {
                             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                                 Text(
-                                    "Transactions",
+                                    stringResource(R.string.group_detail_transactions),
                                     style = MaterialTheme.typography.labelSmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -175,30 +192,45 @@ fun TransactionGroupDetailScreen(
                                     color = MaterialTheme.colorScheme.onSurface
                                 )
                             }
-                            if (uiState.totalExpense > java.math.BigDecimal.ZERO) {
+                            if (uiState.expenseByCurrency.values.any { it.isPositive }) {
                                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                                     Text(
-                                        "Expenses",
+                                        stringResource(R.string.group_detail_expenses),
                                         style = MaterialTheme.typography.labelSmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
                                     Text(
-                                        CurrencyFormatter.formatCurrency(uiState.totalExpense),
+                                        CurrencyFormatter.formatByCurrency(uiState.expenseByCurrency),
                                         style = MaterialTheme.typography.titleMedium,
                                         fontWeight = FontWeight.SemiBold,
                                         color = expenseColor
                                     )
                                 }
                             }
-                            if (uiState.totalIncome > java.math.BigDecimal.ZERO) {
+                            if (uiState.investedByCurrency.values.any { it.isPositive }) {
                                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                                     Text(
-                                        "Income",
+                                        stringResource(R.string.group_detail_invested),
                                         style = MaterialTheme.typography.labelSmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
                                     Text(
-                                        CurrencyFormatter.formatCurrency(uiState.totalIncome),
+                                        CurrencyFormatter.formatByCurrency(uiState.investedByCurrency),
+                                        style = MaterialTheme.typography.titleMedium,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = MaterialTheme.colorScheme.investment
+                                    )
+                                }
+                            }
+                            if (uiState.incomeByCurrency.values.any { it.isPositive }) {
+                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                    Text(
+                                        stringResource(R.string.group_detail_income),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                    Text(
+                                        CurrencyFormatter.formatByCurrency(uiState.incomeByCurrency),
                                         style = MaterialTheme.typography.titleMedium,
                                         fontWeight = FontWeight.SemiBold,
                                         color = accentColor
@@ -213,7 +245,7 @@ fun TransactionGroupDetailScreen(
             if (uiState.linkedTransactions.isNotEmpty()) {
                 item {
                     Text(
-                        "Transactions",
+                        stringResource(R.string.group_detail_transactions),
                         style = MaterialTheme.typography.titleSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -241,17 +273,17 @@ fun TransactionGroupDetailScreen(
                                 Icons.Default.AddCircleOutline,
                                 contentDescription = null,
                                 modifier = Modifier.size(48.dp),
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                             Text(
-                                "No transactions yet",
+                                stringResource(R.string.group_detail_empty_title),
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                             Text(
-                                "Tap + to add transactions to this group",
+                                stringResource(R.string.group_detail_empty_hint),
                                 style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
                     }
@@ -281,20 +313,29 @@ fun TransactionGroupDetailScreen(
         )
     }
 
+    // Export dialog — reuses the transactions CSV exporter (same Pro/free
+    // row-limit behavior) on this group's linked transactions.
+    if (showExportDialog) {
+        ExportTransactionsDialog(
+            transactions = uiState.linkedTransactions,
+            onDismiss = { showExportDialog = false }
+        )
+    }
+
     // Delete dialog
     if (uiState.showDeleteDialog) {
         AlertDialog(
             onDismissRequest = { viewModel.hideDeleteDialog() },
-            title = { Text("Delete Group") },
-            text = { Text("Delete this group? Linked transactions will be ungrouped but not deleted.") },
+            title = { Text(stringResource(R.string.group_detail_delete_title)) },
+            text = { Text(stringResource(R.string.group_detail_delete_message)) },
             confirmButton = {
                 TextButton(onClick = { viewModel.deleteGroup() }) {
-                    Text("Delete", color = MaterialTheme.colorScheme.error)
+                    Text(stringResource(R.string.group_delete), color = MaterialTheme.colorScheme.error)
                 }
             },
             dismissButton = {
                 TextButton(onClick = { viewModel.hideDeleteDialog() }) {
-                    Text("Cancel")
+                    Text(stringResource(R.string.group_cancel))
                 }
             }
         )
@@ -328,21 +369,31 @@ private fun GroupTransactionItem(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
+            // Prefer the user-written description as the heading; fall back to the
+            // (often cryptic) merchant name. (#383)
+            val description = transaction.description?.takeIf { it.isNotBlank() }
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    transaction.merchantName,
+                    description ?: transaction.merchantName,
                     style = MaterialTheme.typography.bodyMedium,
                     fontWeight = FontWeight.Medium,
                     color = MaterialTheme.colorScheme.onSurface
                 )
+                val secondary = buildString {
+                    if (description != null) {
+                        append(transaction.merchantName)
+                        append(" · ")
+                    }
+                    append(transaction.dateTime.format(AppDates.dateFormatter()))
+                }
                 Text(
-                    transaction.dateTime.format(DateTimeFormatter.ofPattern("d MMM yyyy")),
+                    secondary,
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
             Text(
-                "$sign${CurrencyFormatter.formatCurrency(transaction.amount, transaction.currency)}",
+                CurrencyFormatter.signed(sign, CurrencyFormatter.formatCurrency(transaction.amount, transaction.currency)),
                 style = MaterialTheme.typography.bodyMedium,
                 fontWeight = FontWeight.SemiBold,
                 color = color
@@ -351,7 +402,7 @@ private fun GroupTransactionItem(
             IconButton(onClick = onRemove, modifier = Modifier.size(32.dp)) {
                 Icon(
                     Icons.Default.RemoveCircleOutline,
-                    contentDescription = "Remove from group",
+                    contentDescription = stringResource(R.string.group_detail_remove_from_group),
                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.size(20.dp)
                 )
@@ -385,7 +436,7 @@ private fun AddTransactionToGroupSheet(
                 .imePadding()
         ) {
             Text(
-                "Add Transactions",
+                stringResource(R.string.group_detail_picker_title),
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.SemiBold
             )
@@ -394,7 +445,7 @@ private fun AddTransactionToGroupSheet(
             TextField(
                 value = searchQuery,
                 onValueChange = onSearchQueryChange,
-                placeholder = { Text("Search transactions…") },
+                placeholder = { Text(stringResource(R.string.group_detail_picker_search)) },
                 leadingIcon = { Icon(Icons.Default.Search, null) },
                 singleLine = true,
                 shape = RoundedCornerShape(16.dp),
@@ -412,7 +463,7 @@ private fun AddTransactionToGroupSheet(
                     contentAlignment = Alignment.Center
                 ) {
                     Text(
-                        if (searchQuery.isBlank()) "No ungrouped transactions" else "No results",
+                        if (searchQuery.isBlank()) stringResource(R.string.group_detail_picker_empty) else stringResource(R.string.group_detail_picker_no_results),
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -446,21 +497,32 @@ private fun AddTransactionToGroupSheet(
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
+                                // Match the description-first heading used on the group's
+                                // own rows so the picker label is consistent with what
+                                // the user will see once the txn is added. (#383)
+                                val txnDescription = txn.description?.takeIf { it.isNotBlank() }
                                 Column(modifier = Modifier.weight(1f)) {
                                     Text(
-                                        txn.merchantName,
+                                        txnDescription ?: txn.merchantName,
                                         style = MaterialTheme.typography.bodyMedium,
                                         fontWeight = FontWeight.Medium,
                                         color = MaterialTheme.colorScheme.onSurface
                                     )
+                                    val pickerSecondary = buildString {
+                                        if (txnDescription != null) {
+                                            append(txn.merchantName)
+                                            append(" · ")
+                                        }
+                                        append(txn.dateTime.format(AppDates.dayMonthFormatter()))
+                                    }
                                     Text(
-                                        txn.dateTime.format(DateTimeFormatter.ofPattern("d MMM")),
+                                        pickerSecondary,
                                         style = MaterialTheme.typography.labelSmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
                                 }
                                 Text(
-                                    "$sign${CurrencyFormatter.formatCurrency(txn.amount, txn.currency)}",
+                                    CurrencyFormatter.signed(sign, CurrencyFormatter.formatCurrency(txn.amount, txn.currency)),
                                     style = MaterialTheme.typography.bodyMedium,
                                     fontWeight = FontWeight.SemiBold,
                                     color = color
@@ -468,7 +530,7 @@ private fun AddTransactionToGroupSheet(
                                 Spacer(modifier = Modifier.width(Spacing.xs))
                                 Icon(
                                     Icons.Default.AddCircleOutline,
-                                    contentDescription = "Add",
+                                    contentDescription = stringResource(R.string.group_detail_picker_add),
                                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
                                     modifier = Modifier.size(20.dp)
                                 )
@@ -493,13 +555,13 @@ private fun EditGroupDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Edit Group") },
+        title = { Text(stringResource(R.string.group_detail_edit_title)) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(Spacing.sm)) {
                 TextField(
                     value = name,
                     onValueChange = { name = it },
-                    label = { Text("Group name") },
+                    label = { Text(stringResource(R.string.group_name)) },
                     singleLine = true,
                     keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Words),
                     shape = RoundedCornerShape(16.dp),
@@ -512,7 +574,7 @@ private fun EditGroupDialog(
                 TextField(
                     value = note,
                     onValueChange = { note = it },
-                    label = { Text("Note (optional)") },
+                    label = { Text(stringResource(R.string.group_note)) },
                     singleLine = true,
                     shape = RoundedCornerShape(16.dp),
                     colors = TextFieldDefaults.colors(
@@ -528,12 +590,12 @@ private fun EditGroupDialog(
                 onClick = { onSave(name, note.ifBlank { null }) },
                 enabled = name.isNotBlank()
             ) {
-                Text("Save")
+                Text(stringResource(R.string.group_save))
             }
         },
         dismissButton = {
             TextButton(onClick = onDismiss) {
-                Text("Cancel")
+                Text(stringResource(R.string.group_cancel))
             }
         }
     )

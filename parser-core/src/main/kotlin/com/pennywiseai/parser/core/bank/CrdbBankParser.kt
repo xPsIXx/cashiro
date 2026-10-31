@@ -77,6 +77,16 @@ class CrdbBankParser : BankParser() {
             parseAmount(match.groupValues[1])?.let { return it }
         }
 
+        // Utility/LUKU token form: anchor on the "TOTAL TZS <amt>" line so the charged
+        // total wins over the intermediate Cost/VAT/EWURA/REA/Debt Collected figures.
+        val totalPattern = Regex(
+            """TOTAL\s+TZS\s*([0-9][0-9,]*(?:\.\d{1,2})?)""",
+            RegexOption.IGNORE_CASE
+        )
+        totalPattern.find(message)?.let { match ->
+            parseAmount(match.groupValues[1])?.let { return it }
+        }
+
         // "TZS 50000.00" (with space) or "TZS40000" (no space).
         val tzsPattern = Regex(
             """TZS\s*([0-9][0-9,]*(?:\.\d{1,2})?)""",
@@ -108,27 +118,27 @@ class CrdbBankParser : BankParser() {
         // Keywords are tiered by signal strength so weaker directional words ("kwenda",
         // "received") can't override an unambiguous first-person verb. A deposit SMS may
         // also contain "kwenda" ("to"), and a send confirmation may mention the recipient
-        // having "received" ÔÇö the tiering resolves both correctly.
+        // having "received" — the tiering resolves both correctly.
         return when {
-            // Tier 1 ÔÇö first-person, unambiguous direction.
+            // Tier 1 — first-person, unambiguous direction.
             lower.contains("umepokea") -> TransactionType.INCOME            // you received
             lower.contains("umefanikiwa kutuma") -> TransactionType.EXPENSE // you sent
             lower.contains("umetuma") -> TransactionType.EXPENSE            // you sent
 
-            // Tier 2 ÔÇö strong action verbs.
+            // Tier 2 — strong action verbs.
             lower.contains("withdrawn") -> TransactionType.EXPENSE          // ATM withdrawal
             lower.contains("paid:") -> TransactionType.EXPENSE              // card payment
             lower.contains("malipo yamekamilika") -> TransactionType.EXPENSE // payment completed
             lower.contains("imelipwa") -> TransactionType.EXPENSE           // has been paid
 
-            // Tier 3 ÔÇö weaker income hints.
+            // Tier 3 — weaker income hints.
             lower.contains("received") -> TransactionType.INCOME
             lower.contains("deposited") -> TransactionType.INCOME
 
-            // Tier 4 ÔÇö weak directional marker (only reached when nothing stronger matched).
+            // Tier 4 — weak directional marker (only reached when nothing stronger matched).
             lower.contains("kwenda") -> TransactionType.EXPENSE             // "to" (transfer)
 
-            // Fallback ÔÇö generic "transaction successful", defaults to expense to match
+            // Fallback — generic "transaction successful", defaults to expense to match
             // all provided send/payment samples.
             lower.contains("muamala umefanikiwa") -> TransactionType.EXPENSE
 
@@ -153,30 +163,66 @@ class CrdbBankParser : BankParser() {
             return "ATM Withdrawal"
         }
 
-        // Mobile money send (Swahili): "... kwenda NAME phonenumber".
-        // Recipient is the name after "kwenda" up to a trailing phone number.
+        // Transfer / send (Swahili): "... kwenda <RECIPIENT> ...".
+        // The recipient name follows "kwenda" and ends before any of:
+        //   - a phone/account number or masked number (digits / "X" runs),
+        //   - a structural label ("AC", "Risiti", "REF", "Balance"),
+        // so we never leak phone numbers, account numbers or trailing metadata.
+        // The terminator intentionally breaks on the FIRST digit (`\d`, not the
+        // earlier `\d{6,}`): in CRDB transfers the recipient name is always
+        // followed by a phone/account/till number, and CRDB recipient names do
+        // not contain digits — so the single-digit break reliably drops the
+        // trailing number. Do NOT widen this back to a multi-digit run, or the
+        // leading digits of a short till/phone number would leak into the name.
+        // "kwenda LIPA <merchant>" is a till/merchant payment — the "LIPA" prefix
+        // is dropped and the merchant name kept.
         val kwendaPattern = Regex(
-            """kwenda\s+(.+?)(?:\s+\d{6,})?$""",
+            """kwenda\s+(?:LIPA\s+)?(.+?)""" +
+                """(?=\s+(?:\d|[0-9X*]{4,}|AC\b|A/C\b|Risiti\b|REF\b|Balance\b|Bal\b)|[.,]|$)""",
             RegexOption.IGNORE_CASE
         )
         kwendaPattern.find(message)?.let { match ->
-            val merchant = match.groupValues[1].trim()
-            if (merchant.isNotEmpty()) return merchant
+            val merchant = match.groupValues[1].trim().trimEnd('.', ',').trim()
+            // Guard: a bare "akaunti yako" ("your account") is not a recipient name.
+            if (merchant.isNotEmpty() && !merchant.equals("akaunti yako", ignoreCase = true)) {
+                return merchant
+            }
         }
 
-        // Bill payment / utility (Swahili): "Malipo yamekamilika TOTAL TZS 2000".
-        // Merchant is the text between the completion phrase and the amount.
-        val billPattern = Regex(
-            """Malipo yamekamilika\s+(.+?)\s+TZS""",
-            RegexOption.IGNORE_CASE
-        )
-        billPattern.find(message)?.let { match ->
-            val merchant = match.groupValues[1].trim()
-            if (merchant.isNotEmpty()) return merchant
-        }
+        // Utility / token purchase (Swahili): "Malipo yamekamilika ... TOTAL TZS 2000".
+        // The LUKU electricity form has no merchant name in the body, only a TOKEN —
+        // label it generically. The simple bill form keeps the text before the amount.
         if (message.contains("Malipo yamekamilika", ignoreCase = true)) {
+            if (message.contains("TOKEN", ignoreCase = true) ||
+                message.contains("KWH", ignoreCase = true)
+            ) {
+                return "LUKU"
+            }
+            val billPattern = Regex(
+                """Malipo yamekamilika\s+(.+?)\s+TZS""",
+                RegexOption.IGNORE_CASE
+            )
+            billPattern.find(message)?.let { match ->
+                val merchant = match.groupValues[1].trim()
+                if (merchant.isNotEmpty()) return merchant
+            }
             return "Bill Payment"
         }
+
+        return null
+    }
+
+    override fun extractReference(message: String): String? {
+        // SimBanking receipt id: "Risiti:003-19ec660b8a1c1bde".
+        Regex("""Risiti:\s*([A-Za-z0-9-]+)""", RegexOption.IGNORE_CASE)
+            .find(message)?.let { return it.groupValues[1].trim() }
+
+        // Fall back to the generic Ref/REF handling (e.g. "REF: 19ec...").
+        super.extractReference(message)?.let { return it }
+
+        // SimBanking transaction id: "KUMB:19ec6ebe82c12bc7" (used when no receipt id).
+        Regex("""KUMB:\s*([A-Za-z0-9]+)""", RegexOption.IGNORE_CASE)
+            .find(message)?.let { return it.groupValues[1].trim() }
 
         return null
     }
@@ -212,6 +258,15 @@ class CrdbBankParser : BankParser() {
         }
 
         return null
+    }
+
+    override fun detectIsCard(message: String): Boolean {
+        // CRDB card forms use "... using a Card 4232***XXXX" / "Card:4232***0581",
+        // which the generic detector misses. Treat any "Card <masked-number>" as a card.
+        if (Regex("""\bCard:?\s*[0-9*X]{4,}""", RegexOption.IGNORE_CASE).containsMatchIn(message)) {
+            return true
+        }
+        return super.detectIsCard(message)
     }
 
     override fun isTransactionMessage(message: String): Boolean {

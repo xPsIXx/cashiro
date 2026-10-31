@@ -1,5 +1,6 @@
 package com.pennywiseai.tracker.ui.components
 
+import androidx.compose.ui.res.stringResource
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.expandHorizontally
 import androidx.compose.animation.fadeIn
@@ -43,6 +44,8 @@ import androidx.navigation.NavHostController
 import com.pennywiseai.tracker.data.preferences.NavBarStyle
 import com.pennywiseai.tracker.presentation.navigation.BottomNavItem
 import com.pennywiseai.tracker.ui.effects.BlurredAnimatedVisibility
+import com.pennywiseai.tracker.ui.theme.Dimensions
+import com.pennywiseai.tracker.ui.theme.Spacing
 import dev.chrisbanes.haze.HazeDefaults
 import dev.chrisbanes.haze.HazeEffectScope
 import dev.chrisbanes.haze.HazeState
@@ -63,13 +66,10 @@ fun PennyWiseBottomNavigation(
     hidePill: Boolean = false,
     blurEffects: Boolean = true,
     visible: Boolean = true,
+    hiddenTabs: Set<String> = emptySet(),
     hazeState: HazeState = remember { HazeState() },
 ) {
-    val navigationItems = listOf(
-        BottomNavItem.Home,
-        BottomNavItem.Analytics,
-        BottomNavItem.Chat
-    )
+    val navigationItems = BottomNavItem.visible(hiddenTabs)
     val containerColor = MaterialTheme.colorScheme.surface
 
     Box(modifier = modifier) {
@@ -83,14 +83,14 @@ fun PennyWiseBottomNavigation(
                 modifier = Modifier.fillMaxWidth()
             ) {
                 HorizontalDivider(
-                    thickness = 1.5.dp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(0.2f)
+                    thickness = Dimensions.Component.dividerThickness,
+                    color = MaterialTheme.colorScheme.outlineVariant
                 )
                 NavigationBar(
                     containerColor = MaterialTheme.colorScheme.surface.copy(
                         alpha = if (blurEffects) 0.5f else 1f
                     ),
-                    tonalElevation = 2.dp,
+                    tonalElevation = Dimensions.Elevation.raisedCard,
                     modifier = Modifier.then(
                         if (blurEffects) Modifier.hazeEffect(
                             state = hazeState,
@@ -108,7 +108,9 @@ fun PennyWiseBottomNavigation(
                 ) {
                     navigationItems.forEach { item ->
                         val selected = currentDestination?.hierarchy?.any {
-                            it.route == item.route
+                            // Match on the route base so query-arg routes (e.g.
+                            // "transactions?type=…") still light up their tab.
+                            it.route?.substringBefore('?') == item.route
                         } == true
                         NavigationBarItem(
                             selected = selected,
@@ -124,20 +126,24 @@ fun PennyWiseBottomNavigation(
                             icon = {
                                 Icon(
                                     imageVector = item.icon,
-                                    contentDescription = item.title,
+                                    contentDescription = stringResource(item.titleRes),
                                     tint = if (selected) {
                                         if (hidePill) MaterialTheme.colorScheme.primary
                                         else MaterialTheme.colorScheme.onPrimaryContainer
                                     } else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    // Without a pill or a label there is
+                                    // nothing else marking the selected item, so
+                                    // the glyph steps up to carry that weight.
                                     modifier = Modifier.size(
-                                        if (hidePill && hideLabels) 28.dp else 24.dp
+                                        if (hidePill && hideLabels) Dimensions.Icon.large
+                                        else Dimensions.Icon.medium
                                     )
                                 )
                             },
                             label = if (hideLabels) null else {
                                 {
                                     Text(
-                                        text = item.title,
+                                        text = stringResource(item.titleRes),
                                         color = if (selected) MaterialTheme.colorScheme.primary
                                         else MaterialTheme.colorScheme.onSurfaceVariant,
                                         style = MaterialTheme.typography.labelMedium
@@ -207,7 +213,9 @@ fun PennyWiseBottomNavigation(
                 ) {
                     navigationItems.forEach { item ->
                         val selected = currentDestination?.hierarchy?.any {
-                            it.route == item.route
+                            // Match on the route base so query-arg routes (e.g.
+                            // "transactions?type=…") still light up their tab.
+                            it.route?.substringBefore('?') == item.route
                         } == true
 
                         TonalToggleButton(
@@ -233,17 +241,17 @@ fun PennyWiseBottomNavigation(
                                 else MaterialTheme.colorScheme.tertiaryContainer,
                                 checkedContentColor = MaterialTheme.colorScheme.onTertiaryContainer,
                             ),
-                            modifier = Modifier.padding(horizontal = 4.dp)
+                            modifier = Modifier.padding(horizontal = Spacing.xs)
                         ) {
-                            Icon(imageVector = item.icon, contentDescription = item.title)
+                            Icon(imageVector = item.icon, contentDescription = stringResource(item.titleRes))
                             AnimatedVisibility(
                                 visible = selected,
                                 enter = fadeIn() + expandHorizontally(MaterialTheme.motionScheme.fastSpatialSpec()),
                                 exit = fadeOut() + shrinkHorizontally(MaterialTheme.motionScheme.fastSpatialSpec())
                             ) {
                                 Text(
-                                    text = item.title,
-                                    modifier = Modifier.padding(start = 8.dp)
+                                    text = stringResource(item.titleRes),
+                                    modifier = Modifier.padding(start = Spacing.sm)
                                 )
                             }
                         }

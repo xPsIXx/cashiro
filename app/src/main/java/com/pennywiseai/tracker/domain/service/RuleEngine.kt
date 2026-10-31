@@ -65,30 +65,10 @@ class RuleEngine @Inject constructor() {
         type: TransactionType
     ): Pair<TransactionEntity, List<RuleApplication>> {
         // Pre-filter rules that apply to this transaction type. This is an optimization
-        // for the common AND-only case; rules that mix in any OR logic are passed through
-        // since a TYPE condition that fails on its own can still let the rule match via
-        // an OR'd sibling.
+        // for the common AND-only case; the shared helper conservatively passes through
+        // rules with OR logic or non-pre-filterable TYPE operators for full evaluation.
         val applicableRules = rules.filter { rule ->
-            val hasTypeCondition = rule.conditions.any { it.field == TransactionField.TYPE }
-            val hasOrLogic = rule.conditions.any { it.logicalOperator == LogicalOperator.OR }
-            if (!hasTypeCondition || hasOrLogic) {
-                true
-            } else {
-                rule.conditions.any { condition ->
-                    condition.field == TransactionField.TYPE &&
-                    when (condition.operator) {
-                        ConditionOperator.EQUALS -> condition.value.equals(type.name, ignoreCase = true)
-                        ConditionOperator.IN -> condition.value.split(",")
-                            .map { it.trim() }
-                            .any { it.equals(type.name, ignoreCase = true) }
-                        ConditionOperator.NOT_EQUALS -> !condition.value.equals(type.name, ignoreCase = true)
-                        ConditionOperator.NOT_IN -> !condition.value.split(",")
-                            .map { it.trim() }
-                            .any { it.equals(type.name, ignoreCase = true) }
-                        else -> false
-                    }
-                }
-            }
+            isRuleApplicableToTransactionType(rule, type)
         }
 
         return evaluateRules(transaction, smsText, applicableRules)
@@ -151,9 +131,23 @@ class RuleEngine @Inject constructor() {
     ): Boolean {
         val fieldValue = getFieldValue(transaction, smsText, condition.field)
 
+        // AMOUNT is compared as a number, not as text. The field value is
+        // BigDecimal.toString(), so "100" or "100.0" would never string-match an
+        // amount stored as 100.00 — the editor offers "=" for amounts, so those
+        // rules simply never fired.
+        val amountEquality = condition.field == TransactionField.AMOUNT &&
+            condition.value.toBigDecimalOrNull() != null &&
+            fieldValue.toBigDecimalOrNull() != null
+
         return when (condition.operator) {
-            ConditionOperator.EQUALS -> fieldValue.equals(condition.value, ignoreCase = true)
-            ConditionOperator.NOT_EQUALS -> !fieldValue.equals(condition.value, ignoreCase = true)
+            ConditionOperator.EQUALS ->
+                if (amountEquality) compareNumeric(fieldValue, condition.value) == 0
+                else fieldValue.equals(condition.value, ignoreCase = true)
+            ConditionOperator.NOT_EQUALS -> {
+                if (condition.field == TransactionField.ACCOUNT && fieldValue.isBlank()) false
+                else if (amountEquality) compareNumeric(fieldValue, condition.value) != 0
+                else !fieldValue.equals(condition.value, ignoreCase = true)
+            }
             ConditionOperator.CONTAINS -> fieldValue.contains(condition.value, ignoreCase = true)
             ConditionOperator.NOT_CONTAINS -> !fieldValue.contains(condition.value, ignoreCase = true)
             ConditionOperator.STARTS_WITH -> fieldValue.startsWith(condition.value, ignoreCase = true)
@@ -172,6 +166,10 @@ class RuleEngine @Inject constructor() {
         }
     }
 
+    /**
+     * Returns the string value of a [TransactionField] for a given transaction.
+     * For [TransactionField.ACCOUNT] returns `"BankName||Last4"`, or empty if bank/account is null.
+     */
     private fun getFieldValue(
         transaction: TransactionEntity,
         smsText: String?,
@@ -195,6 +193,13 @@ class RuleEngine @Inject constructor() {
                 String.format("%02d", transaction.dateTime.dayOfMonth)
             TransactionField.TRANSACTION_DATE ->
                 transaction.dateTime.toLocalDate().toString()
+            TransactionField.ACCOUNT -> {
+                val bank = transaction.bankName
+                val last4 = transaction.accountNumber?.takeLast(4)
+                if (bank != null && last4 != null) "$bank||$last4" else ""
+            }
+            // Tags aren't on the entity; the engine can't see them.
+            TransactionField.TAGS -> ""
         }
     }
 
@@ -216,6 +221,25 @@ class RuleEngine @Inject constructor() {
         for (action in actions) {
             // Skip BLOCK actions as they don't modify the transaction
             if (action.actionType == ActionType.BLOCK) {
+                continue
+            }
+
+            // Tags live in their own table, so the entity can't change here.
+            // Always record the modification; the persisting site applies it
+            // via TagRepository (see applyTagActions).
+            if (action.field == TransactionField.TAGS) {
+                val isTagAction = action.actionType == ActionType.ADD_TAG ||
+                    action.actionType == ActionType.REMOVE_TAG
+                if (isTagAction && action.value.isNotBlank()) {
+                    modifications.add(
+                        FieldModification(
+                            field = TransactionField.TAGS,
+                            oldValue = null,
+                            newValue = action.value.trim(),
+                            actionType = action.actionType
+                        )
+                    )
+                }
                 continue
             }
 
@@ -273,17 +297,20 @@ class RuleEngine @Inject constructor() {
             }
             TransactionField.TYPE -> {
                 val newType = when (action.actionType) {
-                    ActionType.SET -> {
-                        // Convert string value to TransactionType enum
-                        try {
-                            TransactionType.valueOf(action.value.uppercase())
-                        } catch (e: Exception) {
-                            transaction.transactionType
-                        }
-                    }
+                    // Fall back to the existing type if the stored value isn't a known TransactionType.
+                    ActionType.SET -> parseRuleTransactionType(action.value) ?: transaction.transactionType
                     else -> transaction.transactionType
                 }
                 transaction.copy(transactionType = newType) to newType.name
+            }
+            TransactionField.BANK_NAME -> {
+                // The account a transaction belongs to is identified by its bank name.
+                val newValue = when (action.actionType) {
+                    ActionType.SET -> action.value
+                    ActionType.CLEAR -> ""
+                    else -> transaction.bankName ?: ""
+                }
+                transaction.copy(bankName = newValue.takeIf { it.isNotBlank() }) to newValue
             }
             else -> transaction to getFieldValue(transaction, null, action.field)
         }

@@ -1,5 +1,17 @@
 package com.pennywiseai.tracker.presentation.transactions
 
+import com.pennywiseai.tracker.utils.AppDates
+
+import com.pennywiseai.tracker.R
+import com.pennywiseai.tracker.presentation.goals.AddToGoalSheet
+import com.pennywiseai.tracker.presentation.goals.TowardGoalsSection
+import com.pennywiseai.tracker.presentation.goals.TransactionGoalsViewModel
+import com.pennywiseai.tracker.presentation.split.SplitBillSheet
+import com.pennywiseai.tracker.presentation.split.SplitBillViewModel
+import com.pennywiseai.tracker.presentation.split.SplitSection
+import com.pennywiseai.tracker.presentation.split.canSplit
+import androidx.compose.ui.res.pluralStringResource
+import androidx.compose.ui.res.stringResource
 import android.content.Intent
 import android.net.Uri
 import com.pennywiseai.tracker.data.contacts.LocalMerchantDisplay
@@ -11,6 +23,8 @@ import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.selection.toggleable
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
@@ -23,7 +37,6 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import coil.compose.AsyncImage
@@ -31,12 +44,17 @@ import com.pennywiseai.tracker.presentation.add.ReceiptPickerSection
 import com.pennywiseai.tracker.ui.effects.overScrollVertical
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ArrowForward
+import androidx.compose.material.icons.automirrored.filled.CallSplit
+import androidx.compose.material.icons.automirrored.filled.Input
 import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.automirrored.filled.ShowChart
 import androidx.compose.material.icons.automirrored.filled.TrendingDown
 import androidx.compose.material.icons.automirrored.filled.TrendingUp
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.outlined.FolderOpen
+import androidx.compose.material.icons.outlined.Savings
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -51,10 +69,15 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.pennywiseai.tracker.data.database.entity.BudgetImpactType
 import com.pennywiseai.tracker.data.database.entity.CategoryEntity
+import com.pennywiseai.tracker.presentation.categories.CategoryEditDialog
+import com.pennywiseai.tracker.ui.components.CategoryMenuItems
+import com.pennywiseai.tracker.ui.components.SelectedCategoryIcon
 import com.pennywiseai.tracker.data.database.entity.LoanDirection
 import com.pennywiseai.tracker.data.database.entity.LoanEntity
 import com.pennywiseai.tracker.data.database.entity.ProfileEntity
@@ -63,24 +86,29 @@ import com.pennywiseai.tracker.data.database.entity.TransactionGroupEntity
 import com.pennywiseai.tracker.data.database.entity.TransactionType
 import com.pennywiseai.tracker.ui.LocalNavAnimatedVisibilityScope
 import com.pennywiseai.tracker.ui.LocalSharedTransitionScope
+import com.pennywiseai.tracker.ui.sharedElementIcon
 import com.pennywiseai.tracker.ui.components.BrandIcon
 import com.pennywiseai.tracker.ui.components.CategoryChip
 import com.pennywiseai.tracker.ui.components.CustomTitleTopAppBar
-import com.pennywiseai.tracker.ui.components.PennyWiseCard
 import com.pennywiseai.tracker.ui.components.cards.SectionHeaderV2
 import com.pennywiseai.tracker.ui.components.SplitBreakdownCard
 import com.pennywiseai.tracker.ui.components.SplitEditor
 import com.pennywiseai.tracker.ui.components.SplitItem
+import com.pennywiseai.tracker.ui.components.TagInputField
 import com.pennywiseai.tracker.ui.theme.*
 import com.pennywiseai.tracker.utils.CurrencyFormatter
+import com.pennywiseai.tracker.utils.CurrencyUtils
 import dev.chrisbanes.haze.HazeState
 import dev.chrisbanes.haze.hazeSource
 import com.pennywiseai.tracker.utils.formatAmount
+import com.pennywiseai.tracker.ui.theme.Spacing
+import com.pennywiseai.tracker.ui.theme.Dimensions
 import kotlinx.coroutines.launch
 import java.math.BigDecimal
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
 import java.util.Locale
+import com.pennywiseai.tracker.ui.icons.categoryLabel
 
 // Reusable filled field colors for edit mode
 @Composable
@@ -100,6 +128,7 @@ private fun editFilledColors() = TextFieldDefaults.colors(
 )
 
 private val editTopShape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp, bottomStart = 4.dp, bottomEnd = 4.dp)
+private val editMiddleShape = RoundedCornerShape(4.dp)
 private val editBottomShape = RoundedCornerShape(topStart = 4.dp, topEnd = 4.dp, bottomStart = 16.dp, bottomEnd = 16.dp)
 private val editFullShape = RoundedCornerShape(16.dp)
 
@@ -109,7 +138,12 @@ fun TransactionDetailScreen(
     transactionId: Long,
     onNavigateBack: () -> Unit,
     onNavigateToLoanDetail: (Long) -> Unit = {},
-    viewModel: TransactionDetailViewModel = hiltViewModel()
+    onDuplicateTransaction: (Long) -> Unit = {},
+    onNavigateToGoal: (Long) -> Unit = {},
+    onCreateGoal: () -> Unit = {},
+    viewModel: TransactionDetailViewModel = hiltViewModel(),
+    goalsViewModel: TransactionGoalsViewModel = hiltViewModel(),
+    splitViewModel: SplitBillViewModel = hiltViewModel()
 ) {
     val transaction by viewModel.transaction.collectAsStateWithLifecycle()
     val isEditMode by viewModel.isEditMode.collectAsStateWithLifecycle()
@@ -134,6 +168,7 @@ fun TransactionDetailScreen(
     // Loan state
     val loan by viewModel.loan.collectAsStateWithLifecycle()
     val showMarkAsLoanSheet by viewModel.showMarkAsLoanSheet.collectAsStateWithLifecycle()
+    var showUnmarkLoanConfirm by remember { mutableStateOf(false) }
     val recentPersonNames by viewModel.recentPersonNames.collectAsStateWithLifecycle()
 // Account profile state
     val accountProfileId by viewModel.accountProfileId.collectAsStateWithLifecycle()
@@ -148,29 +183,51 @@ fun TransactionDetailScreen(
     val availableGroups by viewModel.availableGroups.collectAsStateWithLifecycle()
     val showGroupSheet by viewModel.showGroupSheet.collectAsStateWithLifecycle()
 
+    // Goals (#914)
+    val linkedGoals by goalsViewModel.linked.collectAsStateWithLifecycle()
+    val goals by goalsViewModel.goals.collectAsStateWithLifecycle()
+    val addToGoal by goalsViewModel.sheet.collectAsStateWithLifecycle()
+    var showAddToGoal by rememberSaveable { mutableStateOf(false) }
+    LaunchedEffect(transaction) { goalsViewModel.setTransaction(transaction) }
+    // Split a bill (#346): reload after a save so lent_shares_total is fresh.
+    LaunchedEffect(transaction) { splitViewModel.setTransaction(transaction) }
+    LaunchedEffect(Unit) { splitViewModel.changed.collect { viewModel.loadTransaction(transactionId) } }
+    fun closeAddToGoal() { showAddToGoal = false; goalsViewModel.closeSheet() }
+    LaunchedEffect(addToGoal.done) { if (addToGoal.done) closeAddToGoal() }
+    // Loads what's left of the transaction whenever the sheet is open without it:
+    // on open, and after process recreation restores an open sheet (its typed
+    // fields are rememberSaveable and survive; the ViewModel's state doesn't).
+    LaunchedEffect(showAddToGoal, transaction?.id) {
+        if (showAddToGoal && transaction != null && goalsViewModel.sheet.value.left == null) goalsViewModel.openSheet()
+    }
+
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     
     // Show success snackbar
+    val updatedMessage = stringResource(R.string.txn_detail_updated)
     LaunchedEffect(saveSuccess) {
         if (saveSuccess) {
             scope.launch {
-                snackbarHostState.showSnackbar("Transaction updated successfully")
+                snackbarHostState.showSnackbar(updatedMessage)
                 viewModel.clearSaveSuccess()
             }
         }
     }
     
     // Show error snackbar
-    LaunchedEffect(errorMessage) {
-        errorMessage?.let {
+    val errorText = errorMessage?.asString()
+    LaunchedEffect(errorText) {
+        errorText?.let {
             scope.launch {
                 snackbarHostState.showSnackbar(it)
             }
         }
     }
     
-    LaunchedEffect(transactionId) {
+    // Reload on every resume so external changes — e.g. the linked loan being
+    // deleted from the Loan screen — are reflected when returning here (#444).
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
         viewModel.loadTransaction(transactionId)
     }
     
@@ -182,6 +239,7 @@ fun TransactionDetailScreen(
     }
     
     val context = LocalContext.current
+    var showActionsMenu by remember { mutableStateOf(false) }
 
     val scrollBehaviorSmall = TopAppBarDefaults.pinnedScrollBehavior()
     val scrollBehaviorLarge = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
@@ -191,67 +249,16 @@ fun TransactionDetailScreen(
         modifier = Modifier.nestedScroll(scrollBehaviorLarge.nestedScrollConnection),
         containerColor = Color.Transparent,
         snackbarHost = { SnackbarHost(hostState = snackbarHostState) },
-        floatingActionButton = {
-            // Show FABs only when not in edit mode and transaction exists
-            if (!isEditMode && transaction != null) {
-                Column(
-                    verticalArrangement = Arrangement.spacedBy(16.dp)
-                ) {
-                    // Delete FAB
-                    SmallFloatingActionButton(
-                        onClick = { viewModel.showDeleteDialog() },
-                        containerColor = MaterialTheme.colorScheme.errorContainer,
-                        contentColor = MaterialTheme.colorScheme.onErrorContainer
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Delete,
-                            contentDescription = "Delete Transaction"
-                        )
-                    }
-
-                    // Group FAB
-                    SmallFloatingActionButton(
-                        onClick = { viewModel.showGroupSheet() },
-                        containerColor = MaterialTheme.colorScheme.tertiaryContainer,
-                        contentColor = MaterialTheme.colorScheme.onTertiaryContainer
-                    ) {
-                        Icon(
-                            imageVector = Icons.Outlined.FolderOpen,
-                            contentDescription = "Manage Group"
-                        )
-                    }
-                    
-                    // Report Issue FAB
-                    FloatingActionButton(
-                        onClick = {
-                            val reportUrl = viewModel.getReportUrl()
-                            android.util.Log.d("TransactionDetail", "Report FAB clicked, opening URL: ${reportUrl.take(200)}...")
-                            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(reportUrl))
-                            try {
-                                context.startActivity(intent)
-                                android.util.Log.d("TransactionDetail", "Successfully launched browser intent")
-                            } catch (e: Exception) {
-                                android.util.Log.e("TransactionDetail", "Error launching browser", e)
-                            }
-                        },
-                        containerColor = MaterialTheme.colorScheme.secondaryContainer,
-                        contentColor = MaterialTheme.colorScheme.onSecondaryContainer
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.BugReport,
-                            contentDescription = "Report Issue"
-                        )
-                    }
-                }
-            }
-        },
+        // Transaction actions (delete / group / duplicate / report) live in the
+        // top-bar overflow menu, not floating buttons — a stack of FABs overlapped
+        // the receipt content (#451 follow-up).
+        floatingActionButton = {},
         topBar = {
             CustomTitleTopAppBar(
                 scrollBehaviorSmall = scrollBehaviorSmall,
                 scrollBehaviorLarge = scrollBehaviorLarge,
-                title = if (isEditMode) "Edit Transaction" else "Transaction Details",
+                title = if (isEditMode) stringResource(R.string.txn_detail_title_edit) else stringResource(R.string.txn_detail_title),
                 hasBackButton = true,
-                hasActionButton = true,
                 navigationContent = {
                     IconButton(onClick = {
                         if (isEditMode) {
@@ -262,7 +269,7 @@ fun TransactionDetailScreen(
                     }) {
                         Icon(
                             if (isEditMode) Icons.Default.Close else Icons.AutoMirrored.Filled.ArrowBack,
-                            contentDescription = if (isEditMode) "Cancel" else "Back"
+                            contentDescription = if (isEditMode) stringResource(R.string.txn_detail_action_cancel) else stringResource(R.string.txn_detail_back)
                         )
                     }
                 },
@@ -271,8 +278,97 @@ fun TransactionDetailScreen(
                         IconButton(onClick = { viewModel.enterEditMode() }) {
                             Icon(
                                 Icons.Default.Edit,
-                                contentDescription = "Edit"
+                                contentDescription = stringResource(R.string.txn_detail_action_edit)
                             )
+                        }
+                        Box {
+                            IconButton(onClick = { showActionsMenu = true }) {
+                                Icon(
+                                    Icons.Default.MoreVert,
+                                    contentDescription = stringResource(R.string.txn_detail_more_actions)
+                                )
+                            }
+                            DropdownMenu(
+                                expanded = showActionsMenu,
+                                onDismissRequest = { showActionsMenu = false }
+                            ) {
+                                DropdownMenuItem(
+                                    text = { Text(stringResource(R.string.txn_detail_menu_add_to_group)) },
+                                    leadingIcon = {
+                                        Icon(Icons.Outlined.FolderOpen, contentDescription = null)
+                                    },
+                                    onClick = {
+                                        showActionsMenu = false
+                                        viewModel.showGroupSheet()
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text(stringResource(R.string.goal_add_to_goal)) },
+                                    leadingIcon = {
+                                        Icon(Icons.Outlined.Savings, contentDescription = null)
+                                    },
+                                    onClick = {
+                                        showActionsMenu = false
+                                        showAddToGoal = true
+                                    }
+                                )
+                                if (transaction?.let(::canSplit) == true) {
+                                    DropdownMenuItem(
+                                        text = {
+                                            Text(stringResource(if (transaction?.lentSharesTotal != null) R.string.split_menu_edit else R.string.split_menu_split))
+                                        },
+                                        leadingIcon = {
+                                            Icon(Icons.AutoMirrored.Filled.CallSplit, contentDescription = null)
+                                        },
+                                        onClick = {
+                                            showActionsMenu = false
+                                            splitViewModel.openSheet()
+                                        }
+                                    )
+                                }
+                                DropdownMenuItem(
+                                    text = { Text(stringResource(R.string.txn_detail_menu_duplicate)) },
+                                    leadingIcon = {
+                                        Icon(Icons.Default.ContentCopy, contentDescription = null)
+                                    },
+                                    onClick = {
+                                        showActionsMenu = false
+                                        transaction?.let { onDuplicateTransaction(it.id) }
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text(stringResource(R.string.txn_detail_menu_report_issue)) },
+                                    leadingIcon = {
+                                        Icon(Icons.Default.BugReport, contentDescription = null)
+                                    },
+                                    onClick = {
+                                        showActionsMenu = false
+                                        val reportUrl = viewModel.getReportUrl()
+                                        runCatching {
+                                            context.startActivity(
+                                                Intent(Intent.ACTION_VIEW, Uri.parse(reportUrl))
+                                            )
+                                        }
+                                    }
+                                )
+                                HorizontalDivider()
+                                DropdownMenuItem(
+                                    text = {
+                                        Text(stringResource(R.string.txn_detail_action_delete), color = MaterialTheme.colorScheme.error)
+                                    },
+                                    leadingIcon = {
+                                        Icon(
+                                            Icons.Default.Delete,
+                                            contentDescription = null,
+                                            tint = MaterialTheme.colorScheme.error
+                                        )
+                                    },
+                                    onClick = {
+                                        showActionsMenu = false
+                                        viewModel.showDeleteDialog()
+                                    }
+                                )
+                            }
                         }
                     } else if (isEditMode) {
                         TextButton(
@@ -286,7 +382,7 @@ fun TransactionDetailScreen(
                                     color = MaterialTheme.colorScheme.primary
                                 )
                             } else {
-                                Text("Save")
+                                Text(stringResource(R.string.txn_detail_action_save))
                             }
                         }
                     }
@@ -311,9 +407,32 @@ fun TransactionDetailScreen(
                 hasSplits = hasSplits,
                 loan = loan,
                 onNavigateToLoanDetail = onNavigateToLoanDetail,
+                onUnmarkLoanClick = { showUnmarkLoanConfirm = true },
                 accountProfileId = accountProfileId,
                 hazeState = hazeState,
+                towardGoals = {
+                    TowardGoalsSection(linkedGoals, onOpenGoal = onNavigateToGoal, onRemove = goalsViewModel::remove)
+                },
+                splitWith = {
+                    transaction?.let { SplitSection(splitViewModel, it, onOpenLoan = onNavigateToLoanDetail) }
+                },
                 modifier = Modifier.padding(paddingValues)
+            )
+        }
+    }
+
+    transaction?.let { SplitBillSheet(splitViewModel, it) }
+
+    if (showAddToGoal) {
+        transaction?.let { txn ->
+            AddToGoalSheet(
+                transaction = txn,
+                goals = goals,
+                state = addToGoal,
+                onDismiss = ::closeAddToGoal,
+                onSave = goalsViewModel::add,
+                onCreateGoal = { closeAddToGoal(); onCreateGoal() },
+                onEdited = goalsViewModel::clearError,
             )
         }
     }
@@ -322,9 +441,9 @@ fun TransactionDetailScreen(
     if (showDeleteDialog) {
         AlertDialog(
             onDismissRequest = { viewModel.hideDeleteDialog() },
-            title = { Text("Delete Transaction") },
+            title = { Text(stringResource(R.string.txn_detail_delete_title)) },
             text = { 
-                Text("Are you sure you want to delete this transaction? This action cannot be undone.")
+                Text(stringResource(R.string.txn_detail_delete_message))
             },
             confirmButton = {
                 TextButton(
@@ -339,7 +458,7 @@ fun TransactionDetailScreen(
                         )
                     } else {
                         Text(
-                            "Delete",
+                            stringResource(R.string.txn_detail_action_delete),
                             color = MaterialTheme.colorScheme.error
                         )
                     }
@@ -347,7 +466,7 @@ fun TransactionDetailScreen(
             },
             dismissButton = {
                 TextButton(onClick = { viewModel.hideDeleteDialog() }) {
-                    Text("Cancel")
+                    Text(stringResource(R.string.txn_detail_action_cancel))
                 }
             }
         )
@@ -381,6 +500,26 @@ fun TransactionDetailScreen(
         )
     }
 
+    // Unmark-as-loan confirmation (#444)
+    if (showUnmarkLoanConfirm) {
+        AlertDialog(
+            onDismissRequest = { showUnmarkLoanConfirm = false },
+            title = { Text(stringResource(R.string.txn_detail_unmark_loan_title)) },
+            text = {
+                Text(stringResource(R.string.txn_detail_unmark_loan_message))
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    showUnmarkLoanConfirm = false
+                    viewModel.unlinkLoan()
+                }) { Text(stringResource(R.string.txn_detail_unmark_loan_confirm)) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showUnmarkLoanConfirm = false }) { Text(stringResource(R.string.txn_detail_action_cancel)) }
+            }
+        )
+    }
+
     // Full-screen Receipt Dialog
     if (showFullScreenReceipt && receiptUri != null) {
         Dialog(
@@ -394,7 +533,7 @@ fun TransactionDetailScreen(
             ) {
                 AsyncImage(
                     model = receiptUri,
-                    contentDescription = "Receipt full screen",
+                    contentDescription = stringResource(R.string.txn_detail_receipt_full_screen),
                     modifier = Modifier
                         .fillMaxSize()
                         .padding(Spacing.md),
@@ -411,7 +550,7 @@ fun TransactionDetailScreen(
                         contentColor = Color.White
                     )
                 ) {
-                    Icon(Icons.Default.Close, contentDescription = "Close")
+                    Icon(Icons.Default.Close, contentDescription = stringResource(R.string.txn_detail_close))
                 }
             }
         }
@@ -433,8 +572,11 @@ private fun TransactionDetailContent(
     hasSplits: Boolean,
     loan: LoanEntity?,
     onNavigateToLoanDetail: (Long) -> Unit,
+    onUnmarkLoanClick: () -> Unit,
     accountProfileId: Long?,
     hazeState: HazeState,
+    towardGoals: @Composable () -> Unit,
+    splitWith: @Composable () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val scrollState = rememberScrollState()
@@ -479,7 +621,10 @@ private fun TransactionDetailContent(
                 hasSplits = hasSplits,
                 loan = loan,
                 onNavigateToLoanDetail = onNavigateToLoanDetail,
-                accountProfileId = accountProfileId
+                onUnmarkLoanClick = onUnmarkLoanClick,
+                accountProfileId = accountProfileId,
+                towardGoals = towardGoals,
+                splitWith = splitWith
             )
         }
     }
@@ -497,7 +642,10 @@ private fun TransactionReceipt(
     hasSplits: Boolean,
     loan: LoanEntity?,
     onNavigateToLoanDetail: (Long) -> Unit,
-    accountProfileId: Long? = null
+    onUnmarkLoanClick: () -> Unit,
+    accountProfileId: Long? = null,
+    towardGoals: @Composable () -> Unit = {},
+    splitWith: @Composable () -> Unit = {}
 ) {
     val isDark = isSystemInDarkTheme()
     val typeColor = when (transaction.transactionType) {
@@ -525,9 +673,9 @@ private fun TransactionReceipt(
         // ── Hero Header ──
         Surface(
             modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(20.dp),
+            shape = MaterialTheme.shapes.extraLarge,
             color = MaterialTheme.colorScheme.surfaceContainerLow,
-            tonalElevation = 2.dp
+            tonalElevation = Dimensions.Elevation.raisedCard
         ) {
             Column(
                 modifier = Modifier
@@ -537,10 +685,8 @@ private fun TransactionReceipt(
             ) {
                 val heroIconModifier = if (sharedTransitionScope != null && animatedVisibilityScope != null) {
                     with(sharedTransitionScope) {
-                        Modifier.sharedElement(
-                            sharedTransitionScope.rememberSharedContentState(
-                                key = "brand_icon_${transaction.id}"
-                            ),
+                        sharedElementIcon(
+                            key = "brand_icon_${transaction.id}",
                             animatedVisibilityScope = animatedVisibilityScope
                         )
                     }
@@ -549,6 +695,7 @@ private fun TransactionReceipt(
                 }
                 BrandIcon(
                     merchantName = transaction.merchantName,
+                    category = transaction.category,
                     modifier = heroIconModifier,
                     size = 56.dp,
                     showBackground = true
@@ -556,12 +703,15 @@ private fun TransactionReceipt(
 
                 Spacer(modifier = Modifier.height(Spacing.sm))
 
-                // Show the contact-resolved name when the user has the
-                // toggle on; the raw merchant is still what the Edit
-                // field below renders so users can correct mis-detections.
+                // Prefer the user's saved alias (#583); else the contact-resolved
+                // name when that toggle is on. The raw merchant is still what the
+                // Edit field below renders so users can correct mis-detections.
                 val merchantDisplay = LocalMerchantDisplay.current
+                val currentAlias by viewModel.currentMerchantAlias.collectAsStateWithLifecycle()
                 Text(
-                    text = merchantDisplay(transaction.merchantName) ?: transaction.merchantName,
+                    text = currentAlias
+                        ?: merchantDisplay(transaction.merchantName)
+                        ?: transaction.merchantName,
                     style = MaterialTheme.typography.titleLarge,
                     fontWeight = FontWeight.SemiBold,
                     textAlign = TextAlign.Center
@@ -570,8 +720,15 @@ private fun TransactionReceipt(
                 Spacer(modifier = Modifier.height(Spacing.sm))
 
                 // Transaction type chip
-                val typeLabel = transaction.transactionType.name.lowercase()
-                    .replaceFirstChar { it.uppercase() }
+                val typeLabel = stringResource(
+                    when (transaction.transactionType) {
+                        TransactionType.INCOME -> R.string.txn_type_income
+                        TransactionType.EXPENSE -> R.string.txn_type_expense
+                        TransactionType.CREDIT -> R.string.txn_type_credit
+                        TransactionType.TRANSFER -> R.string.txn_type_transfer
+                        TransactionType.INVESTMENT -> R.string.txn_type_investment
+                    }
+                )
                 val typeIcon = when (transaction.transactionType) {
                     TransactionType.INCOME -> Icons.AutoMirrored.Filled.TrendingUp
                     TransactionType.EXPENSE -> Icons.AutoMirrored.Filled.TrendingDown
@@ -601,7 +758,7 @@ private fun TransactionReceipt(
                         labelColor = typeColor,
                         iconContentColor = typeColor
                     ),
-                    border = null
+                    border = null as androidx.compose.foundation.BorderStroke?
                 )
 
                 // Loan chip
@@ -609,37 +766,53 @@ private fun TransactionReceipt(
                 val loanColor = if (isDarkTheme) loan_dark else loan_light
                 Spacer(modifier = Modifier.height(Spacing.xs))
                 if (loan != null) {
-                    SuggestionChip(
-                        onClick = { onNavigateToLoanDetail(loan.id) },
-                        label = {
-                            Text(
-                                text = if (loan.direction == LoanDirection.LENT)
-                                    "Lent to ${loan.personName}" else "Borrowed from ${loan.personName}",
-                                style = MaterialTheme.typography.labelMedium,
-                                fontWeight = FontWeight.SemiBold
-                            )
-                        },
-                        icon = {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(Spacing.xs)
+                    ) {
+                        SuggestionChip(
+                            onClick = { onNavigateToLoanDetail(loan.id) },
+                            label = {
+                                Text(
+                                    text = if (loan.direction == LoanDirection.LENT)
+                                        stringResource(R.string.txn_detail_loan_lent_to, loan.personName) else stringResource(R.string.txn_detail_loan_borrowed_from, loan.personName),
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            },
+                            icon = {
+                                Icon(
+                                    Icons.Default.SwapHoriz,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(Dimensions.Icon.small),
+                                    tint = loanColor
+                                )
+                            },
+                            colors = SuggestionChipDefaults.suggestionChipColors(
+                                containerColor = loanColor.copy(alpha = 0.12f),
+                                labelColor = loanColor,
+                                iconContentColor = loanColor
+                            ),
+                            border = null
+                        )
+                        // Unmark-as-loan (#444): removes the loan link; deletes the
+                        // loan too if no other transactions are linked.
+                        IconButton(onClick = onUnmarkLoanClick) {
                             Icon(
-                                Icons.Default.SwapHoriz,
-                                contentDescription = null,
+                                Icons.Default.Close,
+                                contentDescription = stringResource(R.string.txn_detail_unmark_loan),
                                 modifier = Modifier.size(Dimensions.Icon.small),
-                                tint = loanColor
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
                             )
-                        },
-                        colors = SuggestionChipDefaults.suggestionChipColors(
-                            containerColor = loanColor.copy(alpha = 0.12f),
-                            labelColor = loanColor,
-                            iconContentColor = loanColor
-                        ),
-                        border = null
-                    )
-                } else {
+                        }
+                    }
+                } else if (transaction.lentSharesTotal == null) {
+                    // A split bill (#346) is already on Loans, one share per person.
                     SuggestionChip(
                         onClick = { viewModel.showMarkAsLoanSheet() },
                         label = {
                             Text(
-                                text = "Mark as loan",
+                                text = stringResource(R.string.txn_detail_mark_as_loan),
                                 style = MaterialTheme.typography.labelMedium
                             )
                         },
@@ -655,14 +828,14 @@ private fun TransactionReceipt(
                             labelColor = MaterialTheme.colorScheme.onSurfaceVariant,
                             iconContentColor = MaterialTheme.colorScheme.onSurfaceVariant
                         ),
-                        border = null
+                        border = null as androidx.compose.foundation.BorderStroke?
                     )
                 }
 
                 Spacer(modifier = Modifier.height(Spacing.sm))
 
                 Text(
-                    text = "$sign${transaction.formatAmount()}",
+                    text = CurrencyFormatter.signed(sign, transaction.formatAmount()),
                     style = MaterialTheme.typography.displaySmall,
                     fontWeight = FontWeight.Bold,
                     color = typeColor,
@@ -682,14 +855,62 @@ private fun TransactionReceipt(
             }
         }
 
+        // ── Exclude from analytics (#451) ── placed above the detail rows so its
+        // Switch never sits under the bottom-right floating action buttons.
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(12.dp)),
+            color = MaterialTheme.colorScheme.surfaceContainerLow,
+            shape = RoundedCornerShape(12.dp)
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { viewModel.setExcludedFromAnalytics(!transaction.excludedFromAnalytics) }
+                    .padding(Spacing.md),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(Spacing.sm)
+            ) {
+                Icon(
+                    Icons.Default.QueryStats,
+                    contentDescription = null,
+                    modifier = Modifier.size(Dimensions.Icon.medium),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = stringResource(R.string.txn_detail_exclude_analytics_title),
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Text(
+                        text = stringResource(R.string.txn_detail_exclude_analytics_subtitle),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                // Display-only — the Row's clickable is the single toggle handler
+                // so a tap can't fire the VM call twice (Greptile #454).
+                Switch(
+                    checked = transaction.excludedFromAnalytics,
+                    onCheckedChange = null
+                )
+            }
+        }
+
+        towardGoals()
+
+        splitWith()
+
         // ── Details Section ──
         Column(modifier = Modifier.fillMaxWidth()) {
             // Date & Time
             DetailInfoRow(
                 icon = Icons.Default.CalendarToday,
-                label = "Date & Time",
+                label = stringResource(R.string.txn_detail_label_date_time),
                 value = transaction.dateTime.format(
-                    DateTimeFormatter.ofPattern("EEE, MMM d, yyyy \u00b7 h:mm a")
+                    AppDates.dateTimeFormatter(weekday = true)
                 )
             )
 
@@ -697,13 +918,13 @@ private fun TransactionReceipt(
 
             // Category
             val categoryValue = if (hasSplits && splits.isNotEmpty()) {
-                "Split (${splits.size} categories)"
+                pluralStringResource(R.plurals.txn_detail_split_categories, splits.size, splits.size)
             } else {
-                transaction.category
+                categoryLabel(transaction.category)
             }
             DetailInfoRow(
                 icon = Icons.Default.Category,
-                label = "Category",
+                label = stringResource(R.string.txn_detail_label_category),
                 value = categoryValue
             )
 
@@ -712,7 +933,7 @@ private fun TransactionReceipt(
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
                 DetailInfoRow(
                     icon = Icons.Default.AccountBalance,
-                    label = "Bank",
+                    label = stringResource(R.string.txn_detail_label_bank),
                     value = it
                 )
             }
@@ -722,8 +943,19 @@ private fun TransactionReceipt(
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
                 DetailInfoRow(
                     icon = Icons.Default.Description,
-                    label = "Description",
+                    label = stringResource(R.string.txn_detail_label_description),
                     value = it
+                )
+            }
+
+            // Tags
+            val detailTags by viewModel.transactionTags.collectAsStateWithLifecycle()
+            if (detailTags.isNotEmpty()) {
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                DetailInfoRow(
+                    icon = Icons.Default.Sell,
+                    label = pluralStringResource(R.plurals.txn_detail_label_tags, detailTags.size),
+                    value = detailTags.joinToString(", ")
                 )
             }
 
@@ -732,8 +964,8 @@ private fun TransactionReceipt(
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
                 DetailInfoRow(
                     icon = Icons.Default.Repeat,
-                    label = "Status",
-                    value = "Recurring"
+                    label = stringResource(R.string.txn_detail_label_status),
+                    value = stringResource(R.string.txn_detail_status_recurring)
                 )
             }
 
@@ -743,22 +975,25 @@ private fun TransactionReceipt(
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
             DetailInfoRow(
                 icon = if (isEffectivelyBusiness) Icons.Default.Business else Icons.Default.Person,
-                label = "Classification",
-                value = if (isEffectivelyBusiness) "Business" else "Personal"
+                label = stringResource(R.string.txn_detail_label_classification),
+                value = if (isEffectivelyBusiness) stringResource(R.string.txn_detail_business) else stringResource(R.string.txn_detail_personal)
             )
 
-            // Account info
+            // Account info. A leg on an account without a number (a Cash account
+            // is ("Cash", "")) shows its name instead of a blank chip (#913).
+            fun maskedLeg(account: String, bank: String?): String = when {
+                account.isBlank() -> bank ?: account
+                account.length > 4 -> "*".repeat(account.length - 4) + account.takeLast(4)
+                else -> account
+            }
             if (transaction.fromAccount != null && transaction.toAccount != null) {
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
-                val maskedFrom = transaction.fromAccount.let { from ->
-                    if (from.length > 4) "*".repeat(from.length - 4) + from.takeLast(4) else from
-                }
-                val maskedTo = transaction.toAccount.let { to ->
-                    if (to.length > 4) "*".repeat(to.length - 4) + to.takeLast(4) else to
-                }
-                TransferFlowRow(fromValue = maskedFrom, toValue = maskedTo)
+                TransferFlowRow(
+                    fromValue = maskedLeg(transaction.fromAccount, transaction.fromBankName),
+                    toValue = maskedLeg(transaction.toAccount, transaction.toBankName)
+                )
             } else {
-                transaction.accountNumber?.let {
+                transaction.accountNumber?.takeIf { it.isNotBlank() }?.let {
                     if (transaction.fromAccount == null && transaction.toAccount == null) {
                         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
                         val masked = if (it.length > 4) {
@@ -766,30 +1001,25 @@ private fun TransactionReceipt(
                         } else it
                         DetailInfoRow(
                             icon = Icons.Default.AccountBalanceWallet,
-                            label = "Account",
+                            label = stringResource(R.string.txn_detail_label_account),
                             value = masked
                         )
                     }
                 }
                 transaction.fromAccount?.let { from ->
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
-                    val masked = if (from.length > 4) {
-                        "*".repeat(from.length - 4) + from.takeLast(4)
-                    } else from
                     DetailInfoRow(
                         icon = Icons.Default.Output,
-                        label = "From",
-                        value = masked
+                        label = stringResource(R.string.txn_detail_label_from),
+                        value = maskedLeg(from, transaction.fromBankName)
                     )
                 }
                 transaction.toAccount?.let { to ->
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
-                    val masked = if (to.length > 4) {
-                        "*".repeat(to.length - 4) + to.takeLast(4)
-                    } else to
+                    val masked = maskedLeg(to, transaction.toBankName)
                     DetailInfoRow(
-                        icon = Icons.Default.Input,
-                        label = "To",
+                        icon = Icons.AutoMirrored.Filled.Input,
+                        label = stringResource(R.string.txn_detail_label_to),
                         value = masked
                     )
                 }
@@ -797,12 +1027,51 @@ private fun TransactionReceipt(
 
             // Balance
             transaction.balanceAfter?.let {
+                val accountCurrency by viewModel.accountCurrency.collectAsStateWithLifecycle()
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
                 DetailInfoRow(
                     icon = Icons.Default.AccountBalanceWallet,
-                    label = "Balance",
-                    value = CurrencyFormatter.formatCurrency(it, viewModel.primaryCurrency.value)
+                    label = stringResource(R.string.txn_detail_label_balance),
+                    value = CurrencyFormatter.formatCurrency(it, accountCurrency ?: transaction.currency)
                 )
+            }
+
+            // Bank balance vs. ledger prediction (#734/#135): surface the gap and
+            // offer to record it as an untracked transaction.
+            val discrepancy by viewModel.balanceDiscrepancy.collectAsStateWithLifecycle()
+            discrepancy?.let { d ->
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                DetailInfoRow(
+                    icon = Icons.Default.Warning,
+                    label = stringResource(R.string.txn_detail_label_balance_mismatch),
+                    value = stringResource(
+                        R.string.txn_detail_balance_mismatch_value,
+                        CurrencyFormatter.formatCurrency(d.delta.abs(), d.currency),
+                        CurrencyFormatter.formatCurrency(d.expected, d.currency)
+                    )
+                )
+                val adding by viewModel.isAddingAdjustment.collectAsStateWithLifecycle()
+                var showAdjustmentSheet by rememberSaveable { mutableStateOf(false) }
+                if (showAdjustmentSheet) {
+                    BalanceAdjustmentSheet(
+                        discrepancy = d,
+                        viewModel = viewModel,
+                        onDismiss = { showAdjustmentSheet = false }
+                    )
+                }
+                TextButton(
+                    onClick = { showAdjustmentSheet = true },
+                    enabled = !adding,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        stringResource(
+                            if (d.delta.signum() < 0) R.string.txn_detail_add_untracked_expense
+                            else R.string.txn_detail_add_untracked_income,
+                            CurrencyFormatter.formatCurrency(d.delta.abs(), d.currency)
+                        )
+                    )
+                }
             }
 
             // Reference number (prefer extracted reference, fallback to SMS sender)
@@ -811,7 +1080,7 @@ private fun TransactionReceipt(
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
                 DetailInfoRow(
                     icon = Icons.Default.Tag,
-                    label = "Reference",
+                    label = stringResource(R.string.txn_detail_label_reference),
                     value = it
                 )
             }
@@ -840,13 +1109,13 @@ private fun TransactionReceipt(
                             tint = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                         Text(
-                            text = "Receipt",
+                            text = stringResource(R.string.txn_detail_receipt),
                             style = MaterialTheme.typography.titleSmall,
                             fontWeight = FontWeight.SemiBold
                         )
                         Spacer(modifier = Modifier.weight(1f))
                         Text(
-                            text = "Tap to view",
+                            text = stringResource(R.string.txn_detail_receipt_tap_to_view),
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -854,7 +1123,7 @@ private fun TransactionReceipt(
                     Spacer(modifier = Modifier.height(Spacing.sm))
                     AsyncImage(
                         model = uri,
-                        contentDescription = "Receipt",
+                        contentDescription = stringResource(R.string.txn_detail_receipt),
                         modifier = Modifier
                             .fillMaxWidth()
                             .heightIn(max = 200.dp)
@@ -865,16 +1134,36 @@ private fun TransactionReceipt(
             }
         }
 
+        val receiptMissing by viewModel.receiptMissing.collectAsStateWithLifecycle()
+        if (receiptUri == null && receiptMissing) {
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                color = MaterialTheme.colorScheme.surfaceContainerLow,
+                shape = MaterialTheme.shapes.medium
+            ) {
+                Row(
+                    modifier = Modifier.padding(Spacing.md),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(Spacing.sm)
+                ) {
+                    Icon(
+                        Icons.Default.Receipt,
+                        contentDescription = null,
+                        modifier = Modifier.size(Dimensions.Icon.medium),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text(
+                        text = stringResource(R.string.txn_detail_receipt_missing),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
+
         // ── SMS Section ──
         if (!transaction.smsBody.isNullOrBlank()) {
             ExpandableSmsSection(smsBody = transaction.smsBody)
-        }
-
-        // ── Firefly Sync Status ──
-        if (transaction != null) {
-            FireflySyncStatusSection(
-                viewModel = viewModel
-            )
         }
 
         // ── Split Breakdown ──
@@ -954,7 +1243,7 @@ private fun TransferFlowRow(
         }
 
         Icon(
-            Icons.Default.ArrowForward,
+            Icons.AutoMirrored.Filled.ArrowForward,
             contentDescription = null,
             modifier = Modifier.size(Dimensions.Icon.small),
             tint = MaterialTheme.colorScheme.onSurfaceVariant
@@ -1004,7 +1293,7 @@ private fun ExpandableSmsSection(smsBody: String) {
                         modifier = Modifier.size(Dimensions.Icon.small)
                     )
                     Text(
-                        text = if (expanded) "Hide SMS" else "Show original SMS",
+                        text = if (expanded) stringResource(R.string.txn_detail_sms_hide) else stringResource(R.string.txn_detail_sms_show),
                         style = MaterialTheme.typography.labelLarge,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -1062,7 +1351,7 @@ private fun EditableTransactionHeader(
             TextField(
                 value = transaction.amount.stripTrailingZeros().toPlainString(),
                 onValueChange = { viewModel.updateAmount(it) },
-                label = { Text("Amount", fontWeight = FontWeight.SemiBold) },
+                label = { Text(stringResource(R.string.txn_detail_field_amount), fontWeight = FontWeight.SemiBold) },
                 textStyle = MaterialTheme.typography.headlineSmall,
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
                 singleLine = true,
@@ -1080,10 +1369,11 @@ private fun EditableTransactionHeader(
             TextField(
                 value = transaction.merchantName,
                 onValueChange = { viewModel.updateMerchantName(it) },
-                label = { Text("Merchant", fontWeight = FontWeight.SemiBold) },
+                label = { Text(stringResource(R.string.txn_detail_field_merchant), fontWeight = FontWeight.SemiBold) },
                 leadingIcon = {
                     BrandIcon(
                         merchantName = transaction.merchantName,
+                        category = transaction.category,
                         size = 24.dp,
                         showBackground = false
                     )
@@ -1095,10 +1385,31 @@ private fun EditableTransactionHeader(
                 colors = editFilledColors()
             )
 
+            // Display alias (#583): shown in place of the merchant everywhere,
+            // for all transactions from it. The raw merchant above is unchanged.
+            val merchantAlias by viewModel.merchantAlias.collectAsStateWithLifecycle()
+            TextField(
+                value = merchantAlias,
+                onValueChange = { viewModel.updateMerchantAlias(it) },
+                label = { Text(stringResource(R.string.txn_detail_field_alias), fontWeight = FontWeight.SemiBold) },
+                placeholder = { Text(stringResource(R.string.txn_detail_field_alias_placeholder)) },
+                leadingIcon = {
+                    Icon(
+                        Icons.Default.Badge,
+                        contentDescription = null,
+                        modifier = Modifier.size(Dimensions.Icon.medium)
+                    )
+                },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+                shape = editMiddleShape,
+                colors = editFilledColors()
+            )
+
             TextField(
                 value = transaction.description ?: "",
                 onValueChange = { viewModel.updateDescription(it) },
-                label = { Text("Description (Optional)", fontWeight = FontWeight.SemiBold) },
+                label = { Text(stringResource(R.string.txn_detail_field_description), fontWeight = FontWeight.SemiBold) },
                 leadingIcon = {
                     Icon(
                         Icons.Default.Description,
@@ -1107,9 +1418,63 @@ private fun EditableTransactionHeader(
                     )
                 },
                 modifier = Modifier.fillMaxWidth(),
+                shape = editMiddleShape,
+                colors = editFilledColors()
+            )
+
+            // Only the extracted/typed reference; the view mode's smsSender
+            // fallback is display-only and must never be saved as a reference.
+            TextField(
+                value = transaction.reference ?: "",
+                onValueChange = { viewModel.updateReference(it) },
+                label = { Text(stringResource(R.string.txn_detail_field_reference), fontWeight = FontWeight.SemiBold) },
+                leadingIcon = {
+                    Icon(
+                        Icons.Default.Tag,
+                        contentDescription = null,
+                        modifier = Modifier.size(Dimensions.Icon.medium)
+                    )
+                },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
                 shape = editBottomShape,
                 colors = editFilledColors()
             )
+        }
+
+        // Tags (optional) — create or select existing
+        val editTags by viewModel.editableTags.collectAsStateWithLifecycle()
+        val allTagNames by viewModel.allTagNames.collectAsStateWithLifecycle()
+        TagInputField(
+            selectedTags = editTags,
+            allTags = allTagNames,
+            onAddTag = { viewModel.addTag(it) },
+            onRemoveTag = { viewModel.removeTag(it) }
+        )
+        // #752: mirrors the category checkbox below — saved as a Smart Rule.
+        if (editTags.isNotEmpty()) {
+            val applyTagsToAll by viewModel.applyTagsToAllFromMerchant.collectAsStateWithLifecycle()
+            // The rule keys on the merchant as saved before this edit, so name that one.
+            val originalMerchant = viewModel.transaction.collectAsStateWithLifecycle().value?.merchantName
+            Row(
+                modifier = Modifier.fillMaxWidth().toggleable(
+                    value = applyTagsToAll,
+                    role = Role.Checkbox,
+                    onValueChange = { viewModel.toggleApplyTagsToAllFromMerchant() }
+                ),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Checkbox(
+                    checked = applyTagsToAll,
+                    onCheckedChange = null,
+                    modifier = Modifier.minimumInteractiveComponentSize()
+                )
+                Text(
+                    text = stringResource(R.string.txn_detail_apply_tags_to_merchant, originalMerchant ?: transaction.merchantName),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+            }
         }
 
         // Transaction Type
@@ -1122,7 +1487,12 @@ private fun EditableTransactionHeader(
                 FilterChip(
                     selected = transaction.transactionType == type,
                     onClick = { viewModel.updateTransactionType(type) },
-                    label = { Text(type.name.lowercase(Locale.getDefault()).replaceFirstChar { it.titlecase(Locale.getDefault()) }, maxLines = 1) },
+                    label = {
+                        Text(
+                            stringResource(transactionTypeLabel(type)),
+                            maxLines = 1
+                        )
+                    },
                     leadingIcon = if (transaction.transactionType == type) {
                         { Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(Dimensions.Icon.small)) }
                     } else null,
@@ -1177,24 +1547,34 @@ private fun EditableExtractedInfoCard(
                 AccountNumberField(
                     accountNumber = transaction.fromAccount,
                     onAccountNumberChange = { viewModel.updateFromAccount(it) },
+                    onAccountSelected = { bank, suffix -> viewModel.updateFromAccount(suffix, bank) },
+                    bankName = transaction.fromBankName,
+                    excludeBankName = transaction.toBankName,
                     viewModel = viewModel,
-                    label = "From Account",
-                    placeholder = "Select or enter source account",
+                    label = stringResource(R.string.txn_detail_field_from_account),
+                    placeholder = stringResource(R.string.txn_detail_field_from_account_placeholder),
                     excludeAccount = transaction.toAccount
                 )
                 AccountNumberField(
                     accountNumber = transaction.toAccount,
                     onAccountNumberChange = { viewModel.updateToAccount(it) },
+                    onAccountSelected = { bank, suffix -> viewModel.updateToAccount(suffix, bank) },
+                    bankName = transaction.toBankName,
+                    excludeBankName = transaction.fromBankName,
                     viewModel = viewModel,
-                    label = "To Account",
-                    placeholder = "Select or enter destination account",
+                    label = stringResource(R.string.txn_detail_field_to_account),
+                    placeholder = stringResource(R.string.txn_detail_field_to_account_placeholder),
                     excludeAccount = transaction.fromAccount
                 )
             } else {
                 AccountNumberField(
                     accountNumber = transaction.accountNumber,
                     onAccountNumberChange = { viewModel.updateAccountNumber(it) },
-                    viewModel = viewModel
+                    onAccountSelected = { bank, suffix -> viewModel.selectAccount(suffix, bank) },
+                    viewModel = viewModel,
+                    // Without the bank, two accounts sharing a number (HDFC ••1155
+                    // and a wallet ••1155) were indistinguishable (#876).
+                    bankName = transaction.bankName
                 )
             }
 
@@ -1202,39 +1582,48 @@ private fun EditableExtractedInfoCard(
                 CategoryDropdown(
                     selectedCategory = transaction.category,
                     onCategorySelected = { viewModel.updateCategory(it) },
+                    isIncomeTransaction = transaction.transactionType == TransactionType.INCOME,
                     viewModel = viewModel
                 )
             }
         }
 
         // Split button
-        if (!showSplitEditor && transaction.transactionType == TransactionType.EXPENSE) {
+        if (!showSplitEditor && transaction.transactionType in TransactionDetailViewModel.SPLITTABLE_TYPES) {
             OutlinedButton(
                 onClick = { viewModel.enableSplitMode() },
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Icon(
-                    Icons.Default.CallSplit,
+                    Icons.AutoMirrored.Filled.CallSplit,
                     contentDescription = null,
                     modifier = Modifier.size(Dimensions.Icon.small)
                 )
                 Spacer(modifier = Modifier.width(Spacing.xs))
-                Text("Split into categories")
+                Text(stringResource(R.string.txn_detail_split_into_categories))
             }
         }
 
         // Checkboxes
         if (!showSplitEditor) {
+            // The mapping keys on the merchant as saved before this edit, so name that one.
+            val originalMerchant = viewModel.transaction.collectAsStateWithLifecycle().value?.merchantName
+            // The whole row toggles, so tapping the label ticks the box (#911).
             Row(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier.fillMaxWidth().toggleable(
+                    value = applyToAllFromMerchant,
+                    role = Role.Checkbox,
+                    onValueChange = { viewModel.toggleApplyToAllFromMerchant() }
+                ),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Checkbox(
                     checked = applyToAllFromMerchant,
-                    onCheckedChange = { viewModel.toggleApplyToAllFromMerchant() }
+                    onCheckedChange = null,
+                    modifier = Modifier.minimumInteractiveComponentSize()
                 )
                 Text(
-                    text = "Apply category to all from ${transaction.merchantName}",
+                    text = stringResource(R.string.txn_detail_apply_category_to_merchant, originalMerchant ?: transaction.merchantName),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurface
                 )
@@ -1243,15 +1632,20 @@ private fun EditableExtractedInfoCard(
             if (existingTransactionCount > 0) {
                 Spacer(modifier = Modifier.height(Spacing.sm))
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth().toggleable(
+                        value = updateExistingTransactions,
+                        role = Role.Checkbox,
+                        onValueChange = { viewModel.toggleUpdateExistingTransactions() }
+                    ),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Checkbox(
                         checked = updateExistingTransactions,
-                        onCheckedChange = { viewModel.toggleUpdateExistingTransactions() }
+                        onCheckedChange = null,
+                        modifier = Modifier.minimumInteractiveComponentSize()
                     )
                     Text(
-                        text = "Update $existingTransactionCount existing ${if (existingTransactionCount == 1) "transaction" else "transactions"}",
+                        text = pluralStringResource(R.plurals.txn_detail_update_existing, existingTransactionCount, existingTransactionCount),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurface
                     )
@@ -1268,7 +1662,7 @@ private fun EditableExtractedInfoCard(
         val effectiveProfileId = transaction.profileId ?: accountDefault
         val isEffectivelyBusiness = effectiveProfileId == ProfileEntity.BUSINESS_ID
         Text(
-            text = "Classification",
+            text = stringResource(R.string.txn_detail_label_classification),
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -1284,7 +1678,7 @@ private fun EditableExtractedInfoCard(
                 },
                 shape = SegmentedButtonDefaults.itemShape(index = 0, count = 2)
             ) {
-                Text("Personal")
+                Text(stringResource(R.string.txn_detail_personal))
             }
             SegmentedButton(
                 selected = isEffectivelyBusiness,
@@ -1294,7 +1688,7 @@ private fun EditableExtractedInfoCard(
                 },
                 shape = SegmentedButtonDefaults.itemShape(index = 1, count = 2)
             ) {
-                Text("Business")
+                Text(stringResource(R.string.txn_detail_business))
             }
         }
 
@@ -1308,23 +1702,7 @@ private fun EditableExtractedInfoCard(
                 onCheckedChange = { viewModel.updateRecurringStatus(it) }
             )
             Text(
-                text = "Recurring Transaction",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurface
-            )
-        }
-
-        // Exclude from analytics (per #451 upstream)
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Checkbox(
-                checked = transaction.excludedFromAnalytics,
-                onCheckedChange = { viewModel.updateExcludedFromAnalytics(it) }
-            )
-            Text(
-                text = "Exclude from analytics",
+                text = stringResource(R.string.txn_detail_recurring_checkbox),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurface
             )
@@ -1355,7 +1733,7 @@ private fun EditableExtractedInfoCard(
                     modifier = Modifier.size(Dimensions.Icon.small)
                 )
                 Text(
-                    text = "Bank: $it (read-only)",
+                    text = stringResource(R.string.txn_detail_bank_read_only, it),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -1384,13 +1762,15 @@ private fun BudgetImpactSection(viewModel: TransactionDetailViewModel) {
     val budgetImpactType by viewModel.budgetImpactType.collectAsStateWithLifecycle()
     val budgetCategory by viewModel.budgetCategory.collectAsStateWithLifecycle()
     val activeBudgetCategories by viewModel.activeBudgetCategories.collectAsStateWithLifecycle()
+    val refundCategories by viewModel.refundCategories.collectAsStateWithLifecycle()
+    val pickable = if (budgetImpactType == BudgetImpactType.DEDUCT_SPENT) refundCategories else activeBudgetCategories
 
     Column(
         modifier = Modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(Spacing.xs)
     ) {
         Text(
-            text = "Budget impact",
+            text = stringResource(R.string.txn_detail_budget_impact),
             style = MaterialTheme.typography.labelMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -1400,19 +1780,19 @@ private fun BudgetImpactSection(viewModel: TransactionDetailViewModel) {
                 selected = budgetImpactType == null,
                 onClick = { viewModel.updateBudgetImpactType(null) },
                 shape = SegmentedButtonDefaults.itemShape(index = 0, count = 3),
-                label = { Text("None", style = MaterialTheme.typography.labelSmall) }
+                label = { Text(stringResource(R.string.txn_detail_budget_impact_none), style = MaterialTheme.typography.labelSmall) }
             )
             SegmentedButton(
                 selected = budgetImpactType == BudgetImpactType.DEDUCT_SPENT,
                 onClick = { viewModel.updateBudgetImpactType(BudgetImpactType.DEDUCT_SPENT) },
                 shape = SegmentedButtonDefaults.itemShape(index = 1, count = 3),
-                label = { Text("Refund", style = MaterialTheme.typography.labelSmall) }
+                label = { Text(stringResource(R.string.txn_detail_budget_impact_refund), style = MaterialTheme.typography.labelSmall) }
             )
             SegmentedButton(
                 selected = budgetImpactType == BudgetImpactType.ADD_TO_LIMIT,
                 onClick = { viewModel.updateBudgetImpactType(BudgetImpactType.ADD_TO_LIMIT) },
                 shape = SegmentedButtonDefaults.itemShape(index = 2, count = 3),
-                label = { Text("Extra budget", style = MaterialTheme.typography.labelSmall) }
+                label = { Text(stringResource(R.string.txn_detail_budget_impact_extra), style = MaterialTheme.typography.labelSmall) }
             )
         }
 
@@ -1423,10 +1803,10 @@ private fun BudgetImpactSection(viewModel: TransactionDetailViewModel) {
                 onExpandedChange = { expanded = it }
             ) {
                 OutlinedTextField(
-                    value = budgetCategory ?: "Select category",
+                    value = budgetCategory ?: stringResource(R.string.txn_detail_budget_select_category),
                     onValueChange = {},
                     readOnly = true,
-                    label = { Text("Budget category") },
+                    label = { Text(stringResource(R.string.txn_detail_budget_category)) },
                     trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
                     modifier = Modifier
                         .fillMaxWidth()
@@ -1437,16 +1817,16 @@ private fun BudgetImpactSection(viewModel: TransactionDetailViewModel) {
                     expanded = expanded,
                     onDismissRequest = { expanded = false }
                 ) {
-                    if (activeBudgetCategories.isEmpty()) {
+                    if (pickable.isEmpty()) {
                         DropdownMenuItem(
-                            text = { Text("No budget categories found") },
+                            text = { Text(stringResource(R.string.txn_detail_budget_no_categories)) },
                             onClick = { expanded = false },
                             enabled = false
                         )
                     } else {
-                        activeBudgetCategories.forEach { category ->
+                        pickable.forEach { category ->
                             DropdownMenuItem(
-                                text = { Text(category) },
+                                text = { Text(categoryLabel(category)) },
                                 onClick = {
                                     viewModel.updateBudgetCategory(category)
                                     expanded = false
@@ -1465,11 +1845,13 @@ private fun BudgetImpactSection(viewModel: TransactionDetailViewModel) {
 private fun CategoryDropdown(
     selectedCategory: String,
     onCategorySelected: (String) -> Unit,
+    isIncomeTransaction: Boolean,
     viewModel: TransactionDetailViewModel
 ) {
     val categories by viewModel.categories.collectAsStateWithLifecycle(initialValue = emptyList())
     var expanded by remember { mutableStateOf(false) }
-    
+    var showAddDialog by remember { mutableStateOf(false) }
+
     // Find the selected category entity for displaying with color
     val selectedCategoryEntity = categories.find { it.name == selectedCategory }
     
@@ -1478,24 +1860,10 @@ private fun CategoryDropdown(
         onExpandedChange = { expanded = it }
     ) {
         TextField(
-            value = selectedCategory,
+            value = categoryLabel(selectedCategory),
             onValueChange = { },
-            label = { Text("Category", fontWeight = FontWeight.SemiBold) },
-            leadingIcon = {
-                if (selectedCategoryEntity != null) {
-                    CategoryChip(
-                        category = selectedCategoryEntity,
-                        showText = false,
-                        modifier = Modifier.padding(start = 12.dp)
-                    )
-                } else {
-                    Icon(
-                        Icons.Default.Category,
-                        contentDescription = null,
-                        modifier = Modifier.size(Dimensions.Icon.medium)
-                    )
-                }
-            },
+            label = { Text(stringResource(R.string.txn_detail_label_category), fontWeight = FontWeight.SemiBold) },
+            leadingIcon = { SelectedCategoryIcon(selectedCategoryEntity) },
             trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
             modifier = Modifier
                 .fillMaxWidth()
@@ -1509,19 +1877,38 @@ private fun CategoryDropdown(
             expanded = expanded,
             onDismissRequest = { expanded = false }
         ) {
-            categories.forEach { category ->
-                DropdownMenuItem(
-                    text = { 
-                        CategoryChip(category = category)
-                    },
-                    onClick = {
-                        onCategorySelected(category.name)
-                        expanded = false
-                    },
-                    contentPadding = ExposedDropdownMenuDefaults.ItemContentPadding
-                )
-            }
+            // Create a new category without leaving the edit flow (#584).
+            CategoryMenuItems(
+                categories = categories,
+                isIncome = isIncomeTransaction,
+                onSelected = {
+                    onCategorySelected(it.name)
+                    expanded = false
+                },
+                onAddCategory = {
+                    expanded = false
+                    showAddDialog = true
+                }
+            )
         }
+    }
+
+    if (showAddDialog) {
+        CategoryEditDialog(
+            defaultIsIncome = isIncomeTransaction,
+            lockType = true,
+            // Same parent picker as Settings → Categories (#876).
+            parentOptions = categories,
+            onDismiss = { showAddDialog = false },
+            onSave = { name, color, _, icon, parentId ->
+                // Dismiss only once the category is actually created/selected, so a
+                // failure (e.g. same-name type conflict) keeps the dialog open with
+                // the user's input intact.
+                viewModel.createAndSelectCategory(name, color, icon, parentId) { success ->
+                    if (success) showAddDialog = false
+                }
+            }
+        )
     }
 }
 
@@ -1568,15 +1955,13 @@ private fun DateTimeField(
                 Column {
                     Text(
                         text = dateTime.format(DateTimeFormatter.ofPattern("yyyy")),
-                        fontSize = 10.sp,
-                        color = MaterialTheme.colorScheme.primary,
-                        style = MaterialTheme.typography.bodyLarge
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary
                     )
                     Text(
-                        text = dateTime.format(DateTimeFormatter.ofPattern("dd MMMM")),
-                        fontSize = 14.sp,
+                        text = dateTime.format(AppDates.pattern("dd MMMM")),
+                        style = MaterialTheme.typography.titleMedium,
                         color = MaterialTheme.colorScheme.onSurface,
-                        style = MaterialTheme.typography.bodyLarge,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
@@ -1603,50 +1988,44 @@ private fun DateTimeField(
 
                 Box(
                     modifier = Modifier
-                        .padding(4.dp)
+                        .padding(Spacing.xs)
                         .background(
                             color = MaterialTheme.colorScheme.primary.copy(0.2f),
-                            shape = RoundedCornerShape(8.dp)
+                            shape = MaterialTheme.shapes.small
                         )
                 ) {
                     Text(
                         text = String.format("%02d", hour),
                         color = MaterialTheme.colorScheme.primary,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 16.sp,
-                        lineHeight = 16.sp,
-                        modifier = Modifier.padding(5.dp)
+                        style = PennyWiseText.amountMedium,
+                        modifier = Modifier.padding(Spacing.xs)
                     )
                 }
                 Text(
                     text = ":",
-                    fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.onSurface,
-                    fontSize = 16.sp
+                    style = PennyWiseText.amountMedium
                 )
                 Box(
                     modifier = Modifier
-                        .padding(4.dp)
+                        .padding(Spacing.xs)
                         .background(
                             color = MaterialTheme.colorScheme.surfaceVariant,
-                            shape = RoundedCornerShape(8.dp)
+                            shape = MaterialTheme.shapes.small
                         )
                 ) {
                     Text(
                         text = String.format("%02d", minute),
-                        fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.onSurface,
-                        fontSize = 16.sp,
-                        lineHeight = 16.sp,
-                        modifier = Modifier.padding(5.dp)
+                        style = PennyWiseText.amountMedium,
+                        modifier = Modifier.padding(Spacing.xs)
                     )
                 }
-                Box(modifier = Modifier.padding(4.dp)) {
+                Box(modifier = Modifier.padding(Spacing.xs)) {
                     Text(
                         text = amPm,
-                        fontWeight = FontWeight.SemiBold,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        fontSize = 14.sp
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
             }
@@ -1672,12 +2051,12 @@ private fun DateTimeField(
                     }
                     showDatePicker = false
                 }) {
-                    Text("OK")
+                    Text(stringResource(R.string.txn_detail_action_ok))
                 }
             },
             dismissButton = {
                 TextButton(onClick = { showDatePicker = false }) {
-                    Text("Cancel")
+                    Text(stringResource(R.string.txn_detail_action_cancel))
                 }
             }
         ) {
@@ -1693,7 +2072,7 @@ private fun DateTimeField(
         )
         AlertDialog(
             onDismissRequest = { showTimePicker = false },
-            title = { Text("Select Time") },
+            title = { Text(stringResource(R.string.txn_detail_select_time)) },
             text = {
                 TimePicker(state = timePickerState)
             },
@@ -1703,12 +2082,12 @@ private fun DateTimeField(
                         .withMinute(timePickerState.minute))
                     showTimePicker = false
                 }) {
-                    Text("OK")
+                    Text(stringResource(R.string.txn_detail_action_ok))
                 }
             },
             dismissButton = {
                 TextButton(onClick = { showTimePicker = false }) {
-                    Text("Cancel")
+                    Text(stringResource(R.string.txn_detail_action_cancel))
                 }
             }
         )
@@ -1724,12 +2103,10 @@ private fun CurrencyDropdown(
 ) {
     var expanded by remember { mutableStateOf(false) }
 
-    // Common currencies
-    val currencies = listOf(
-        "INR", "USD", "EUR", "GBP", "AED", "SGD",
-        "CAD", "MXN", "AUD", "JPY", "CNY", "NPR", "ETB",
-        "THB", "MYR", "KWD", "KRW"
-    )
+    // The shared list, not a local copy: this dropdown used to hard-code 17
+    // codes, so editing a transaction couldn't set currencies (BRL, COP, ARS…)
+    // that adding one could.
+    val currencies = remember { CurrencyUtils.getAllSupportedCurrencies() }
 
     ExposedDropdownMenuBox(
         expanded = expanded,
@@ -1785,19 +2162,22 @@ private fun AccountNumberField(
     accountNumber: String?,
     onAccountNumberChange: (String?) -> Unit,
     viewModel: TransactionDetailViewModel,
-    label: String = "Account (Optional)",
-    placeholder: String = "Select or enter account number",
-    excludeAccount: String? = null
+    label: String = stringResource(R.string.txn_detail_field_account),
+    placeholder: String = stringResource(R.string.txn_detail_field_account_placeholder),
+    excludeAccount: String? = null,
+    // A real account picked from the dropdown, as (bankName, last4): accounts are
+    // keyed by both (#566 / #570), and last4 may be blank for a Cash account (#913).
+    onAccountSelected: (String, String) -> Unit,
+    bankName: String? = null,
+    excludeBankName: String? = null
 ) {
     val availableAccounts by viewModel.availableAccounts.collectAsStateWithLifecycle()
-    val filteredAccounts = availableAccounts.filter { it.accountLast4 != excludeAccount }
+    val filteredAccounts = availableAccounts.filter {
+        it.accountLast4 != excludeAccount || (excludeBankName != null && it.bankName != excludeBankName)
+    }
     var expanded by remember { mutableStateOf(false) }
-    var selectedAccount by remember(accountNumber) { 
-        mutableStateOf(
-            availableAccounts.find { 
-                accountNumber?.endsWith(it.accountLast4) == true 
-            }?.displayName ?: accountNumber ?: ""
-        )
+    var selectedAccount by remember(accountNumber, bankName, availableAccounts) {
+        mutableStateOf(availableAccounts.matchFor(accountNumber, bankName)?.displayName ?: accountNumber ?: "")
     }
     
     ExposedDropdownMenuBox(
@@ -1839,7 +2219,7 @@ private fun AccountNumberField(
                         ) {
                             Icon(
                                 Icons.Default.Clear,
-                                contentDescription = "Clear",
+                                contentDescription = stringResource(R.string.txn_detail_clear),
                                 modifier = Modifier.size(Dimensions.Icon.medium)
                             )
                         }
@@ -1878,7 +2258,7 @@ private fun AccountNumberField(
                         },
                         onClick = {
                             selectedAccount = account.displayName
-                            onAccountNumberChange(account.accountLast4)
+                            onAccountSelected(account.bankName, account.accountLast4)
                             expanded = false
                         },
                         contentPadding = ExposedDropdownMenuDefaults.ItemContentPadding
@@ -1919,8 +2299,6 @@ private fun MarkAsLoanBottomSheet(
     val loanColor = if (isDark) loan_dark else loan_light
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
-    val directionLabel = if (direction == LoanDirection.LENT) "Lent" else "Borrowed"
-
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
@@ -1929,18 +2307,26 @@ private fun MarkAsLoanBottomSheet(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
+                // Scroll so the loan-amount/note fields and the Confirm button stay
+                // reachable when several existing people are listed — otherwise they're
+                // pushed below the sheet and the user can only proceed via "New person".
+                // (#489)
+                .verticalScroll(rememberScrollState())
                 .padding(horizontal = Dimensions.Padding.content)
                 .padding(bottom = Spacing.xl)
                 .navigationBarsPadding(),
             verticalArrangement = Arrangement.spacedBy(Spacing.md)
         ) {
             Text(
-                text = "$directionLabel ${CurrencyFormatter.formatCurrency(transactionAmount, transactionCurrency)}",
+                text = stringResource(
+                    if (direction == LoanDirection.LENT) R.string.txn_detail_loan_sheet_lent else R.string.txn_detail_loan_sheet_borrowed,
+                    CurrencyFormatter.formatCurrency(transactionAmount, transactionCurrency)
+                ),
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.SemiBold
             )
             Text(
-                text = if (direction == LoanDirection.LENT) "Who did you pay for?" else "Who paid for you?",
+                text = if (direction == LoanDirection.LENT) stringResource(R.string.txn_detail_loan_sheet_who_lent) else stringResource(R.string.txn_detail_loan_sheet_who_borrowed),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -2002,14 +2388,14 @@ private fun MarkAsLoanBottomSheet(
                         modifier = Modifier.size(Dimensions.Icon.small)
                     )
                     Spacer(modifier = Modifier.width(Spacing.xs))
-                    Text("New person")
+                    Text(stringResource(R.string.txn_detail_loan_new_person))
                 }
             } else {
                 // Text field for new person name
                 TextField(
                     value = personName,
                     onValueChange = { personName = it },
-                    label = { Text("Person's name") },
+                    label = { Text(stringResource(R.string.txn_detail_loan_person_name)) },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                     shape = editFullShape,
@@ -2023,7 +2409,7 @@ private fun MarkAsLoanBottomSheet(
                             modifier = Modifier.size(Dimensions.Icon.small)
                         )
                         Spacer(modifier = Modifier.width(Spacing.xs))
-                        Text("Pick existing")
+                        Text(stringResource(R.string.txn_detail_loan_pick_existing))
                     }
                 }
             }
@@ -2033,13 +2419,13 @@ private fun MarkAsLoanBottomSheet(
             TextField(
                 value = loanAmountInput,
                 onValueChange = { loanAmountInput = it },
-                label = { Text("Loan amount") },
+                label = { Text(stringResource(R.string.txn_detail_loan_amount)) },
                 supportingText = {
                     Text(
                         if (parsedLoanAmount != null && parsedLoanAmount < transactionAmount) {
-                            "Only this portion counts toward the loan total."
+                            stringResource(R.string.txn_detail_loan_amount_partial_hint)
                         } else {
-                            "Max ${CurrencyFormatter.formatCurrency(transactionAmount, transactionCurrency)}"
+                            stringResource(R.string.txn_detail_loan_amount_max, CurrencyFormatter.formatCurrency(transactionAmount, transactionCurrency))
                         }
                     )
                 },
@@ -2055,7 +2441,7 @@ private fun MarkAsLoanBottomSheet(
             TextField(
                 value = note,
                 onValueChange = { note = it },
-                label = { Text("Note (optional)") },
+                label = { Text(stringResource(R.string.txn_detail_loan_note)) },
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
                 shape = editFullShape,
@@ -2084,7 +2470,121 @@ private fun MarkAsLoanBottomSheet(
                     modifier = Modifier.size(Dimensions.Icon.small)
                 )
                 Spacer(modifier = Modifier.width(Spacing.xs))
-                Text("Confirm")
+                Text(stringResource(R.string.txn_detail_action_confirm))
+            }
+        }
+    }
+}
+
+/**
+ * Names the untracked amount behind a balance mismatch before it's added
+ * (#734): the amount is fixed, only "what was it?" and the category are asked.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun BalanceAdjustmentSheet(
+    discrepancy: com.pennywiseai.tracker.utils.BalanceDiscrepancy,
+    viewModel: TransactionDetailViewModel,
+    onDismiss: () -> Unit
+) {
+    val type = balanceAdjustmentType(discrepancy)
+    val isIncome = type == TransactionType.INCOME
+    val categories by viewModel.adjustmentCategories.collectAsStateWithLifecycle()
+    var merchant by rememberSaveable { mutableStateOf("") }
+    // Null until the user picks: the view model then tries the merchant's mapping.
+    var pickedCategory by rememberSaveable { mutableStateOf<String?>(null) }
+    val shownCategory = pickedCategory ?: categories.balanceAdjustmentDefaultCategory(type)
+    var expanded by remember { mutableStateOf(false) }
+    val isDark = isSystemInDarkTheme()
+    val amountColor = when {
+        isIncome -> if (isDark) income_dark else income_light
+        else -> if (isDark) expense_dark else expense_light
+    }
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = Dimensions.Padding.content)
+                .padding(bottom = Spacing.xl)
+                .navigationBarsPadding(),
+            verticalArrangement = Arrangement.spacedBy(Spacing.md)
+        ) {
+            Column {
+                Text(
+                    text = stringResource(
+                        if (isIncome) R.string.txn_detail_adjustment_title_income
+                        else R.string.txn_detail_adjustment_title_expense
+                    ),
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Text(
+                    text = (if (isIncome) "+" else "-") +
+                        CurrencyFormatter.formatCurrency(discrepancy.delta.abs(), discrepancy.currency),
+                    style = MaterialTheme.typography.headlineMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = amountColor
+                )
+            }
+            TextField(
+                value = merchant,
+                onValueChange = { merchant = it },
+                label = { Text(stringResource(R.string.txn_detail_adjustment_what)) },
+                placeholder = { Text(stringResource(R.string.txn_detail_adjustment_what_placeholder)) },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+                shape = editFullShape,
+                colors = editFilledColors()
+            )
+            ExposedDropdownMenuBox(
+                expanded = expanded,
+                onExpandedChange = { expanded = it }
+            ) {
+                TextField(
+                    value = categoryLabel(shownCategory),
+                    onValueChange = { },
+                    label = { Text(stringResource(R.string.txn_detail_label_category)) },
+                    leadingIcon = { SelectedCategoryIcon(categories.find { it.name == shownCategory }) },
+                    trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .menuAnchor(MenuAnchorType.PrimaryNotEditable),
+                    readOnly = true,
+                    shape = editFullShape,
+                    colors = editFilledColors()
+                )
+                ExposedDropdownMenu(
+                    expanded = expanded,
+                    onDismissRequest = { expanded = false }
+                ) {
+                    CategoryMenuItems(
+                        categories = categories,
+                        isIncome = isIncome,
+                        onSelected = {
+                            pickedCategory = it.name
+                            expanded = false
+                        }
+                    )
+                }
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(Spacing.sm, Alignment.End)
+            ) {
+                TextButton(onClick = onDismiss) {
+                    Text(stringResource(R.string.txn_detail_action_cancel))
+                }
+                Button(onClick = {
+                    viewModel.addBalanceAdjustment(merchant, pickedCategory)
+                    onDismiss()
+                }) {
+                    Text(stringResource(R.string.txn_detail_adjustment_add))
+                }
             }
         }
     }
@@ -2111,7 +2611,7 @@ private fun GroupBottomSheet(
                 .padding(bottom = Dimensions.Padding.content)
         ) {
             Text(
-                text = "Transaction Group",
+                text = stringResource(R.string.txn_detail_group_title),
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.SemiBold,
                 modifier = Modifier.padding(bottom = Spacing.md)
@@ -2126,7 +2626,7 @@ private fun GroupBottomSheet(
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
                     Text(
-                        text = "Current: ${currentGroup.name}",
+                        text = stringResource(R.string.txn_detail_group_current, currentGroup.name),
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -2134,7 +2634,7 @@ private fun GroupBottomSheet(
                         onRemoveFromGroup()
                         onDismiss()
                     }) {
-                        Text("Remove", color = MaterialTheme.colorScheme.error)
+                        Text(stringResource(R.string.txn_detail_group_remove), color = MaterialTheme.colorScheme.error)
                     }
                 }
                 HorizontalDivider(modifier = Modifier.padding(bottom = Spacing.md))
@@ -2143,7 +2643,7 @@ private fun GroupBottomSheet(
             val otherGroups = availableGroups.filter { it.id != currentGroup?.id }
             if (otherGroups.isNotEmpty()) {
                 Text(
-                    text = if (currentGroup != null) "Move to group" else "Add to group",
+                    text = if (currentGroup != null) stringResource(R.string.txn_detail_group_move_to) else stringResource(R.string.txn_detail_menu_add_to_group),
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(bottom = Spacing.sm)
@@ -2176,7 +2676,7 @@ private fun GroupBottomSheet(
                 OutlinedTextField(
                     value = newGroupName,
                     onValueChange = { newGroupName = it },
-                    label = { Text("Group name") },
+                    label = { Text(stringResource(R.string.txn_detail_group_name)) },
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true,
                     trailingIcon = {
@@ -2188,7 +2688,7 @@ private fun GroupBottomSheet(
                             },
                             enabled = newGroupName.isNotBlank()
                         ) {
-                            Icon(Icons.Default.Check, contentDescription = "Create")
+                            Icon(Icons.Default.Check, contentDescription = stringResource(R.string.txn_detail_group_create))
                         }
                     }
                 )
@@ -2203,129 +2703,39 @@ private fun GroupBottomSheet(
                         modifier = Modifier.size(Dimensions.Icon.small)
                     )
                     Spacer(modifier = Modifier.width(Spacing.xs))
-                    Text("Create new group")
+                    Text(stringResource(R.string.txn_detail_group_create_new))
                 }
             }
         }
     }
 }
+@androidx.annotation.StringRes
+internal fun transactionTypeLabel(type: TransactionType): Int = when (type) {
+    TransactionType.INCOME -> R.string.txn_type_income
+    TransactionType.EXPENSE -> R.string.txn_type_expense
+    TransactionType.CREDIT -> R.string.txn_type_credit
+    TransactionType.TRANSFER -> R.string.txn_type_transfer
+    TransactionType.INVESTMENT -> R.string.txn_type_investment
+}
 
-@Composable
-private fun FireflySyncStatusSection(
-    viewModel: TransactionDetailViewModel
-) {
-    // Sync state lives in the add-on sidecar DB; the app row knows nothing
-    // about Firefly anymore.
-    val state by viewModel.fireflyState.collectAsState()
-    val hasExternalId = !state?.externalId.isNullOrBlank()
-
-    SectionHeaderV2(title = "Firefly III Sync")
-
-    PennyWiseCard {
-        Column(modifier = Modifier.padding(Spacing.md)) {
-            when {
-                !state?.lastError.isNullOrBlank() -> {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            Icons.Default.Error,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.error,
-                            modifier = Modifier.size(20.dp)
-                        )
-                        Spacer(Modifier.width(8.dp))
-                        Text(
-                            "Sync failed",
-                            color = MaterialTheme.colorScheme.error,
-                            fontWeight = FontWeight.SemiBold
-                        )
-                    }
-                    Spacer(Modifier.height(4.dp))
-                    Text(
-                        state?.lastError.orEmpty(),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    if (hasExternalId) {
-                        Text(
-                            "External ID: ${state?.externalId}",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                    Spacer(Modifier.height(8.dp))
-                    OutlinedButton(
-                        onClick = {
-                            viewModel.syncToFirefly()
-                        },
-                        modifier = Modifier.align(Alignment.End)
-                    ) {
-                        Text("Retry Sync")
-                    }
-                }
-                state?.syncedAt != null -> {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            Icons.Default.CheckCircle,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(20.dp)
-                        )
-                        Spacer(Modifier.width(8.dp))
-                        Text(
-                            "Synced to Firefly",
-                            color = MaterialTheme.colorScheme.primary,
-                            fontWeight = FontWeight.SemiBold
-                        )
-                    }
-                    Text(
-                        "Synced on ${state?.syncedAt?.format(DateTimeFormatter.ofPattern("dd MMM yyyy, HH:mm"))}",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    if (hasExternalId) {
-                        Text(
-                            "External ID: ${state?.externalId}",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                    Spacer(Modifier.height(8.dp))
-                    OutlinedButton(
-                        onClick = {
-                            viewModel.syncToFirefly()
-                        },
-                        modifier = Modifier.align(Alignment.End)
-                    ) {
-                        Text("Resync")
-                    }
-                }
-                else -> {
-                    // Never attempted
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            Icons.Default.CloudSync,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.outline,
-                            modifier = Modifier.size(20.dp)
-                        )
-                        Spacer(Modifier.width(8.dp))
-                        Text(
-                            "Not synced to Firefly",
-                            color = MaterialTheme.colorScheme.outline,
-                            fontWeight = FontWeight.SemiBold
-                        )
-                    }
-                    Spacer(Modifier.height(8.dp))
-                    Button(
-                        onClick = {
-                            viewModel.syncToFirefly()
-                        },
-                        modifier = Modifier.align(Alignment.End)
-                    ) {
-                        Text("Sync to Firefly")
-                    }
-                }
-            }
-        }
+/**
+ * The account an edit field's [accountNumber] (and [bankName]) refers to (#876).
+ * Same bank and number first; failing that, the one account with that number.
+ * The number must match whole — a short or empty last-4 used to suffix-match
+ * every account, so picking HDFC ••1155 could show some other account.
+ */
+internal fun List<TransactionDetailViewModel.AccountInfo>.matchFor(
+    accountNumber: String?,
+    bankName: String?
+): TransactionDetailViewModel.AccountInfo? {
+    // A blank number names an account only together with its bank: a Cash
+    // account added without a number is ("Cash", "") (#913).
+    if (accountNumber.isNullOrBlank()) {
+        return if (accountNumber != null && bankName != null) find { it.accountLast4 == accountNumber && it.bankName == bankName } else null
     }
+    val sameNumber = filter {
+        it.accountLast4 == accountNumber ||
+            (it.accountLast4.length >= 4 && accountNumber.endsWith(it.accountLast4))
+    }
+    return bankName?.let { bank -> sameNumber.find { it.bankName == bank } } ?: sameNumber.singleOrNull()
 }

@@ -1,6 +1,12 @@
 package com.pennywiseai.tracker.ui.components.cards
 
+import com.pennywiseai.tracker.utils.AppDates
+
+import android.content.res.Resources
+import androidx.compose.ui.platform.LocalContext
+import com.pennywiseai.tracker.R
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -9,9 +15,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalView
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.dp
 import android.view.HapticFeedbackConstants
 import com.pennywiseai.tracker.data.contacts.LocalMerchantDisplay
 import com.pennywiseai.tracker.data.database.entity.ProfileEntity
@@ -19,12 +23,14 @@ import com.pennywiseai.tracker.data.database.entity.TransactionEntity
 import com.pennywiseai.tracker.data.database.entity.TransactionType
 import com.pennywiseai.tracker.ui.LocalNavAnimatedVisibilityScope
 import com.pennywiseai.tracker.ui.LocalSharedTransitionScope
+import com.pennywiseai.tracker.ui.sharedElementIcon
 import com.pennywiseai.tracker.ui.components.BrandIcon
 import com.pennywiseai.tracker.ui.theme.*
 import com.pennywiseai.tracker.utils.CurrencyFormatter
 import com.pennywiseai.tracker.utils.formatAmount
 import java.math.BigDecimal
 import java.time.format.DateTimeFormatter
+import com.pennywiseai.tracker.ui.icons.categoryLabel
 
 @Composable
 fun TransactionItem(
@@ -32,9 +38,14 @@ fun TransactionItem(
     convertedAmount: BigDecimal? = null,
     displayCurrency: String? = null,
     showDate: Boolean = true,
+    showTypeLabel: Boolean = true,
     listItemPosition: ListItemPosition = ListItemPosition.Single,
     profileAccountKeys: Map<Long, Set<String>> = emptyMap(),
     onClick: () -> Unit = {},
+    /** Optional long-press handler — used for bulk-edit selection entry. */
+    onLongClick: (() -> Unit)? = null,
+    /** Overrides the row's container colour (e.g. for selected state). */
+    containerColor: androidx.compose.ui.graphics.Color? = null,
     modifier: Modifier = Modifier,
 ) {
     val view = LocalView.current
@@ -49,9 +60,7 @@ fun TransactionItem(
         }
     }
 
-    val dateTimeFormatter = remember(showDate) {
-        DateTimeFormatter.ofPattern(if (showDate) "d MMM \u00B7 h:mm a" else "h:mm a")
-    }
+    val dateTimeFormatter = if (showDate) AppDates.dayMonthTimeFormatter() else AppDates.pattern("h:mm a")
     val dateTimeText = remember(transaction.dateTime, dateTimeFormatter) {
         transaction.dateTime.format(dateTimeFormatter)
     }
@@ -66,32 +75,45 @@ fun TransactionItem(
         effectiveProfileId == ProfileEntity.BUSINESS_ID
     }
 
-    // Prefer a user-written description over the parsed merchant name as the
-    // row heading — UPI merchant strings are often cryptic VPAs and a description,
-    // when present, is what the user actually wrote about the transaction. (#383)
+    // User-written description, if present, is surfaced as the LEAD segment of
+    // the subtitle (kept short) — not as the title. Promoting it to title made
+    // casual notes ("movie night with sarah") read as inconsistent next to
+    // brand-name merchants ("Uber", "Netflix") and routinely got truncated. The
+    // merchant stays the visual heading; the description is a small contextual
+    // tag below. (#383)
     val description = transaction.description?.takeIf { it.isNotBlank() }
 
-    val subtitle = remember(transaction, dateTimeText, isEffectivelyBusiness) {
+    val resources = LocalContext.current.resources
+    val categoryText = categoryLabel(transaction.category)
+    val subtitle = remember(transaction, categoryText, dateTimeText, isEffectivelyBusiness) {
         buildList {
-            // When the title shows the description, keep the merchant visible here so
-            // the user still sees who the transaction was with.
-            if (description != null) add(transaction.merchantName)
+            if (description != null) add(description)
             add(dateTimeText)
             if (transaction.category.isNotBlank() &&
                 !transaction.category.equals("Uncategorized", ignoreCase = true)
             ) {
-                add(transaction.category)
+                add(categoryText)
             }
-            when (transaction.transactionType) {
-                TransactionType.CREDIT -> add("Credit")
-                TransactionType.TRANSFER -> add("Transfer")
-                TransactionType.INVESTMENT -> add("Investment")
-                else -> {}
+
+            if (showTypeLabel) {
+                when (transaction.transactionType) {
+                    TransactionType.CREDIT -> add(resources.getString(R.string.txn_item_tag_credit))
+                    TransactionType.TRANSFER -> {
+                        if (transferTitleOverride(transaction, resources) == null) {
+                            add(resources.getString(R.string.txn_item_tag_transfer))
+                        }
+                    }
+                    TransactionType.INVESTMENT -> add(resources.getString(R.string.txn_item_tag_investment))
+                    else -> {}
+                }
             }
-            if (transaction.isRecurring) add("Recurring")
-            if (isEffectivelyBusiness) add("Business")
+            if (transaction.isRecurring) add(resources.getString(R.string.txn_item_tag_recurring))
+            if (isEffectivelyBusiness) add(resources.getString(R.string.txn_item_tag_business))
+            // Mark rows the user excluded from analytics so it's visible in the
+            // list which ones are skipped by spending stats (#451).
+            if (transaction.excludedFromAnalytics) add(resources.getString(R.string.txn_item_tag_excluded))
             transaction.balanceAfter?.let { balance ->
-                add("Bal ${CurrencyFormatter.formatCurrency(balance, transaction.currency)}")
+                add(resources.getString(R.string.txn_item_balance_after, CurrencyFormatter.formatCurrency(balance, transaction.currency)))
             }
         }.joinToString(" \u00B7 ")
     }
@@ -114,25 +136,31 @@ fun TransactionItem(
     val animatedVisibilityScope = LocalNavAnimatedVisibilityScope.current
     val merchantDisplay = LocalMerchantDisplay.current
 
+    // For a paired self-transfer row, the event ("Transfer → 9999" /
+    // "Transfer from 1234") is more informative than the merchant name (often
+    // the user's own contact name), and stops the two legs from looking like
+    // duplicate rows in the list. Falls back to merchant otherwise.
+    val transferTitle = transferTitleOverride(transaction, resources)
+
     ListItemCardV2(
-        title = description ?: merchantDisplay(transaction.merchantName) ?: transaction.merchantName,
+        title = transferTitle ?: merchantDisplay(transaction.merchantName) ?: transaction.merchantName,
         subtitle = subtitle,
-        amount = "$amountPrefix$formattedAmount",
+        amount = CurrencyFormatter.signed(amountPrefix, formattedAmount),
         amountColor = amountColor,
         shape = listItemPosition.toShape(),
-        contentPadding = 14.dp,
+        contentPadding = Dimensions.Padding.cardCompact,
         onClick = {
             view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
             onClick()
         },
+        onLongClick = onLongClick,
+        containerColor = containerColor,
         modifier = modifier,
         leadingContent = {
             val iconModifier = if (sharedTransitionScope != null && animatedVisibilityScope != null) {
                 with(sharedTransitionScope) {
-                    Modifier.sharedElement(
-                        sharedTransitionScope.rememberSharedContentState(
-                            key = "brand_icon_${transaction.id}"
-                        ),
+                    sharedElementIcon(
+                        key = "brand_icon_${transaction.id}",
                         animatedVisibilityScope = animatedVisibilityScope
                     )
                 }
@@ -143,23 +171,26 @@ fun TransactionItem(
                 merchantName = transaction.merchantName,
                 modifier = iconModifier,
                 size = Dimensions.Icon.list,
-                showBackground = true
+                showBackground = true,
+                category = transaction.category
             )
         },
         trailingContent = {
             if (convertedAmount != null && displayCurrency != null) {
-                Column(horizontalAlignment = Alignment.End) {
+                Column(
+                    horizontalAlignment = Alignment.End,
+                    verticalArrangement = Arrangement.spacedBy(Spacing.xxs)
+                ) {
                     Text(
-                        text = "$amountPrefix${CurrencyFormatter.formatCurrency(convertedAmount, displayCurrency)}",
-                        style = MaterialTheme.typography.bodyLarge,
-                        fontWeight = FontWeight.Bold,
+                        text = CurrencyFormatter.signed(amountPrefix, CurrencyFormatter.formatCurrency(convertedAmount, displayCurrency)),
+                        style = PennyWiseText.amountRow,
                         color = amountColor,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
                     Text(
                         text = "(${transaction.formatAmount()})",
-                        style = MaterialTheme.typography.bodySmall,
+                        style = PennyWiseText.amountSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
@@ -167,9 +198,8 @@ fun TransactionItem(
                 }
             } else {
                 Text(
-                    text = "$amountPrefix$formattedAmount",
-                    style = MaterialTheme.typography.bodyLarge,
-                    fontWeight = FontWeight.Bold,
+                    text = CurrencyFormatter.signed(amountPrefix, formattedAmount),
+                    style = PennyWiseText.amountRow,
                     color = amountColor,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
@@ -177,4 +207,24 @@ fun TransactionItem(
             }
         }
     )
+}
+
+/**
+ * For TRANSFER rows that have `fromAccount` and `toAccount` populated,
+ * synthesise a title that describes the event (which leg + the other
+ * account's last-4) rather than the merchant. Returns null for any other
+ * row, in which case the default merchant-as-title rendering wins.
+ */
+private fun transferTitleOverride(transaction: TransactionEntity, resources: Resources): String? {
+    if (transaction.transactionType != TransactionType.TRANSFER) return null
+    val mine = transaction.accountNumber
+    val from = transaction.fromAccount
+    val to = transaction.toAccount
+    return when {
+        from != null && to != null && mine == from -> resources.getString(R.string.txn_item_transfer_to, to.takeLast(4))
+        from != null && to != null && mine == to -> resources.getString(R.string.txn_item_transfer_from, from.takeLast(4))
+        to != null && mine != to -> resources.getString(R.string.txn_item_transfer_to, to.takeLast(4))
+        from != null && mine != from -> resources.getString(R.string.txn_item_transfer_from, from.takeLast(4))
+        else -> null
+    }
 }

@@ -56,7 +56,6 @@ fun FireflyFailedSyncsScreen(
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
                     }
                 },
-                hasActionButton = failedCount > 0,
                 actionContent = {
                     if (failedCount > 0) {
                         IconButton(

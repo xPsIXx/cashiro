@@ -3,8 +3,10 @@ package com.pennywiseai.tracker.data.backup
 import com.pennywiseai.tracker.data.database.SCHEMA_VERSION
 import com.pennywiseai.tracker.data.database.entity.*
 import kotlinx.serialization.decodeFromString
+import com.pennywiseai.tracker.data.database.entity.builtinKey
 import kotlinx.serialization.encodeToString
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -14,6 +16,17 @@ import java.time.LocalDate
 import java.time.LocalDateTime
 
 class BackupModelsTest {
+
+    @Test
+    fun transferBanksSurviveBackupRoundtrip() {
+        val transaction = TransactionEntity(amount = BigDecimal.ONE, merchantName = "Example transfer",
+            category = "Transfer", transactionType = TransactionType.TRANSFER,
+            dateTime = LocalDateTime.of(2026, 1, 1, 0, 0), transactionHash = "synthetic-transfer-backup",
+            fromAccount = "000", toAccount = "1000", fromBankName = "Example Bank", toBankName = "Another Bank")
+        val restored = backupJson.decodeFromString<TransactionEntity>(backupJson.encodeToString(transaction))
+        assertEquals(transaction, restored)
+    }
+
 
     @Test
     fun backupSerializationRoundtripWithAllFields() {
@@ -41,30 +54,28 @@ class BackupModelsTest {
             ),
             database = DatabaseSnapshot(
                 transactions = listOf(
-                    transactionToJsonElement(
-                        TransactionEntity(
-                            id = 1,
-                            amount = BigDecimal("100.0"),
-                            merchantName = "Test Merchant",
-                            category = "Food",
-                            transactionType = TransactionType.EXPENSE,
-                            dateTime = LocalDateTime.of(2024, 1, 1, 10, 0),
-                            description = "Test description",
-                            smsBody = "Test SMS",
-                            bankName = "Test Bank",
-                            smsSender = "TEST",
-                            accountNumber = "1234567890",
-                            balanceAfter = BigDecimal("1000.0"),
-                            transactionHash = "hash123",
-                            isRecurring = false,
-                            isDeleted = false,
-                            createdAt = LocalDateTime.now(),
-                            updatedAt = LocalDateTime.now(),
-                            currency = "INR",
-                            fromAccount = null,
-                            toAccount = null,
-                            reference = null
-                        )
+                    TransactionEntity(
+                        id = 1,
+                        amount = BigDecimal("100.0"),
+                        merchantName = "Test Merchant",
+                        category = "Food",
+                        transactionType = TransactionType.EXPENSE,
+                        dateTime = LocalDateTime.of(2024, 1, 1, 10, 0),
+                        description = "Test description",
+                        smsBody = "Test SMS",
+                        bankName = "Test Bank",
+                        smsSender = "TEST",
+                        accountNumber = "1234567890",
+                        balanceAfter = BigDecimal("1000.0"),
+                        transactionHash = "hash123",
+                        isRecurring = false,
+                        isDeleted = false,
+                        createdAt = LocalDateTime.now(),
+                        updatedAt = LocalDateTime.now(),
+                        currency = "INR",
+                        fromAccount = null,
+                        toAccount = null,
+                        reference = null
                     )
                 ),
                 categories = listOf(
@@ -291,7 +302,7 @@ class BackupModelsTest {
             metadata = BackupMetadata(
                 exportId = "loans-groups-test",
                 appVersion = "test",
-                databaseVersion = 47,
+                databaseVersion = SCHEMA_VERSION,
                 device = "Test",
                 androidVersion = 30,
                 statistics = BackupStatistics(
@@ -305,7 +316,7 @@ class BackupModelsTest {
                 )
             ),
             database = DatabaseSnapshot(
-                transactions = listOf(transactionToJsonElement(transactionLinkedToLoanAndGroup)),
+                transactions = listOf(transactionLinkedToLoanAndGroup),
                 categories = emptyList(),
                 cards = emptyList(),
                 accountBalances = emptyList(),
@@ -347,7 +358,11 @@ class BackupModelsTest {
         assertEquals(LoanStatus.SETTLED, deserializedSettled.status)
         assertEquals(LoanDirection.BORROWED, deserializedSettled.direction)
         assertEquals(BigDecimal.ZERO, deserializedSettled.remainingAmount)
-        assertNotNull(deserializedSettled.settledAt)
+        // Equality (not just non-null) — guards against silent timestamp drift
+        // through the LocalDateTime serializer.
+        assertEquals(settledLoan.settledAt, deserializedSettled.settledAt)
+        assertEquals(settledLoan.createdAt, deserializedSettled.createdAt)
+        assertEquals(settledLoan.updatedAt, deserializedSettled.updatedAt)
 
         // Transaction group round-trips with every field intact.
         assertEquals(1, deserialized.database.transactionGroups.size)
@@ -358,7 +373,7 @@ class BackupModelsTest {
 
         // The transaction's loan_id / group_id still match the deserialised
         // entities, so the importer can resolve the foreign-key references.
-        val deserializedTxn = jsonElementToTransaction(deserialized.database.transactions[0])
+        val deserializedTxn = deserialized.database.transactions[0]
         assertEquals(activeLoan.id, deserializedTxn.loanId)
         assertEquals(group.id, deserializedTxn.groupId)
     }
@@ -467,11 +482,13 @@ class BackupModelsTest {
         val backup = backupJson.decodeFromString<PennyWiseBackup>(json)
 
         // Transaction: newer non-null columns fall back to their defaults.
-        val tx = jsonElementToTransaction(backup.database.transactions.single())
+        val tx = backup.database.transactions.single()
         assertEquals("Old Merchant", tx.merchantName)
         assertEquals(false, tx.isDeleted)        // default
         assertEquals("INR", tx.currency)          // default
         assertNull(tx.profileId)                  // nullable default
+        assertNull(tx.fromBankName)
+        assertNull(tx.toBankName)
 
         // Subscription: billingCycle + direction were added later — must
         // default, not crash.
@@ -485,6 +502,268 @@ class BackupModelsTest {
         assertTrue(backup.database.loans.isEmpty())
         assertTrue(backup.database.budgets.isEmpty())
         assertTrue(backup.database.profiles.isEmpty())
+    }
+
+    /**
+     * #570 regression. An older backup's subscription predates the
+     * `account_last4` column (which pairs with `bank_name` to identify the
+     * funding account), so the key is simply absent. It must default to null,
+     * not crash the restore. A second row that *does* carry the key must
+     * round-trip its value.
+     */
+    @Test
+    fun oldBackupMissingAccountLast4_defaultsToNull() {
+        val json = """
+        {
+          "database": {
+            "subscriptions": [
+              {
+                "id": 9,
+                "merchantName": "Netflix",
+                "amount": "499.00",
+                "nextPaymentDate": "2023-06-01",
+                "bankName": "HDFC"
+              },
+              {
+                "id": 10,
+                "merchantName": "Spotify",
+                "amount": "119.00",
+                "nextPaymentDate": "2023-06-05",
+                "bankName": "HDFC",
+                "accountLast4": "4321"
+              }
+            ]
+          }
+        }
+        """.trimIndent()
+
+        val subs = backupJson.decodeFromString<PennyWiseBackup>(json)
+            .database.subscriptions
+
+        // Older row: account_last4 key absent → default null, no crash.
+        val netflix = subs.single { it.merchantName == "Netflix" }
+        assertNull(netflix.accountLast4)
+        assertEquals("HDFC", netflix.bankName)
+
+        // Newer row: value round-trips.
+        val spotify = subs.single { it.merchantName == "Spotify" }
+        assertEquals("4321", spotify.accountLast4)
+    }
+
+    /**
+     * #509 regression. An older backup's account_balances row predates the
+     * per-account `lowBalanceThreshold` column, so the key is simply absent.
+     * It must default to null (alert off), not crash the restore. A second row
+     * that *does* carry the key must round-trip its BigDecimal value.
+     */
+    @Test
+    fun oldBackupMissingLowBalanceThreshold_defaultsToNull() {
+        val json = """
+        {
+          "database": {
+            "account_balances": [
+              {
+                "id": 1,
+                "bankName": "Test Bank",
+                "accountLast4": "1234",
+                "balance": "1500.00",
+                "timestamp": "2024-01-01T10:00:00"
+              },
+              {
+                "id": 2,
+                "bankName": "Test Bank",
+                "accountLast4": "5678",
+                "balance": "200.00",
+                "timestamp": "2024-01-01T10:00:00",
+                "lowBalanceThreshold": "500.00"
+              }
+            ]
+          }
+        }
+        """.trimIndent()
+
+        val balances = backupJson.decodeFromString<PennyWiseBackup>(json)
+            .database.accountBalances
+
+        // Older row without the key → default (no alert set).
+        val legacy = balances.first { it.id == 1L }
+        assertNull(legacy.lowBalanceThreshold)
+        // Other defaulted fields still default too.
+        assertNull(legacy.creditLimit)
+        assertNull(legacy.alias)
+
+        // Newer row carrying the key round-trips its BigDecimal value.
+        val withThreshold = balances.first { it.id == 2L }
+        assertEquals(BigDecimal("500.00"), withThreshold.lowBalanceThreshold)
+    }
+
+    /**
+     * #583 regression. An older backup predates the `merchant_aliases` table,
+     * so the key is simply absent from the database snapshot. It must default
+     * to an empty list (not null, not a crash) so the restore succeeds. A newer
+     * backup that *does* carry the table must round-trip its rows, and a row
+     * missing the newer `createdAt`/`updatedAt` keys must fall back to defaults
+     * rather than throwing.
+     */
+    @Test
+    fun oldBackupMissingMerchantAliases_defaultsToEmptyList() {
+        val json = """
+        {
+          "database": {
+            "merchant_mappings": [
+              { "merchantName": "xyz@upi", "category": "Food" }
+            ]
+          }
+        }
+        """.trimIndent()
+
+        val db = backupJson.decodeFromString<PennyWiseBackup>(json).database
+
+        // The whole table was omitted by the older format → empty, not null.
+        assertTrue(db.merchantAliases.isEmpty())
+        // The sibling table that existed before still decodes.
+        assertEquals(1, db.merchantMappings.size)
+    }
+
+    @Test
+    fun oldBackupCategoryWithoutSystemName_defaultsToNull() {
+        // Backups from before #823 have no systemName on categories.
+        val json = """
+        {
+          "database": {
+            "categories": [
+              { "name": "Food & Dining", "color": "#FC8019", "isSystem": true },
+              { "name": "Pets", "color": "#757575" }
+            ]
+          }
+        }
+        """.trimIndent()
+
+        val categories = backupJson.decodeFromString<PennyWiseBackup>(json).database.categories
+
+        assertEquals(listOf(null, null), categories.map { it.systemName })
+        // A system row from an old backup is still recognised as its own built-in.
+        assertEquals("Food & Dining", categories[0].builtinKey)
+        assertEquals(null, categories[1].builtinKey)
+    }
+
+    @Test
+    fun merchantAliases_roundTripAndTolerateMissingDates() {
+        val json = """
+        {
+          "database": {
+            "merchant_aliases": [
+              {
+                "merchantName": "xyz@upi",
+                "alias": "John's Store",
+                "createdAt": "2024-01-01T10:00:00",
+                "updatedAt": "2024-01-02T10:00:00"
+              },
+              {
+                "merchantName": "abc@ybl",
+                "alias": "Corner Shop"
+              }
+            ]
+          }
+        }
+        """.trimIndent()
+
+        val aliases = backupJson.decodeFromString<PennyWiseBackup>(json)
+            .database.merchantAliases
+
+        assertEquals(2, aliases.size)
+
+        val full = aliases.first { it.merchantName == "xyz@upi" }
+        assertEquals("John's Store", full.alias)
+        assertEquals(LocalDateTime.of(2024, 1, 1, 10, 0), full.createdAt)
+        assertEquals(LocalDateTime.of(2024, 1, 2, 10, 0), full.updatedAt)
+
+        // Row without the newer date keys → defaults applied, no crash.
+        val minimal = aliases.first { it.merchantName == "abc@ybl" }
+        assertEquals("Corner Shop", minimal.alias)
+        assertNotNull(minimal.createdAt)
+        assertNotNull(minimal.updatedAt)
+    }
+
+    /**
+     * #706 regression. An older backup predates the `recurring_transactions`
+     * table, so the key is absent — it must default to an empty list, not crash.
+     */
+    @Test
+    fun oldBackupMissingRecurringTransactions_defaultsToEmptyList() {
+        val json = """
+        {
+          "database": {
+            "merchant_mappings": [
+              { "merchantName": "xyz@upi", "category": "Food" }
+            ]
+          }
+        }
+        """.trimIndent()
+
+        val db = backupJson.decodeFromString<PennyWiseBackup>(json).database
+
+        assertTrue(db.recurringTransactions.isEmpty())
+    }
+
+    /**
+     * #706. A backup carrying recurring templates must round-trip every field,
+     * and a row missing newer keys must fall back to defaults rather than throw.
+     */
+    @Test
+    fun recurringTransactions_roundTripAndTolerateMissingFields() {
+        val json = """
+        {
+          "database": {
+            "recurring_transactions": [
+              {
+                "id": 5,
+                "merchantName": "Rent",
+                "amount": "1200.00",
+                "currency": "USD",
+                "category": "Bills",
+                "transactionType": "EXPENSE",
+                "frequency": "MONTHLY",
+                "dayOfMonth": 1,
+                "nextDueDate": "2026-09-01",
+                "isActive": true,
+                "note": "Landlord",
+                "profileId": 1,
+                "createdAt": "2026-08-01T10:00:00",
+                "updatedAt": "2026-08-01T10:00:00"
+              },
+              {
+                "merchantName": "Allowance"
+              }
+            ]
+          }
+        }
+        """.trimIndent()
+
+        val recurring = backupJson.decodeFromString<PennyWiseBackup>(json)
+            .database.recurringTransactions
+
+        assertEquals(2, recurring.size)
+
+        val full = recurring.first { it.merchantName == "Rent" }
+        assertEquals(java.math.BigDecimal("1200.00"), full.amount)
+        assertEquals("USD", full.currency)
+        assertEquals(
+            com.pennywiseai.tracker.data.database.entity.RecurringFrequency.MONTHLY,
+            full.frequency
+        )
+        assertEquals(1, full.dayOfMonth)
+        assertEquals(LocalDate.of(2026, 9, 1), full.nextDueDate)
+
+        // Minimal row: only the name provided → every other field defaults, no crash.
+        val minimal = recurring.first { it.merchantName == "Allowance" }
+        assertEquals("INR", minimal.currency)
+        assertEquals(
+            com.pennywiseai.tracker.data.database.entity.RecurringFrequency.MONTHLY,
+            minimal.frequency
+        )
+        assertTrue(minimal.isActive)
+        assertNotNull(minimal.nextDueDate)
     }
 
     /**
@@ -518,7 +797,7 @@ class BackupModelsTest {
 
         val backup = backupJson.decodeFromString<PennyWiseBackup>(json)
         assertEquals(1, backup.database.transactions.size)
-        assertEquals("Future", jsonElementToTransaction(backup.database.transactions.single()).merchantName)
+        assertEquals("Future", backup.database.transactions.single().merchantName)
     }
 
     /**
@@ -532,6 +811,8 @@ class BackupModelsTest {
 
         assertEquals(false, backup.preferences.developer.isDeveloperModeEnabled)
         assertEquals(6, backup.preferences.sms.smsScanMonths)
+        assertFalse(backup.preferences.sms.smsScanUseCustomDate)
+        assertNull(backup.preferences.sms.smsScanCustomDate)
         assertNull(backup.preferences.theme.isDarkThemeEnabled)
         assertEquals("", backup.metadata.exportId)
         assertTrue(backup.database.transactions.isEmpty())
@@ -564,5 +845,271 @@ class BackupModelsTest {
             .database.subscriptions.single()
         assertEquals("Monthly", sub.billingCycle)
         assertEquals(SubscriptionDirection.EXPENSE, sub.direction)
+    }
+
+    @Test
+    fun customSmsScanPreferences_roundTrip() {
+        val customDateMillis = 1_705_276_800_000L
+        val backup = PennyWiseBackup(
+            metadata = BackupMetadata(
+                exportId = "custom-sms-scan",
+                appVersion = "test",
+                databaseVersion = SCHEMA_VERSION,
+                device = "Test",
+                androidVersion = 30,
+                statistics = BackupStatistics(
+                    totalTransactions = 0,
+                    totalCategories = 0,
+                    totalCards = 0,
+                    totalSubscriptions = 0,
+                    dateRange = null
+                )
+            ),
+            database = DatabaseSnapshot(),
+            preferences = PreferencesSnapshot(
+                theme = ThemePreferences(isDarkThemeEnabled = null, isDynamicColorEnabled = false),
+                sms = SmsPreferences(
+                    hasSkippedSmsPermission = false,
+                    smsScanMonths = 3,
+                    lastScanTimestamp = null,
+                    lastScanPeriod = -2,
+                    smsScanUseCustomDate = true,
+                    smsScanCustomDate = customDateMillis,
+                ),
+                developer = DeveloperPreferences(isDeveloperModeEnabled = false, systemPrompt = null),
+                app = AppPreferences(
+                    hasShownScanTutorial = false,
+                    firstLaunchTime = null,
+                    hasShownReviewPrompt = false,
+                    lastReviewPromptTime = null
+                )
+            )
+        )
+
+        val deserialized = backupJson.decodeFromString<PennyWiseBackup>(backupJson.encodeToString(backup))
+
+        assertTrue(deserialized.preferences.sms.smsScanUseCustomDate)
+        assertEquals(customDateMillis, deserialized.preferences.sms.smsScanCustomDate)
+        assertEquals(-2, deserialized.preferences.sms.lastScanPeriod)
+    }
+
+    @Test
+    fun oldBackupMissingCustomSmsScanFields_fallsBackToDefaults() {
+        val json = """
+        {
+          "preferences": {
+            "sms": {
+              "sms_scan_months": 6,
+              "last_scan_period": 6
+            }
+          }
+        }
+        """.trimIndent()
+
+        val sms = backupJson.decodeFromString<PennyWiseBackup>(json).preferences.sms
+
+        assertEquals(6, sms.smsScanMonths)
+        assertFalse(sms.smsScanUseCustomDate)
+        assertNull(sms.smsScanCustomDate)
+    }
+
+    /**
+     * #839 regression. Backups written before receipt photos existed have no
+     * top-level `receipts` key (nor `total_receipts`); they must decode with an
+     * empty list, not crash.
+     */
+    @Test
+    fun oldBackupWithoutReceipts_defaultsToEmptyList() {
+        val json = """
+        {
+          "_format": "PennyWise Backup v1.2",
+          "metadata": { "statistics": { "total_transactions": 1 } },
+          "database": {
+            "transactions": [
+              {
+                "id": 1,
+                "amount": "10.00",
+                "merchantName": "Shop",
+                "category": "X",
+                "transactionType": "EXPENSE",
+                "dateTime": "2024-01-01T00:00:00",
+                "transactionHash": "r1",
+                "receiptPath": "receipts/receipt_1.jpg"
+              }
+            ]
+          }
+        }
+        """.trimIndent()
+
+        val backup = backupJson.decodeFromString<PennyWiseBackup>(json)
+        assertTrue(backup.receipts.isEmpty())
+        assertEquals(0, backup.metadata.statistics.totalReceipts)
+        assertEquals("receipts/receipt_1.jpg", backup.database.transactions.single().receiptPath)
+    }
+
+    @Test
+    fun receipts_roundTripBytes() {
+        val bytes = byteArrayOf(0xFF.toByte(), 0xD8.toByte(), 0, 1, 2, 127, -128)
+        val backup = PennyWiseBackup(
+            receipts = listOf(
+                BackupReceipt(
+                    path = "receipts/receipt_1.jpg",
+                    dataBase64 = java.util.Base64.getEncoder().encodeToString(bytes)
+                )
+            )
+        )
+        val json = backupJson.encodeToString(backup)
+        assertTrue(json.contains("\"receipts\""))
+
+        val restored = backupJson.decodeFromString<PennyWiseBackup>(json).receipts.single()
+        assertEquals("receipts/receipt_1.jpg", restored.path)
+        assertTrue(bytes.contentEquals(java.util.Base64.getDecoder().decode(restored.dataBase64)))
+    }
+
+    /** A receipt entry missing one of its own keys still decodes (defaults). */
+    @Test
+    fun receiptEntryMissingKeys_usesDefaults() {
+        val json = """{ "receipts": [ { "path": "receipts/a.jpg" }, {} ] }"""
+        val receipts = backupJson.decodeFromString<PennyWiseBackup>(json).receipts
+        assertEquals(2, receipts.size)
+        assertEquals("", receipts[0].dataBase64)
+        assertEquals("", receipts[1].path)
+    }
+
+    /**
+     * #914 regression. Backups written before savings goals have no `goals` /
+     * `goal_contributions` keys (nor the stat counters): they must decode with
+     * empty lists and zero counts, not crash.
+     */
+    @Test
+    fun oldBackupMissingGoals_defaultsToEmptyLists() {
+        val json = """
+        {
+          "_format": "PennyWise Backup v1.3",
+          "metadata": { "statistics": { "total_transactions": 1, "total_recurring_transactions": 0 } },
+          "database": {
+            "transactions": [
+              { "id": 3, "amount": "250.00", "merchantName": "Shop", "category": "Others",
+                "transactionType": "EXPENSE", "dateTime": "2026-09-01T10:00:00", "transactionHash": "h3" }
+            ],
+            "recurring_transactions": []
+          }
+        }
+        """.trimIndent()
+
+        val backup = backupJson.decodeFromString<PennyWiseBackup>(json)
+
+        assertTrue(backup.database.goals.isEmpty())
+        assertTrue(backup.database.goalContributions.isEmpty())
+        assertEquals(0, backup.metadata.statistics.totalGoals)
+        assertEquals(0, backup.metadata.statistics.totalGoalContributions)
+        assertEquals(1, backup.database.transactions.size)
+    }
+
+    /** #914. Goals and contributions keep every field, and a row missing keys falls back to defaults. */
+    @Test
+    fun goals_roundTripAndTolerateMissingFields() {
+        val goal = GoalEntity(
+            id = 4, uid = "g-uid", name = "Insurance", targetAmount = BigDecimal("24000.00"), currency = "INR",
+            dueDate = LocalDate.of(2027, 3, 31), color = "#2E7D32", alreadySaved = BigDecimal("5000"),
+            isArchived = true, createdAt = LocalDateTime.of(2026, 4, 1, 9, 30), updatedAt = LocalDateTime.of(2026, 5, 1, 9, 30)
+        )
+        val contribution = GoalContributionEntity(
+            id = 8, uid = "c-uid", goalId = 4, amount = BigDecimal("-41.50"), date = LocalDate.of(2026, 6, 2),
+            note = "Took some out", originalAmount = BigDecimal("-0.50"), originalCurrency = "USD", transactionId = 3,
+            createdAt = LocalDateTime.of(2026, 6, 2, 8, 0), updatedAt = LocalDateTime.of(2026, 6, 2, 8, 0)
+        )
+        val backup = PennyWiseBackup(
+            metadata = BackupMetadata(statistics = BackupStatistics(totalGoals = 1, totalGoalContributions = 1)),
+            database = DatabaseSnapshot(goals = listOf(goal), goalContributions = listOf(contribution))
+        )
+
+        val json = backupJson.encodeToString(backup)
+        assertTrue(json.contains("\"goals\""))
+        assertTrue(json.contains("\"goal_contributions\""))
+        assertTrue(json.contains("\"-41.50\"")) // BigDecimal stays a plain string
+        val restored = backupJson.decodeFromString<PennyWiseBackup>(json)
+        assertEquals(listOf(goal), restored.database.goals)
+        assertEquals(listOf(contribution), restored.database.goalContributions)
+        assertEquals(1, restored.metadata.statistics.totalGoals)
+        assertEquals(1, restored.metadata.statistics.totalGoalContributions)
+
+        val minimal = backupJson.decodeFromString<PennyWiseBackup>(
+            """{ "database": { "goals": [ { "name": "Trip" } ], "goal_contributions": [ { "goalId": 1, "amount": "10" } ] } }"""
+        ).database
+        with(minimal.goals.single()) {
+            assertEquals("INR", currency)
+            assertEquals(0, BigDecimal.ZERO.compareTo(alreadySaved))
+            assertFalse(isArchived)
+            assertTrue(uid.isNotBlank())
+        }
+        with(minimal.goalContributions.single()) {
+            assertNull(transactionId)
+            assertNull(originalAmount)
+            assertTrue(uid.isNotBlank())
+        }
+    }
+
+    /** #346. A split bill round-trips: its shares, the bill's lent total and your UPI ID. */
+    @Test
+    fun splitBill_roundTrips() {
+        val bill = TransactionEntity(
+            id = 3, amount = BigDecimal("1000.00"), merchantName = "Dinner", category = "Food",
+            transactionType = TransactionType.EXPENSE, dateTime = LocalDateTime.of(2026, 10, 1, 20, 0),
+            transactionHash = "h3", lentSharesTotal = BigDecimal("666.66")
+        )
+        val loan = LoanEntity(
+            id = 5, personName = "Alex", direction = LoanDirection.LENT,
+            originalAmount = BigDecimal("333.33"), remainingAmount = BigDecimal("333.33"),
+            createdAt = LocalDateTime.of(2026, 10, 1, 20, 1), updatedAt = LocalDateTime.of(2026, 10, 1, 20, 1)
+        )
+        val share = LoanShareEntity(id = 7, transactionId = 3, loanId = 5, amount = BigDecimal("333.33"), createdAt = LocalDateTime.of(2026, 10, 1, 20, 1))
+        val backup = PennyWiseBackup(
+            metadata = BackupMetadata(statistics = BackupStatistics(totalLoanShares = 1)),
+            database = DatabaseSnapshot(transactions = listOf(bill), loans = listOf(loan), loanShares = listOf(share)),
+            preferences = PreferencesSnapshot(app = AppPreferences(upiId = "you@okbank"))
+        )
+
+        val json = backupJson.encodeToString(backup)
+        assertTrue(json.contains("\"loan_shares\""))
+        assertTrue(json.contains("\"lentSharesTotal\":\"666.66\""))
+        val restored = backupJson.decodeFromString<PennyWiseBackup>(json)
+        assertEquals(listOf(bill), restored.database.transactions)
+        assertEquals(listOf(loan), restored.database.loans)
+        assertEquals(listOf(share), restored.database.loanShares)
+        assertEquals(1, restored.metadata.statistics.totalLoanShares)
+        assertEquals("you@okbank", restored.preferences.app.upiId)
+    }
+
+    /** #346. A backup from before split bills still restores: no shares, no lent total, no UPI ID. */
+    @Test
+    fun oldBackupMissingSplitBills_defaultsApply() {
+        val json = """
+        {
+          "_format": "PennyWise Backup v1.3",
+          "database": {
+            "transactions": [
+              { "id": 3, "amount": "250.00", "merchantName": "Shop", "category": "Others",
+                "transactionType": "EXPENSE", "dateTime": "2026-09-01T10:00:00", "transactionHash": "h3",
+                "loanId": 5, "loanContribution": "100" }
+            ]
+          },
+          "preferences": { "app": { "has_shown_scan_tutorial": true } }
+        }
+        """.trimIndent()
+
+        val backup = backupJson.decodeFromString<PennyWiseBackup>(json)
+
+        assertTrue(backup.database.loanShares.isEmpty())
+        assertEquals(0, backup.metadata.statistics.totalLoanShares)
+        assertNull(backup.database.transactions.single().lentSharesTotal)
+        assertNull(backup.preferences.app.upiId)
+
+        // A share missing keys falls back to defaults.
+        val minimal = backupJson.decodeFromString<PennyWiseBackup>("""{ "database": { "loan_shares": [ { "loanId": 1 } ] } }""")
+        with(minimal.database.loanShares.single()) {
+            assertEquals(0L, transactionId)
+            assertEquals(0, BigDecimal.ZERO.compareTo(amount))
+        }
     }
 }

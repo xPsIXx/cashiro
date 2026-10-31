@@ -43,7 +43,7 @@ data class AccountBalanceEntity(
     @ColumnInfo(name = "credit_limit")
     @Contextual
     val creditLimit: BigDecimal? = null,
-    
+
     @ColumnInfo(name = "is_credit_card", defaultValue = "0")
     val isCreditCard: Boolean = false,
     
@@ -54,7 +54,7 @@ data class AccountBalanceEntity(
     val sourceType: String? = null,  // TRANSACTION, SMS_BALANCE, MANUAL, CARD_LINK
 
     @ColumnInfo(name = "account_type")
-    val accountType: String? = null,  // SAVINGS, CURRENT, CREDIT, CASH
+    val accountType: String? = null,  // SAVINGS, CURRENT, CREDIT, CASH, LOAN
 
     @ColumnInfo(name = "created_at")
     @Contextual
@@ -70,5 +70,59 @@ data class AccountBalanceEntity(
     val profileId: Long = ProfileEntity.PERSONAL_ID,
 
     @ColumnInfo(name = "alias")
-    val alias: String? = null
-)
+    val alias: String? = null,
+
+    // Per-account low-balance alert threshold (#509). null = no alert set (off).
+    // Account-level (same value on every balance row for a bank_name/account_last4),
+    // like alias/profileId. @Contextual so the backup serializer emits the
+    // BigDecimal as a plain string and old backups without the key default to null.
+    @ColumnInfo(name = "lowBalanceThreshold")
+    @Contextual
+    val lowBalanceThreshold: BigDecimal? = null
+) {
+    /**
+     * Label to show wherever the user picks or reads this account: the user-set
+     * [alias] when one exists, otherwise [accountLabel]. An account renamed in
+     * Manage Accounts must be recognizable under that name everywhere — pickers
+     * that ignored the alias were the bug in #637.
+     */
+    val displayLabel: String
+        get() = alias?.takeIf { it.isNotBlank() } ?: accountLabel(bankName, accountLast4)
+
+    /** A bank loan account (home, car, personal loan) — not the person-to-person Loans feature. (#792) */
+    val isLoan: Boolean
+        get() = accountType.equals(LOAN_TYPE, ignoreCase = true)
+
+    /**
+     * The balance is an amount owed, not money held: credit cards and loan
+     * accounts. Spending raises it, a credit/payment lowers it, and it stays out
+     * of the spendable bank total. Drives every balance-sign and total decision,
+     * so a loan follows the credit-card rules without its own copy of them. (#792)
+     */
+    val isLiability: Boolean
+        get() = isCreditCard || isLoan
+
+    companion object {
+        // Sentinel account_last4 for mobile-money wallets (eMola, M-Pesa
+        // Mozambique) whose SMS has a running balance but no per-account number —
+        // the whole wallet is one account, keyed on bank_name. The UI renders
+        // this as the plain service name (no "••1234" suffix).
+        const val WALLET_ACCOUNT_MARKER = "WALLET"
+
+        /** Stored `account_type` of a bank loan account; see [isLoan]. */
+        const val LOAN_TYPE = "LOAN"
+
+        /**
+         * Human-readable label for an account. Mobile-money wallets have no
+         * account number (and a blank last4 is meaningless), so show just the
+         * name; otherwise "Name ••1234". Use this everywhere an account is
+         * labelled so the [WALLET_ACCOUNT_MARKER] never leaks into the UI.
+         */
+        fun accountLabel(name: String, accountLast4: String?): String =
+            if (accountLast4.isNullOrBlank() || accountLast4 == WALLET_ACCOUNT_MARKER) {
+                name
+            } else {
+                "$name ••$accountLast4"
+            }
+    }
+}

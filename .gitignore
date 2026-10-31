@@ -60,7 +60,14 @@ release.properties
 
 *.pem
 
-deploy.sh
+# Root-level deploy script may hold credentials; keep it local.
+# (Scoped to root so committed helper scripts like
+# pennywise-web/scripts/deploy.sh are still tracked.)
+/deploy.sh
+
+# Generated Docker build context for the web container (staged copy of
+# parser-core created by pennywise-web/scripts/deploy.sh).
+/pennywise-web/.parser-core/
 
 # IDE folders
 .idea
@@ -68,3 +75,32 @@ deploy.sh
 
 # VSCode build files
 parser-core/bin/*
+
+.antigravitycli/*
+# Local Play service-account key (used by scripts/upload-play.sh)
+play-store-key.json
+*play-store*.json
+
+# Local secrets / keys folder — manually backed up, NEVER committed
+secrets/
+
+# Local tooling (screenshot editor, agent skills) — not part of the app
+aso-screenshots/
+.agents/
+skills-lock.json
+
+# Release-notes generator (Claude Agent SDK) deps — package-lock.json is
+# committed for reproducible installs; only the installed modules are ignored.
+scripts/release-notes/node_modules/
+
+# Codegraph index
+.codegraph/
+
+# iOS fastlane env (ASC key/issuer IDs)
+iosApp/fastlane/.env
+
+# fastlane run artifact (regenerated every run)
+iosApp/fastlane/report.xml
+
+# git worktrees (superpowers SDD)
+.worktrees/

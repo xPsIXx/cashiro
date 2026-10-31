@@ -14,8 +14,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
-import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
+import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavHostController
@@ -123,7 +124,7 @@ fun PennyWiseNavHost(
                     navController.navigate(Faq) { launchSingleTop = true }
                 },
                 onNavigateToBudgets = {
-                    navController.navigate(BudgetGroups) { launchSingleTop = true }
+                    navController.navigate(BudgetGroups()) { launchSingleTop = true }
                 },
                 onNavigateToExchangeRates = {
                     navController.navigate(ExchangeRates) { launchSingleTop = true }
@@ -134,15 +135,24 @@ fun PennyWiseNavHost(
                 onNavigateToTransactionGroups = {
                     navController.navigate(TransactionGroups) { launchSingleTop = true }
                 },
-                onNavigateToFireflyFailedSyncs = {
-                    navController.navigate(FireflyFailedSyncs) { launchSingleTop = true }
+                onNavigateToWebhooks = {
+                    navController.navigate(Webhooks) { launchSingleTop = true }
                 },
-                onNavigateToFireflySettings = {
-                    navController.navigate(FireflySettings) { launchSingleTop = true }
-                },
-                onNavigateToDiagnostics = {
-                    navController.navigate(Diagnostics) { launchSingleTop = true }
+                onNavigateToAiAccess = {
+                    navController.navigate(AiAccess) { launchSingleTop = true }
                 }
+            )
+        }
+
+        composable<AiAccess> {
+            com.pennywiseai.tracker.ui.screens.settings.aiaccess.AiAccessScreen(
+                onNavigateBack = { navController.safePopBackStack() }
+            )
+        }
+
+        composable<Webhooks> {
+            com.pennywiseai.tracker.ui.screens.settings.webhooks.WebhooksScreen(
+                onNavigateBack = { navController.safePopBackStack() }
             )
         }
 
@@ -177,11 +187,22 @@ fun PennyWiseNavHost(
                         navController.navigate(LoanDetail(loanId)) {
                             launchSingleTop = true
                         }
+                    },
+                    onDuplicateTransaction = { sourceId ->
+                        navController.navigate(AddTransaction(sourceTransactionId = sourceId)) {
+                            launchSingleTop = true
+                        }
+                    },
+                    onNavigateToGoal = { goalId ->
+                        navController.navigate(GoalDetail(goalId)) { launchSingleTop = true }
+                    },
+                    onCreateGoal = {
+                        navController.navigate(GoalEdit()) { launchSingleTop = true }
                     }
                 )
             }
         }
-        
+
         composable<AddTransaction>(
             enterTransition = { fadeIn(tween(300)) + slideInVertically { it / 4 } },
             exitTransition = { fadeOut(tween(200)) },
@@ -204,48 +225,9 @@ fun PennyWiseNavHost(
             com.pennywiseai.tracker.ui.screens.unrecognized.UnrecognizedSmsScreen(
                 onNavigateBack = {
                     navController.safePopBackStack()
-                }
-            )
-        }
-
-        composable<FireflyFailedSyncs>(
-            enterTransition = { fadeIn(tween(300)) + slideInVertically { it / 4 } },
-            exitTransition = { fadeOut(tween(200)) },
-            popEnterTransition = { fadeIn(tween(300)) },
-            popExitTransition = { fadeOut(tween(200)) + slideOutVertically { it / 4 } }
-        ) {
-            com.pennywiseai.tracker.ui.screens.settings.FireflyFailedSyncsScreen(
-                onNavigateBack = {
-                    navController.safePopBackStack()
-                }
-            )
-        }
-
-        composable<FireflySettings>(
-            enterTransition = { fadeIn(tween(300)) + slideInVertically { it / 4 } },
-            exitTransition = { fadeOut(tween(200)) },
-            popEnterTransition = { fadeIn(tween(300)) },
-            popExitTransition = { fadeOut(tween(200)) + slideOutVertically { it / 4 } }
-        ) {
-            com.pennywiseai.tracker.ui.screens.settings.FireflySettingsScreen(
-                onNavigateBack = {
-                    navController.safePopBackStack()
                 },
-                onNavigateToFailedSyncs = {
-                    navController.navigate(FireflyFailedSyncs) { launchSingleTop = true }
-                }
-            )
-        }
-
-        composable<Diagnostics>(
-            enterTransition = { fadeIn(tween(300)) + slideInVertically { it / 4 } },
-            exitTransition = { fadeOut(tween(200)) },
-            popEnterTransition = { fadeIn(tween(300)) },
-            popExitTransition = { fadeOut(tween(200)) + slideOutVertically { it / 4 } }
-        ) {
-            com.pennywiseai.tracker.ui.screens.settings.DiagnosticScreen(
-                onNavigateBack = {
-                    navController.safePopBackStack()
+                onAddSuggestion = { draft ->
+                    navController.navigate(draft) { launchSingleTop = true }
                 }
             )
         }
@@ -282,6 +264,11 @@ fun PennyWiseNavHost(
                     navController.navigate(CreateRule(ruleId = ruleId)) {
                         launchSingleTop = true
                     }
+                },
+                onNavigateToDuplicateRule = { ruleId ->
+                    navController.navigate(CreateRule(duplicateFromId = ruleId)) {
+                        launchSingleTop = true
+                    }
                 }
             )
         }
@@ -295,21 +282,46 @@ fun PennyWiseNavHost(
             val createRule = backStackEntry.toRoute<CreateRule>()
             val rulesViewModel: com.pennywiseai.tracker.ui.viewmodel.RulesViewModel = hiltViewModel()
 
-            // Collect rules from the flow to find the existing rule
+            // Collect rules from the flow to find the rule being edited or duplicated.
             val rules by rulesViewModel.rules.collectAsStateWithLifecycle()
-            val existingRule = createRule.ruleId?.let { ruleId ->
-                rules.firstOrNull { it.id == ruleId }
+            val isEditing = createRule.ruleId != null
+
+            // Stable id for a duplicate, kept across recompositions/config changes.
+            val duplicateId = rememberSaveable { java.util.UUID.randomUUID().toString() }
+
+            // Edit prefills from the saved rule; duplicate prefills from the source but
+            // becomes a fresh rule (new id, "(copy)" name) so saving inserts a new one.
+            val prefillRule = when {
+                createRule.ruleId != null ->
+                    rules.firstOrNull { it.id == createRule.ruleId }
+                createRule.duplicateFromId != null ->
+                    rules.firstOrNull { it.id == createRule.duplicateFromId }?.let { source ->
+                        source.copy(
+                            id = duplicateId,
+                            name = "${source.name} (copy)",
+                            isSystemTemplate = false
+                        )
+                    }
+                else -> null
             }
+            val accounts by rulesViewModel.accounts.collectAsStateWithLifecycle()
 
             com.pennywiseai.tracker.ui.screens.rules.CreateRuleScreen(
                 onNavigateBack = {
                     navController.safePopBackStack()
                 },
                 onSaveRule = { rule ->
-                    rulesViewModel.createRule(rule)
+                    // Edit updates in place; create/duplicate inserts a new rule.
+                    if (isEditing) {
+                        rulesViewModel.updateRule(rule)
+                    } else {
+                        rulesViewModel.createRule(rule)
+                    }
                     navController.safePopBackStack()
                 },
-                existingRule = existingRule
+                existingRule = prefillRule,
+                isEditing = isEditing,
+                allAccounts = accounts
             )
         }
         
@@ -334,8 +346,9 @@ fun PennyWiseNavHost(
             exitTransition = { fadeOut(tween(200)) },
             popEnterTransition = { fadeIn(tween(300)) },
             popExitTransition = { fadeOut(tween(200)) + slideOutVertically { it / 4 } }
-        ) {
+        ) { backStackEntry ->
             com.pennywiseai.tracker.presentation.budgetgroups.BudgetGroupsScreen(
+                createGoalOnOpen = backStackEntry.toRoute<BudgetGroups>().createGoal,
                 onNavigateBack = {
                     navController.safePopBackStack()
                 },
@@ -344,11 +357,54 @@ fun PennyWiseNavHost(
                         launchSingleTop = true
                     }
                 },
+                onNavigateToHistory = { groupId, year, month ->
+                    navController.navigate(BudgetHistory(groupId, year, month)) {
+                        launchSingleTop = true
+                    }
+                },
                 onNavigateToCategory = { category, yearMonth, currency ->
                     navController.navigate(TransactionsWithFilter(category, yearMonth, currency)) {
                         launchSingleTop = true
                     }
+                },
+                onNavigateToGoal = { goalId ->
+                    navController.navigate(GoalDetail(goalId)) { launchSingleTop = true }
+                },
+                onNavigateToGoalEdit = { goalId ->
+                    navController.navigate(GoalEdit(goalId)) { launchSingleTop = true }
                 }
+            )
+        }
+
+        composable<GoalDetail>(
+            enterTransition = { fadeIn(tween(300)) + slideInVertically { it / 4 } },
+            exitTransition = { fadeOut(tween(200)) },
+            popEnterTransition = { fadeIn(tween(300)) },
+            popExitTransition = { fadeOut(tween(200)) + slideOutVertically { it / 4 } }
+        ) {
+            com.pennywiseai.tracker.presentation.goals.GoalDetailScreen(
+                onNavigateBack = { navController.safePopBackStack() },
+                onEdit = { goalId -> navController.navigate(GoalEdit(goalId)) { launchSingleTop = true } },
+                onOpenTransaction = { transactionId ->
+                    navController.navigate(TransactionDetail(transactionId)) { launchSingleTop = true }
+                },
+                // Repeat for next year opens the new copy in place of this one.
+                onOpenGoal = { goalId ->
+                    navController.navigate(GoalDetail(goalId)) {
+                        popUpTo<GoalDetail> { inclusive = true }
+                    }
+                }
+            )
+        }
+
+        composable<GoalEdit>(
+            enterTransition = { fadeIn(tween(300)) + slideInVertically { it / 4 } },
+            exitTransition = { fadeOut(tween(200)) },
+            popEnterTransition = { fadeIn(tween(300)) },
+            popExitTransition = { fadeOut(tween(200)) + slideOutVertically { it / 4 } }
+        ) {
+            com.pennywiseai.tracker.presentation.goals.GoalEditScreen(
+                onNavigateBack = { navController.safePopBackStack() }
             )
         }
 
@@ -362,6 +418,17 @@ fun PennyWiseNavHost(
                 onNavigateBack = {
                     navController.safePopBackStack()
                 }
+            )
+        }
+
+        composable<BudgetHistory>(
+            enterTransition = { fadeIn(tween(300)) + slideInVertically { it / 4 } },
+            exitTransition = { fadeOut(tween(200)) },
+            popEnterTransition = { fadeIn(tween(300)) },
+            popExitTransition = { fadeOut(tween(200)) + slideOutVertically { it / 4 } }
+        ) {
+            com.pennywiseai.tracker.presentation.budgetgroups.BudgetHistoryScreen(
+                onNavigateBack = { navController.safePopBackStack() }
             )
         }
 
@@ -379,6 +446,19 @@ fun PennyWiseNavHost(
                     navController.navigate(LoanDetail(loanId)) {
                         launchSingleTop = true
                     }
+                }
+            )
+        }
+
+        composable<RecurringTransactions>(
+            enterTransition = { fadeIn(tween(300)) + slideInVertically { it / 4 } },
+            exitTransition = { fadeOut(tween(200)) },
+            popEnterTransition = { fadeIn(tween(300)) },
+            popExitTransition = { fadeOut(tween(200)) + slideOutVertically { it / 4 } }
+        ) {
+            com.pennywiseai.tracker.presentation.recurring.RecurringTransactionsScreen(
+                onNavigateBack = {
+                    navController.safePopBackStack()
                 }
             )
         }
@@ -479,7 +559,7 @@ fun PennyWiseNavHost(
                     navController.navigate(TransactionDetail(transactionId)) { launchSingleTop = true }
                 },
                 onAddTransactionClick = {
-                    navController.navigate(AddTransaction) { launchSingleTop = true }
+                    navController.navigate(AddTransaction()) { launchSingleTop = true }
                 },
                 onNavigateToSettings = {
                     navController.navigate(Settings) { launchSingleTop = true }
