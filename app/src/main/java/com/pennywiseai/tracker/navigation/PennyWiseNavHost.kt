@@ -132,6 +132,12 @@ fun PennyWiseNavHost(
                 onNavigateToImportStatement = {
                     navController.navigate(ImportStatement) { launchSingleTop = true }
                 },
+                onNavigateToFireflySettings = {
+                    navController.navigate(FireflySettings) { launchSingleTop = true }
+                },
+                onNavigateToFireflyFailedSyncs = {
+                    navController.navigate(FireflyFailedSyncs) { launchSingleTop = true }
+                },
                 onNavigateToTransactionGroups = {
                     navController.navigate(TransactionGroups) { launchSingleTop = true }
                 },
@@ -147,6 +153,35 @@ fun PennyWiseNavHost(
         composable<AiAccess> {
             com.pennywiseai.tracker.ui.screens.settings.aiaccess.AiAccessScreen(
                 onNavigateBack = { navController.safePopBackStack() }
+            )
+        }
+
+        composable<FireflySettings>(
+            enterTransition = { fadeIn(tween(300)) + slideInVertically { it / 4 } },
+            exitTransition = { fadeOut(tween(200)) },
+            popEnterTransition = { fadeIn(tween(300)) },
+            popExitTransition = { fadeOut(tween(200)) + slideOutVertically { it / 4 } }
+        ) {
+            com.pennywiseai.tracker.ui.screens.settings.FireflySettingsScreen(
+                onNavigateBack = {
+                    navController.safePopBackStack()
+                },
+                onNavigateToFailedSyncs = {
+                    navController.navigate(FireflyFailedSyncs) { launchSingleTop = true }
+                }
+            )
+        }
+
+        composable<FireflyFailedSyncs>(
+            enterTransition = { fadeIn(tween(300)) + slideInVertically { it / 4 } },
+            exitTransition = { fadeOut(tween(200)) },
+            popEnterTransition = { fadeIn(tween(300)) },
+            popExitTransition = { fadeOut(tween(200)) + slideOutVertically { it / 4 } }
+        ) {
+            com.pennywiseai.tracker.ui.screens.settings.FireflyFailedSyncsScreen(
+                onNavigateBack = {
+                    navController.safePopBackStack()
+                }
             )
         }
 

@@ -71,11 +71,34 @@ class TransactionDetailViewModel @Inject constructor(
     private val ruleRepository: com.pennywiseai.tracker.domain.repository.RuleRepository,
     private val detectBalanceDiscrepancy: com.pennywiseai.tracker.domain.usecase.DetectBalanceDiscrepancyUseCase,
     private val goalRepository: com.pennywiseai.tracker.data.repository.GoalRepository,
+    private val fireflySyncEngine: com.pennywiseai.tracker.data.firefly.FireflySyncEngine,
     @dagger.hilt.android.qualifiers.ApplicationContext private val context: android.content.Context
 ) : ViewModel() {
     
     private val _transaction = MutableStateFlow<TransactionEntity?>(null)
     val transaction: StateFlow<TransactionEntity?> = _transaction.asStateFlow()
+
+    // ── Firefly III sync (add-on sidecar state; null = never synced) ──────
+    val fireflyState: StateFlow<com.pennywiseai.tracker.data.firefly.FireflyTransactionStateEntity?> = _transaction
+        .flatMapLatest { tx ->
+            if (tx == null) flowOf(null) else fireflySyncEngine.stateFor(tx.id)
+        }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
+
+    /** Manually sync (or retry) the current transaction to Firefly. */
+    fun syncToFirefly() {
+        val txn = _transaction.value ?: return
+        viewModelScope.launch {
+            try {
+                // Preserve splits when syncing from detail so they are not dropped remotely.
+                val splits = transactionRepository.getTransactionWithSplitsSync(txn.id)?.splits ?: emptyList()
+                fireflySyncEngine.syncTransaction(txn, splits)
+                _transaction.value = transactionRepository.getTransactionById(txn.id)
+            } catch (e: Exception) {
+                android.util.Log.w("TxnDetail", "Firefly sync failed for tx ${txn.id}: ${e.message}")
+            }
+        }
+    }
 
     private val _primaryCurrency = MutableStateFlow("INR")
     val primaryCurrency: StateFlow<String> = _primaryCurrency.asStateFlow()

@@ -90,6 +90,7 @@ import com.pennywiseai.tracker.ui.sharedElementIcon
 import com.pennywiseai.tracker.ui.components.BrandIcon
 import com.pennywiseai.tracker.ui.components.CategoryChip
 import com.pennywiseai.tracker.ui.components.CustomTitleTopAppBar
+import com.pennywiseai.tracker.ui.components.cards.PennyWiseCardV2
 import com.pennywiseai.tracker.ui.components.cards.SectionHeaderV2
 import com.pennywiseai.tracker.ui.components.SplitBreakdownCard
 import com.pennywiseai.tracker.ui.components.SplitEditor
@@ -416,6 +417,9 @@ fun TransactionDetailScreen(
                 splitWith = {
                     transaction?.let { SplitSection(splitViewModel, it, onOpenLoan = onNavigateToLoanDetail) }
                 },
+                fireflySync = {
+                    FireflySyncStatusSection(viewModel)
+                },
                 modifier = Modifier.padding(paddingValues)
             )
         }
@@ -577,6 +581,7 @@ private fun TransactionDetailContent(
     hazeState: HazeState,
     towardGoals: @Composable () -> Unit,
     splitWith: @Composable () -> Unit,
+    fireflySync: @Composable () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val scrollState = rememberScrollState()
@@ -624,7 +629,8 @@ private fun TransactionDetailContent(
                 onUnmarkLoanClick = onUnmarkLoanClick,
                 accountProfileId = accountProfileId,
                 towardGoals = towardGoals,
-                splitWith = splitWith
+                splitWith = splitWith,
+                fireflySync = fireflySync
             )
         }
     }
@@ -645,7 +651,8 @@ private fun TransactionReceipt(
     onUnmarkLoanClick: () -> Unit,
     accountProfileId: Long? = null,
     towardGoals: @Composable () -> Unit = {},
-    splitWith: @Composable () -> Unit = {}
+    splitWith: @Composable () -> Unit = {},
+    fireflySync: @Composable () -> Unit = {}
 ) {
     val isDark = isSystemInDarkTheme()
     val typeColor = when (transaction.transactionType) {
@@ -902,6 +909,8 @@ private fun TransactionReceipt(
         towardGoals()
 
         splitWith()
+
+        fireflySync()
 
         // ── Details Section ──
         Column(modifier = Modifier.fillMaxWidth()) {
@@ -2738,4 +2747,108 @@ internal fun List<TransactionDetailViewModel.AccountInfo>.matchFor(
             (it.accountLast4.length >= 4 && accountNumber.endsWith(it.accountLast4))
     }
     return bankName?.let { bank -> sameNumber.find { it.bankName == bank } } ?: sameNumber.singleOrNull()
+}
+
+/**
+ * Firefly III sync status for the current transaction. State comes from the
+ * add-on sidecar DB ([com.pennywiseai.tracker.data.firefly.FireflySyncEngine]).
+ */
+@Composable
+private fun FireflySyncStatusSection(viewModel: TransactionDetailViewModel) {
+    val state by viewModel.fireflyState.collectAsState()
+
+    SectionHeaderV2(title = "Firefly III Sync")
+    PennyWiseCardV2 {
+        Column(modifier = Modifier.padding(Spacing.md)) {
+            when {
+                !state?.lastError.isNullOrBlank() -> {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            Icons.Default.Error,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.size(Dimensions.Icon.small)
+                        )
+                        Spacer(Modifier.width(Spacing.xs))
+                        Text(
+                            "Sync failed",
+                            color = MaterialTheme.colorScheme.error,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        state?.lastError.orEmpty(),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedButton(
+                        onClick = { viewModel.syncToFirefly() },
+                        modifier = Modifier.align(Alignment.End)
+                    ) {
+                        Text("Retry Sync")
+                    }
+                }
+                state?.syncedAt != null -> {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            Icons.Default.CheckCircle,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(Dimensions.Icon.small)
+                        )
+                        Spacer(Modifier.width(Spacing.xs))
+                        Text(
+                            "Synced to Firefly",
+                            color = MaterialTheme.colorScheme.primary,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                    Text(
+                        "Synced on ${state?.syncedAt?.format(DateTimeFormatter.ofPattern("dd MMM yyyy, HH:mm"))}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    state?.externalId?.takeIf { it.isNotBlank() }?.let {
+                        Text(
+                            "External ID: $it",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedButton(
+                        onClick = { viewModel.syncToFirefly() },
+                        modifier = Modifier.align(Alignment.End)
+                    ) {
+                        Text("Resync")
+                    }
+                }
+                else -> {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            Icons.Default.CloudSync,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.outline,
+                            modifier = Modifier.size(Dimensions.Icon.small)
+                        )
+                        Spacer(Modifier.width(Spacing.xs))
+                        Text(
+                            "Not synced to Firefly",
+                            color = MaterialTheme.colorScheme.outline,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    Button(
+                        onClick = { viewModel.syncToFirefly() },
+                        modifier = Modifier.align(Alignment.End)
+                    ) {
+                        Text("Sync to Firefly")
+                    }
+                }
+            }
+        }
+    }
 }

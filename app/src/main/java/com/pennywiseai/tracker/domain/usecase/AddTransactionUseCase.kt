@@ -20,7 +20,8 @@ class AddTransactionUseCase @Inject constructor(
     private val database: PennyWiseDatabase,
     private val subscriptionRepository: SubscriptionRepository,
     private val accountBalanceRepository: AccountBalanceRepository,
-    private val tagRepository: TagRepository
+    private val tagRepository: TagRepository,
+    private val fireflySyncEngine: com.pennywiseai.tracker.data.firefly.FireflySyncEngine
 ) {
     suspend fun execute(
         amount: BigDecimal,
@@ -113,6 +114,14 @@ class AddTransactionUseCase @Inject constructor(
 
                 subscriptionRepository.insertSubscription(subscription)
             }
+
+            // Opt-in: push the manual transaction to Firefly III (add-on engine;
+            // runCatching keeps failures from rolling back the DB transaction).
+            if (transactionId != -1L) {
+                runCatching {
+                    fireflySyncEngine.onTransactionSaved(transaction.copy(id = transactionId))
+                }
+            }
         }
     }
     
@@ -184,6 +193,13 @@ class AddTransactionUseCase @Inject constructor(
 
             if (transactionId != -1L && tags.isNotEmpty()) {
                 tagRepository.setTagsForTransaction(transactionId, tags)
+            }
+
+            // Opt-in: push the transfer to Firefly III (add-on engine).
+            if (transactionId != -1L) {
+                runCatching {
+                    fireflySyncEngine.onTransactionSaved(transaction.copy(id = transactionId))
+                }
             }
         }
     }

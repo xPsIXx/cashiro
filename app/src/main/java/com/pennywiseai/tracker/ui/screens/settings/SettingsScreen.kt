@@ -114,6 +114,8 @@ fun SettingsScreen(
     onNavigateToExchangeRates: () -> Unit = {},
     onNavigateToAppearance: () -> Unit = {},
     onNavigateToImportStatement: () -> Unit = {},
+    onNavigateToFireflySettings: () -> Unit = {},
+    onNavigateToFireflyFailedSyncs: () -> Unit = {},
     onNavigateToWebhooks: () -> Unit = {},
     onNavigateToAiAccess: () -> Unit = {},
     settingsViewModel: SettingsViewModel = hiltViewModel(),
@@ -190,6 +192,10 @@ fun SettingsScreen(
     ) {
         permissionViewModel.refreshNotificationAccess()
     }
+    // Cashiro Firefly add-on: row subtitle state lives in the sidecar prefs.
+    val fireflySettingsViewModel: FireflySettingsViewModel = hiltViewModel()
+    val fireflySyncEnabled by fireflySettingsViewModel.fireflySyncEnabled.collectAsStateWithLifecycle(initialValue = false)
+
     // The recap is a notification: on Android 13+ turning it on asks for the
     // permission first, and a refusal leaves it off with a word on why.
     val dailySummaryPermissionLauncher = rememberLauncherForActivityResult(
@@ -600,6 +606,16 @@ fun SettingsScreen(
                     subtitle = stringResource(R.string.settings_manage_accounts_subtitle),
                     onClick = onNavigateToManageAccounts,
                     position = ListItemPosition.Top
+                )
+                // Cashiro Firefly add-on: dedicated settings screen.
+                SettingsNavItem(
+                    icon = Icons.Default.CloudSync,
+                    iconBgColor = MaterialTheme.colorScheme.tertiaryContainer,
+                    iconTint = MaterialTheme.colorScheme.onTertiaryContainer,
+                    title = "Firefly III Sync",
+                    subtitle = if (fireflySyncEnabled) "Auto-push transactions enabled" else "Connect your self-hosted Firefly",
+                    onClick = onNavigateToFireflySettings,
+                    position = ListItemPosition.Middle
                 )
                 SettingsNavItem(
                     icon = Icons.Default.Category,

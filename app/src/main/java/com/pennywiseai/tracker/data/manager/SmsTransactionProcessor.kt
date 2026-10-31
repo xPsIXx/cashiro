@@ -53,7 +53,8 @@ class SmsTransactionProcessor @Inject constructor(
     private val ruleEngine: RuleEngine,
     private val tagRepository: TagRepository,
     private val ignoredAccountsStore: IgnoredAccountsStore,
-    private val database: PennyWiseDatabase
+    private val database: PennyWiseDatabase,
+    private val fireflySyncEngine: com.pennywiseai.tracker.data.firefly.FireflySyncEngine
 ) {
     private val bankAccountMerges = BankAccountMergeStore(appContext)
     companion object {
@@ -283,6 +284,11 @@ class SmsTransactionProcessor @Inject constructor(
 
                 // Trigger widget refresh for the transaction-derived widgets
                 com.pennywiseai.tracker.widget.WidgetRefresher.refreshTransactionWidgets(appContext)
+
+                // Opt-in: push the SMS-derived transaction to Firefly III (add-on engine).
+                runCatching {
+                    fireflySyncEngine.onTransactionSaved(finalEntity.copy(id = rowId))
+                }
 
                 return ProcessingResult(true, transactionId = rowId)
             } else {
