@@ -152,6 +152,9 @@ All confirmed no impact on Firefly sync paths.
 - Transactions existing only in Firefly (e.g. pre-SMS era or manual older entries without Pennywise counterpart) are **unaffected** — logic only operates on local Pennywise transactions and matches via external_id; no deletions or modifications to Firefly-only data
 - Reinstall scenario: re-parsed SMS use same hash → same external_id → reconcile/full sync can match and mark without creating dups
 - Recurrence sync now resolves and sends `source_id`/`destination_id` (Firefly 6.x recurrence storage 500s with `Undefined array key` when only names are sent). Payee expense accounts are created on first contact, then reused. Verified live: recurrence create (201), read-back of amount/repetition fields, update (200), delete (204).
+- Fixed sidecar sync state never persisting on first sync: `FireflySyncDao.markSynced` was UPDATE-only, so the very first sync of a transaction updated zero rows and all sync/error bookkeeping (`syncedAt`, `fireflyTransactionId`, retry/error tracking) silently stayed empty. Now an upsert (INSERT … ON CONFLICT DO UPDATE). Caught by a new live JVM E2E (`FireflySyncEngineLiveE2eTest`) against a real Firefly instance: push create → unchanged re-sync SKIPPED (no dupes) → remote edit → PULL updates the local app row + records a `pull` log.
+- New `FireflySyncDaoUpsertTest` pins the upsert semantics on the JVM; Robolectric test harness added.
+- applicationId changed to `com.cashiro.cashiro`.
 
 ---
 

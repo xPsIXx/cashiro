@@ -18,7 +18,7 @@ android {
     }
 
     defaultConfig {
-        applicationId = "com.xpsixx.cashiro"
+        applicationId = "com.cashiro.cashiro"
         minSdk = 26
         targetSdk = 36
         versionCode = 94
@@ -168,6 +168,9 @@ android {
             // Allow JVM unit tests to exercise code that touches android.util.Log
             // and other Android framework stubs without Robolectric.
             isReturnDefaultValues = true
+            // Robolectric E2E tests (FireflySyncEngineLiveE2eTest) need app
+            // resources + manifest under the JVM.
+            isIncludeAndroidResources = true
         }
     }
     lint {
@@ -307,6 +310,8 @@ dependencies {
     
     testImplementation(libs.mockk)
     testImplementation(libs.ktor.client.mock)
+    testImplementation(libs.ktor.client.okhttp) // JVM engine for live E2E tests
+    testImplementation(libs.robolectric)
     testImplementation(libs.junit)
     testImplementation(libs.androidx.room.testing)
     androidTestImplementation(libs.androidx.room.testing)

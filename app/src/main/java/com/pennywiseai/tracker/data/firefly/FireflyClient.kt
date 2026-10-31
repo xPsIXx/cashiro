@@ -76,11 +76,46 @@ class FireflyClient @Inject constructor(
     private val diagnosticLogger: com.pennywiseai.tracker.data.diagnostic.DiagnosticLogger
 ) {
 
+    private val json = defaultJson()
+
+    /**
+     * Test seam: JVM E2E tests swap the Android-engine client for an OkHttp
+     * client pointing at the same endpoints. Production never mutates this.
+     */
+    internal var httpClientForTests: HttpClient? = null
+        set(value) {
+            field = value
+            client = value ?: defaultHttpClient(json)
+        }
+    private var client: HttpClient = defaultHttpClient(json)
+
     companion object {
         private const val TAG = "FireflyClient"
         private const val API_PATH = "/api/v1"
         private val DATE_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd")
         private const val BATCH_CONCURRENCY = 4
+
+        private fun defaultJson() = Json {
+            ignoreUnknownKeys = true
+            isLenient = true
+            encodeDefaults = false
+        }
+
+        private fun defaultHttpClient(json: Json): HttpClient = HttpClient(Android) {
+            install(ContentNegotiation) {
+                json(json)
+            }
+            install(HttpRequestRetry) {
+                retryOnServerErrors(maxRetries = 3)
+                retryOnExceptionIf { _, cause -> cause is java.io.IOException }
+                exponentialDelay()
+            }
+            // Reasonable timeouts for mobile
+            engine {
+                connectTimeout = 15_000
+                socketTimeout = 30_000
+            }
+        }
     }
 
     // Account info now includes the Firefly id so callers can use id/name interchangeably.
@@ -219,28 +254,6 @@ class FireflyClient @Inject constructor(
         val created_at: String? = null,
         val updated_at: String? = null
     )
-
-    private val json = Json {
-        ignoreUnknownKeys = true
-        isLenient = true
-        encodeDefaults = false
-    }
-
-    private val client = HttpClient(Android) {
-        install(ContentNegotiation) {
-            json(json)
-        }
-        install(HttpRequestRetry) {
-            retryOnServerErrors(maxRetries = 3)
-            retryOnExceptionIf { _, cause -> cause is java.io.IOException }
-            exponentialDelay()
-        }
-        // Reasonable timeouts for mobile
-        engine {
-            connectTimeout = 15_000
-            socketTimeout = 30_000
-        }
-    }
 
     /**
      * Result of a single-transaction sync attempt.
@@ -1961,6 +1974,11 @@ class FireflyClient @Inject constructor(
                         val createdId = extractCreatedId(responseBody)
                         val journalIds = extractJournalIds(responseBody)
                         val remoteInfo = parseRemoteTransaction(responseBody)
+                        diagnosticLogger.i(
+                            TAG,
+                            "Created Firefly tx $createdId (parsed updatedAt=${remoteInfo?.updatedAt}, " +
+                                "externalId=${remoteInfo?.externalId}, body=${responseBody.take(100)})"
+                        )
 
                         if (uploadReceipt && !tx.receiptPath.isNullOrBlank() && journalIds.isNotEmpty()) {
                             uploadReceipt(

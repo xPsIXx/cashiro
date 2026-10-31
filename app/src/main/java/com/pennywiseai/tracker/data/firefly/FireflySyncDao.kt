@@ -19,8 +19,13 @@ interface FireflySyncDao {
 
     @Query(
         """
-        UPDATE firefly_transaction_state
-        SET externalId = :externalId,
+        INSERT INTO firefly_transaction_state (
+            localTransactionId, externalId, fireflyTransactionId, fireflyUpdatedAt,
+            fireflySourceName, fireflyDestinationName, syncedAt, lastError
+        )
+        VALUES (:txId, :externalId, :remoteTxId, :updatedAt, :source, :destination, :syncedAt, NULL)
+        ON CONFLICT(localTransactionId) DO UPDATE SET
+            externalId = :externalId,
             fireflyTransactionId = :remoteTxId,
             fireflyUpdatedAt = :updatedAt,
             -- COALESCE keeps previously recorded names unless the caller
@@ -29,7 +34,6 @@ interface FireflySyncDao {
             fireflyDestinationName = COALESCE(:destination, fireflyDestinationName),
             syncedAt = :syncedAt,
             lastError = NULL
-        WHERE localTransactionId = :txId
         """
     )
     suspend fun markSynced(

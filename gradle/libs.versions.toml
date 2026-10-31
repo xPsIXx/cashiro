@@ -106,6 +106,7 @@ ktor-serialization-kotlinx-json = { module = "io.ktor:ktor-serialization-kotlinx
 markdown = { module = "org.jetbrains:markdown", version.ref = "markdown" }
 mockk = { module = "io.mockk:mockk", version.ref = "mockk" }
 ktor-client-mock = { module = "io.ktor:ktor-client-mock", version.ref = "ktorVersion" }
+robolectric = { module = "org.robolectric:robolectric", version = "4.15.1" }
 ktor-client-okhttp = { module = "io.ktor:ktor-client-okhttp", version.ref = "ktorVersion" }
 ktor-client-websockets = { module = "io.ktor:ktor-client-websockets", version.ref = "ktorVersion" }
 mockk-android = { module = "io.mockk:mockk-android", version.ref = "mockk" }
