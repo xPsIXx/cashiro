@@ -166,6 +166,12 @@ class FireflyClient @Inject constructor(
     private data class FireflyAccountAttributes(val name: String, val active: Boolean = true)
 
     @Serializable
+    private data class FireflyAccountCreateRequest(
+        val name: String,
+        val type: String
+    )
+
+    @Serializable
     private data class FireflyCategoriesResponse(val data: List<FireflyCategoryWrapper>)
 
     @Serializable
@@ -282,13 +288,17 @@ class FireflyClient @Inject constructor(
     /**
      * Fetches asset accounts from Firefly for mapping UI.
      */
-    suspend fun getAccounts(baseUrl: String, accessToken: String): List<FireflyAccountInfo> {
+    suspend fun getAccounts(
+        baseUrl: String,
+        accessToken: String,
+        accountType: String = "asset"
+    ): List<FireflyAccountInfo> {
         if (baseUrl.isBlank() || accessToken.isBlank()) return emptyList()
 
         return withContext(Dispatchers.IO) {
             try {
                 val normalizedUrl = normalizeBaseUrl(baseUrl)
-                val response: HttpResponse = client.get("$normalizedUrl$API_PATH/accounts?type=asset") {
+                val response: HttpResponse = client.get("$normalizedUrl$API_PATH/accounts?type=$accountType") {
                     header("Authorization", "Bearer $accessToken")
                     header("Accept", "application/vnd.api+json")
                 }
@@ -2332,6 +2342,10 @@ class FireflyClient @Inject constructor(
         return withContext(Dispatchers.IO) {
             try {
                 val remoteRecurrings = getRecurringTransactions(baseUrl, accessToken)
+                // Firefly's recurrence storage requires source_id/destination_id;
+                // resolve asset + payee accounts once per sync run.
+                val assetAccounts = getAccounts(baseUrl, accessToken, "asset")
+                val expenseAccounts = getAccounts(baseUrl, accessToken, "expense")
                 var created = 0
                 var updated = 0
                 var failed = 0
@@ -2347,7 +2361,9 @@ class FireflyClient @Inject constructor(
 
                         if (remote == null) {
                             // Create remote recurring transaction
-                            val newId = createRecurringTransaction(local, baseUrl, accessToken, defaultAssetAccount)
+                            val newId = createRecurringTransaction(
+                                local, baseUrl, accessToken, defaultAssetAccount, assetAccounts, expenseAccounts
+                            )
                             if (newId.isNullOrBlank()) {
                                 failed++
                                 return@forEach
@@ -2382,7 +2398,9 @@ class FireflyClient @Inject constructor(
                                     subscription = local,
                                     baseUrl = baseUrl,
                                     accessToken = accessToken,
-                                    defaultAssetAccount = defaultAssetAccount
+                                    defaultAssetAccount = defaultAssetAccount,
+                                    assetAccounts = assetAccounts,
+                                    expenseAccounts = expenseAccounts
                                 )
                                 if (ok) {
                                     fireflySyncDao.updateSubscriptionSyncInfo(local.id, remote.id, now)
@@ -2495,12 +2513,16 @@ class FireflyClient @Inject constructor(
         subscription: SubscriptionEntity,
         baseUrl: String,
         accessToken: String,
-        defaultAssetAccount: String?
+        defaultAssetAccount: String?,
+        assetAccounts: List<FireflyAccountInfo>,
+        expenseAccounts: List<FireflyAccountInfo>
     ): String? {
         return withContext(Dispatchers.IO) {
             try {
                 val normalizedUrl = normalizeBaseUrl(baseUrl)
-                val payload = buildRecurringRequestBody(subscription, defaultAssetAccount)
+                val payload = buildRecurringRequestBody(
+                    subscription, defaultAssetAccount, baseUrl, accessToken, assetAccounts, expenseAccounts
+                )
                 val response: HttpResponse = client.post("$normalizedUrl$API_PATH/recurrences") {
                     header("Authorization", "Bearer $accessToken")
                     header("Accept", "application/vnd.api+json")
@@ -2524,13 +2546,17 @@ class FireflyClient @Inject constructor(
         subscription: SubscriptionEntity,
         baseUrl: String,
         accessToken: String,
-        defaultAssetAccount: String?
+        defaultAssetAccount: String?,
+        assetAccounts: List<FireflyAccountInfo>,
+        expenseAccounts: List<FireflyAccountInfo>
     ): Boolean {
         if (recurringId.isBlank()) return false
         return withContext(Dispatchers.IO) {
             try {
                 val normalizedUrl = normalizeBaseUrl(baseUrl)
-                val payload = buildRecurringRequestBody(subscription, defaultAssetAccount)
+                val payload = buildRecurringRequestBody(
+                    subscription, defaultAssetAccount, baseUrl, accessToken, assetAccounts, expenseAccounts
+                )
                 val response: HttpResponse = client.put("$normalizedUrl$API_PATH/recurrences/$recurringId") {
                     header("Authorization", "Bearer $accessToken")
                     header("Accept", "application/vnd.api+json")
@@ -2545,9 +2571,13 @@ class FireflyClient @Inject constructor(
         }
     }
 
-    private fun buildRecurringRequestBody(
+    private suspend fun buildRecurringRequestBody(
         subscription: SubscriptionEntity,
-        defaultAssetAccount: String?
+        defaultAssetAccount: String?,
+        baseUrl: String,
+        accessToken: String,
+        assetAccounts: List<FireflyAccountInfo>,
+        expenseAccounts: List<FireflyAccountInfo>
     ): FireflyRecurringCreateRequest {
         val type = if (subscription.direction == SubscriptionDirection.INCOME) "deposit" else "withdrawal"
         val account = subscription.bankName?.takeIf { it.isNotBlank() }
@@ -2556,6 +2586,16 @@ class FireflyClient @Inject constructor(
         val (source, destination) = when (type) {
             "withdrawal" -> account to subscription.merchantName
             else -> subscription.merchantName to account
+        }
+        // Firefly's recurrence storage requires the id keys: resolve the asset
+        // account id and the payee's expense-account id (creating the payee
+        // account on first contact), and send both id+name per account.
+        val assetId = assetAccounts.firstOrNull { it.name.equals(source, ignoreCase = true) }?.id
+            ?: assetAccounts.firstOrNull()?.id
+        val payeeId = resolvePayeeAccountId(baseUrl, accessToken, expenseAccounts, subscription.merchantName)
+        val (sourceId, destinationId) = when (type) {
+            "withdrawal" -> assetId to payeeId
+            else -> payeeId to assetId
         }
         // Spec: first_date "Must be after today" — never send today or the past.
         val firstDate = (subscription.nextPaymentDate ?: LocalDate.now())
@@ -2576,7 +2616,9 @@ class FireflyClient @Inject constructor(
             transactions = listOf(
                 FireflyRecurringTransactionStore(
                     amount = subscription.amount.abs().toPlainString(),
+                    source_id = sourceId,
                     source_name = source,
+                    destination_id = destinationId,
                     destination_name = destination,
                     description = "Synced from Cashiro subscription • cycle=${subscription.billingCycle}".take(255)
                 )
@@ -2585,6 +2627,38 @@ class FireflyClient @Inject constructor(
             active = subscription.state == SubscriptionState.ACTIVE,
             apply_rules = true
         )
+    }
+
+    /**
+     * Returns the id of the expense/payee account for [merchantName], creating
+     * it (spec: AccountStore) on first contact so both recurrence and future
+     * transaction creates have a stable id they can reference.
+     */
+    private suspend fun resolvePayeeAccountId(
+        baseUrl: String,
+        accessToken: String,
+        expenseAccounts: List<FireflyAccountInfo>,
+        merchantName: String
+    ): String? {
+        expenseAccounts.firstOrNull { it.name.equals(merchantName, ignoreCase = true) }?.let { return it.id }
+        return try {
+            val normalizedUrl = normalizeBaseUrl(baseUrl)
+            val response: HttpResponse = client.post("$normalizedUrl$API_PATH/accounts") {
+                header("Authorization", "Bearer $accessToken")
+                header("Accept", "application/vnd.api+json")
+                contentType(ContentType.Application.Json)
+                setBody(FireflyAccountCreateRequest(name = merchantName, type = "expense"))
+            }
+            if (response.status.isSuccess()) {
+                extractCreatedId(response.bodyAsText())
+            } else {
+                diagnosticLogger.w(TAG, "Failed to create payee account $merchantName: ${response.status}")
+                null
+            }
+        } catch (e: Exception) {
+            diagnosticLogger.e(TAG, "Failed to create payee account $merchantName", e)
+            null
+        }
     }
 
     private fun mapBillingCycleToFirefly(cycle: String): String {
@@ -2686,7 +2760,12 @@ class FireflyClient @Inject constructor(
     @Serializable
     private data class FireflyRecurringTransactionStore(
         val amount: String,
+        // Firefly <= 6.x recurrence storage indexes these id keys directly and
+        // 500s ("Undefined array key source_id/destination_id") when only names
+        // are sent — resolve and send both, names included for consistency.
+        val source_id: String? = null,
         val source_name: String? = null,
+        val destination_id: String? = null,
         val destination_name: String? = null,
         val description: String? = null
     )

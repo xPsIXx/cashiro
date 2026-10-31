@@ -151,6 +151,7 @@ All confirmed no impact on Firefly sync paths.
 ### Fixed/Improved
 - Transactions existing only in Firefly (e.g. pre-SMS era or manual older entries without Pennywise counterpart) are **unaffected** — logic only operates on local Pennywise transactions and matches via external_id; no deletions or modifications to Firefly-only data
 - Reinstall scenario: re-parsed SMS use same hash → same external_id → reconcile/full sync can match and mark without creating dups
+- Recurrence sync now resolves and sends `source_id`/`destination_id` (Firefly 6.x recurrence storage 500s with `Undefined array key` when only names are sent). Payee expense accounts are created on first contact, then reused. Verified live: recurrence create (201), read-back of amount/repetition fields, update (200), delete (204).
 
 ---
 
