@@ -81,7 +81,6 @@ class FireflyClient @Inject constructor(
         private const val API_PATH = "/api/v1"
         private val DATE_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd")
         private const val BATCH_CONCURRENCY = 4
-        private const val FALLBACK_BATCH_ENDPOINT_404 = "Firefly batch endpoint not found; falling back to sequential sync"
     }
 
     // Account info now includes the Firefly id so callers can use id/name interchangeably.
@@ -722,7 +721,12 @@ class FireflyClient @Inject constructor(
         return withContext(Dispatchers.IO) {
             try {
                 val remoteBudgets = getBudgets(baseUrl, accessToken)
-                val remoteLimits = getBudgetLimits(baseUrl, accessToken)
+                // Spec: GET /budget-limits requires start and end. A wide window
+                // around today still matches the current-period limits that
+                // resolveCurrentLimits() picks.
+                val windowStart = LocalDate.now().withDayOfYear(1).format(DATE_FORMATTER)
+                val windowEnd = LocalDate.now().plusYears(1).withDayOfYear(1).minusDays(1).format(DATE_FORMATTER)
+                val remoteLimits = getBudgetLimits(baseUrl, accessToken, startDate = windowStart, endDate = windowEnd)
                 val remoteCombined = resolveCurrentLimits(remoteBudgets, remoteLimits)
 
                 var created = 0
@@ -1193,10 +1197,13 @@ class FireflyClient @Inject constructor(
             }
 
             // 3. Create brand-new transactions in Firefly.
+            // Spec-bounded: Firefly's API has no /transactions/batch endpoint
+            // (see api-docs.firefly-iii.org), so creates always go through the
+            // concurrent single-transaction path (receipts upload inline).
             val createdDetails = if (toCreate.isEmpty()) {
                 emptyList()
             } else {
-                val batchResult = tryBatchEndpoint(
+                sequentialFallback(
                     toCreate = toCreate.map { it to null },
                     baseUrl = baseUrl,
                     accessToken = accessToken,
@@ -1204,32 +1211,8 @@ class FireflyClient @Inject constructor(
                     accountMappings = accountMappings,
                     categoryMappings = categoryMappings,
                     includeRawSmsInNotes = includeRawSmsInNotes,
-                    preferredBatchSize = preferredBatchSize
+                    uploadReceipts = uploadReceipts
                 )
-
-                if (batchResult != null) {
-                    // Native batch path succeeded; upload receipts on this same path.
-                    if (uploadReceipts) {
-                        uploadReceiptsForBatch(
-                            results = batchResult,
-                            syncables = toCreate,
-                            baseUrl = baseUrl,
-                            accessToken = accessToken
-                        )
-                    }
-                    batchResult
-                } else {
-                    sequentialFallback(
-                        toCreate = toCreate.map { it to null },
-                        baseUrl = baseUrl,
-                        accessToken = accessToken,
-                        defaultAssetAccount = defaultAssetAccount,
-                        accountMappings = accountMappings,
-                        categoryMappings = categoryMappings,
-                        includeRawSmsInNotes = includeRawSmsInNotes,
-                        uploadReceipts = uploadReceipts
-                    )
-                }
             }
 
             // Persist newly-created transactions as synced.
@@ -1903,150 +1886,6 @@ class FireflyClient @Inject constructor(
         }
     }
 
-    /**
-     * Attempt to use Firefly's native batch endpoint. Returns null if the endpoint is
-     * not available, signalling the caller to fall back to sequential sync.
-     */
-    private suspend fun tryBatchEndpoint(
-        toCreate: List<Pair<SyncableTransaction, String?>>,
-        baseUrl: String,
-        accessToken: String,
-        defaultAssetAccount: String?,
-        accountMappings: Map<String, String>,
-        categoryMappings: Map<String, String>,
-        includeRawSmsInNotes: Boolean,
-        preferredBatchSize: Int
-    ): List<ItemResult>? {
-        // Build a small test chunk first to avoid serializing everything for a 404.
-        val testChunk = toCreate.take(preferredBatchSize.coerceAtMost(5))
-        val testPayload = testChunk.map { (syncable, _) ->
-            buildTransactionPayload(syncable, defaultAssetAccount, accountMappings, categoryMappings, includeRawSmsInNotes)
-        }
-
-        return withContext(Dispatchers.IO) {
-            try {
-                val normalizedUrl = normalizeBaseUrl(baseUrl)
-                val response: HttpResponse = client.post("$normalizedUrl$API_PATH/transactions/batch") {
-                    header("Authorization", "Bearer $accessToken")
-                    header("Accept", "application/vnd.api+json")
-                    contentType(ContentType.Application.Json)
-                    setBody(FireflyNativeBatchRequest(transactions = testPayload))
-                }
-
-                when {
-                    response.status == HttpStatusCode.NotFound -> {
-                        diagnosticLogger.d(TAG, FALLBACK_BATCH_ENDPOINT_404)
-                        return@withContext null
-                    }
-                    response.status.isSuccess() -> {
-                        // Endpoint exists. Process the full list in chunks.
-                        val remaining = toCreate.drop(testChunk.size)
-                        val testResults = parseNativeBatchResponse(testChunk, response.bodyAsText())
-                        val remainingResults = remaining.chunked(preferredBatchSize).flatMap { chunk ->
-                            postBatchChunk(chunk, baseUrl, accessToken, defaultAssetAccount, accountMappings, categoryMappings, includeRawSmsInNotes)
-                        }
-                        testResults + remainingResults
-                    }
-                    else -> {
-                        // Endpoint returned an error we don't know how to parse; fall back.
-                        diagnosticLogger.w(TAG, "Batch endpoint error ${response.status}: ${response.bodyAsText().take(300)}")
-                        null
-                    }
-                }
-            } catch (e: Exception) {
-                diagnosticLogger.e(TAG, "Batch endpoint call failed", e)
-                null
-            }
-        }
-    }
-
-    private suspend fun postBatchChunk(
-        chunk: List<Pair<SyncableTransaction, String?>>,
-        baseUrl: String,
-        accessToken: String,
-        defaultAssetAccount: String?,
-        accountMappings: Map<String, String>,
-        categoryMappings: Map<String, String>,
-        includeRawSmsInNotes: Boolean
-    ): List<ItemResult> {
-        if (chunk.isEmpty()) return emptyList()
-
-        val payload = chunk.map { (syncable, _) ->
-            buildTransactionPayload(syncable, defaultAssetAccount, accountMappings, categoryMappings, includeRawSmsInNotes)
-        }
-
-        return withContext(Dispatchers.IO) {
-            try {
-                val normalizedUrl = normalizeBaseUrl(baseUrl)
-                val response: HttpResponse = client.post("$normalizedUrl$API_PATH/transactions/batch") {
-                    header("Authorization", "Bearer $accessToken")
-                    header("Accept", "application/vnd.api+json")
-                    contentType(ContentType.Application.Json)
-                    setBody(FireflyNativeBatchRequest(transactions = payload))
-                }
-
-                if (response.status.isSuccess()) {
-                    parseNativeBatchResponse(chunk, response.bodyAsText())
-                } else {
-                    val body = response.bodyAsText()
-                    chunk.map { (syncable, _) ->
-                        ItemResult(
-                            syncable.transaction.id,
-                            computeExternalId(syncable.transaction),
-                            ItemResult.ItemStatus.ERROR,
-                            message = "HTTP ${response.status.value}: ${body.take(300)}"
-                        )
-                    }
-                }
-            } catch (e: Exception) {
-                chunk.map { (syncable, _) ->
-                    ItemResult(
-                        syncable.transaction.id,
-                        computeExternalId(syncable.transaction),
-                        ItemResult.ItemStatus.ERROR,
-                        message = e.message ?: e.javaClass.simpleName
-                    )
-                }
-            }
-        }
-    }
-
-    private fun parseNativeBatchResponse(
-        chunk: List<Pair<SyncableTransaction, String?>>,
-        body: String
-    ): List<ItemResult> {
-        return try {
-            val root = json.parseToJsonElement(body).jsonObject
-            val dataArray = root["data"]?.jsonArray ?: return emptyList()
-            chunk.mapIndexed { index, (syncable, _) ->
-                val element = dataArray.getOrNull(index)
-                val remoteInfo = element?.let { parseRemoteTransaction("{\"data\":[$it]}") }
-                val fireflyId = remoteInfo?.fireflyId ?: extractBatchIds(body).getOrNull(index)
-                ItemResult(
-                    transactionId = syncable.transaction.id,
-                    externalId = computeExternalId(syncable.transaction),
-                    status = if (fireflyId != null) ItemResult.ItemStatus.SUCCESS else ItemResult.ItemStatus.ERROR,
-                    fireflyId = fireflyId,
-                    remoteUpdatedAt = remoteInfo?.updatedAt,
-                    message = if (fireflyId == null) "Batch response did not include an id" else null
-                )
-            }
-        } catch (_: Exception) {
-            // Fallback to id-only parsing
-            val ids = extractBatchIds(body)
-            chunk.mapIndexed { index, (syncable, _) ->
-                val fireflyId = ids.getOrNull(index)
-                ItemResult(
-                    transactionId = syncable.transaction.id,
-                    externalId = computeExternalId(syncable.transaction),
-                    status = if (fireflyId != null) ItemResult.ItemStatus.SUCCESS else ItemResult.ItemStatus.ERROR,
-                    fireflyId = fireflyId,
-                    message = if (fireflyId == null) "Batch response did not include an id" else null
-                )
-            }
-        }
-    }
-
     private suspend fun sequentialFallback(
         toCreate: List<Pair<SyncableTransaction, String?>>,
         baseUrl: String,
@@ -2169,30 +2008,6 @@ class FireflyClient @Inject constructor(
         }
     }
 
-    private suspend fun uploadReceiptsForBatch(
-        results: List<ItemResult>,
-        syncables: List<SyncableTransaction>,
-        baseUrl: String,
-        accessToken: String
-    ) {
-        // Best-effort: failures are logged but do not fail the transaction sync.
-        results.forEach { item ->
-            if (item.status != ItemResult.ItemStatus.SUCCESS) return@forEach
-            val journalId = item.journalIds.firstOrNull() ?: return@forEach
-            val receiptPath = syncables.find { it.transaction.id == item.transactionId }
-                ?.transaction?.receiptPath?.takeIf { it.isNotBlank() }
-                ?: return@forEach
-
-            uploadReceipt(
-                baseUrl = baseUrl,
-                accessToken = accessToken,
-                journalId = journalId,
-                receiptPath = receiptPath,
-                title = "Receipt".take(100)
-            )
-        }
-    }
-
     private fun readFileBytes(path: String): ByteArray? {
         return try {
             when {
@@ -2219,20 +2034,11 @@ class FireflyClient @Inject constructor(
         }
     }
 
-    // --------------------------------------------------------------------------
-    // Request/response models
-    // --------------------------------------------------------------------------
-
     @Serializable
     private data class FireflyTransactionRequest(
         val apply_rules: Boolean = true,
         val fire_webhooks: Boolean = true,
         val transactions: List<FireflyTransaction>
-    )
-
-    @Serializable
-    private data class FireflyNativeBatchRequest(
-        val transactions: List<FireflyTransactionRequest>
     )
 
     @Serializable
@@ -2292,7 +2098,8 @@ class FireflyClient @Inject constructor(
     suspend fun syncBudgetTargetsToPiggyBanks(
         targetBudgets: List<BudgetEntity>,
         baseUrl: String,
-        accessToken: String
+        accessToken: String,
+        defaultAssetAccount: String? = null
     ): PiggyBankSyncResult {
         if (baseUrl.isBlank() || accessToken.isBlank()) {
             return PiggyBankSyncResult(created = 0, updated = 0, failed = targetBudgets.size)
@@ -2304,6 +2111,20 @@ class FireflyClient @Inject constructor(
             var updated = 0
             var failed = 0
             try {
+                // Spec: PiggyBankStore requires account_id (and start_date on create).
+                // Resolve the target account once: prefer the user's default asset
+                // account, else the first asset account.
+                val accounts = getAccounts(baseUrl, accessToken)
+                val accountId = accounts.firstOrNull {
+                    it.name.equals(defaultAssetAccount, ignoreCase = true)
+                }?.id ?: accounts.firstOrNull { it.active }?.id
+                    ?: accounts.firstOrNull()?.id
+                if (accountId == null) {
+                    diagnosticLogger.w(TAG, "Piggy-bank sync: no asset account to attach piggy banks to")
+                    return@withContext PiggyBankSyncResult(0, 0, targetBudgets.size)
+                }
+                val startDate = LocalDate.now().format(DATE_FORMATTER)
+
                 val remote = getPiggyBanks(baseUrl, accessToken)
                 val remoteByName = remote.associateBy { it.name.lowercase() }
 
@@ -2317,7 +2138,9 @@ class FireflyClient @Inject constructor(
                                 baseUrl = baseUrl,
                                 accessToken = accessToken,
                                 name = name,
-                                targetAmount = targetAmount
+                                targetAmount = targetAmount,
+                                accountId = accountId,
+                                startDate = startDate
                             )
                         } else {
                             updatePiggyBank(
@@ -2378,7 +2201,9 @@ class FireflyClient @Inject constructor(
         baseUrl: String,
         accessToken: String,
         name: String,
-        targetAmount: String
+        targetAmount: String,
+        accountId: String,
+        startDate: String
     ): Boolean {
         return withContext(Dispatchers.IO) {
             try {
@@ -2390,9 +2215,10 @@ class FireflyClient @Inject constructor(
                     setBody(
                         FireflyPiggyBankCreateRequest(
                             name = name,
+                            account_id = accountId,
                             target_amount = targetAmount,
-                            current_amount = "0",
-                            notes = "Synced from PennyWise budget goal"
+                            start_date = startDate,
+                            notes = "Synced from Cashiro budget goal"
                         )
                     )
                 }
@@ -2420,11 +2246,13 @@ class FireflyClient @Inject constructor(
                     header("Accept", "application/vnd.api+json")
                     contentType(ContentType.Application.Json)
                     setBody(
-                        FireflyPiggyBankCreateRequest(
+                        // Update never touches current_amount (spec: it is a
+                        // separate, history-backed value) — sending "0" here would
+                        // wipe saved progress on every sync.
+                        FireflyPiggyBankUpdateRequest(
                             name = name,
                             target_amount = targetAmount,
-                            current_amount = "0",
-                            notes = "Synced from PennyWise budget goal"
+                            notes = "Synced from Cashiro budget goal"
                         )
                     )
                 }
@@ -2464,9 +2292,17 @@ class FireflyClient @Inject constructor(
     @Serializable
     private data class FireflyPiggyBankCreateRequest(
         val name: String,
+        val account_id: String,
         val target_amount: String,
-        val current_amount: String,
+        val start_date: String,
         val active: Boolean = true,
+        val notes: String? = null
+    )
+
+    @Serializable
+    private data class FireflyPiggyBankUpdateRequest(
+        val name: String,
+        val target_amount: String,
         val notes: String? = null
     )
 
@@ -2618,7 +2454,7 @@ class FireflyClient @Inject constructor(
         return withContext(Dispatchers.IO) {
             try {
                 val normalizedUrl = normalizeBaseUrl(baseUrl)
-                val response: HttpResponse = client.get("$normalizedUrl$API_PATH/recurring?limit=1000") {
+                val response: HttpResponse = client.get("$normalizedUrl$API_PATH/recurrences?limit=1000") {
                     header("Authorization", "Bearer $accessToken")
                     header("Accept", "application/vnd.api+json")
                 }
@@ -2629,8 +2465,11 @@ class FireflyClient @Inject constructor(
                 parsed.data.mapNotNull { wrapper ->
                     val attrs = wrapper.attributes
                     val id = wrapper.id ?: return@mapNotNull null
+                    // Cadence comes from the first repetition; the amount and
+                    // accounts from the first transaction (spec: Recurrence).
+                    val firstTx = attrs.transactions?.firstOrNull()
                     val type = attrs.type?.lowercase() ?: "withdrawal"
-                    val amount = attrs.amount?.toBigDecimalOrNull() ?: return@mapNotNull null
+                    val amount = firstTx?.amount?.toBigDecimalOrNull() ?: return@mapNotNull null
                     val firstDate = parseDate(attrs.first_date) ?: return@mapNotNull null
                     FireflyRecurringInfo(
                         id = id,
@@ -2638,11 +2477,11 @@ class FireflyClient @Inject constructor(
                         title = attrs.title ?: return@mapNotNull null,
                         amount = amount,
                         firstDate = firstDate,
-                        repeatFrequency = attrs.repeat_frequency?.lowercase() ?: "monthly",
+                        repeatFrequency = attrs.repetitions?.firstOrNull()?.type?.lowercase() ?: "monthly",
                         active = attrs.active,
                         updatedAt = parseInstant(attrs.updated_at),
-                        sourceName = attrs.transactions?.firstOrNull()?.source_name,
-                        destinationName = attrs.transactions?.firstOrNull()?.destination_name
+                        sourceName = firstTx?.source_name,
+                        destinationName = firstTx?.destination_name
                     )
                 }
             } catch (e: Exception) {
@@ -2662,7 +2501,7 @@ class FireflyClient @Inject constructor(
             try {
                 val normalizedUrl = normalizeBaseUrl(baseUrl)
                 val payload = buildRecurringRequestBody(subscription, defaultAssetAccount)
-                val response: HttpResponse = client.post("$normalizedUrl$API_PATH/recurring") {
+                val response: HttpResponse = client.post("$normalizedUrl$API_PATH/recurrences") {
                     header("Authorization", "Bearer $accessToken")
                     header("Accept", "application/vnd.api+json")
                     contentType(ContentType.Application.Json)
@@ -2692,7 +2531,7 @@ class FireflyClient @Inject constructor(
             try {
                 val normalizedUrl = normalizeBaseUrl(baseUrl)
                 val payload = buildRecurringRequestBody(subscription, defaultAssetAccount)
-                val response: HttpResponse = client.put("$normalizedUrl$API_PATH/recurring/$recurringId") {
+                val response: HttpResponse = client.put("$normalizedUrl$API_PATH/recurrences/$recurringId") {
                     header("Authorization", "Bearer $accessToken")
                     header("Accept", "application/vnd.api+json")
                     contentType(ContentType.Application.Json)
@@ -2718,16 +2557,31 @@ class FireflyClient @Inject constructor(
             "withdrawal" -> account to subscription.merchantName
             else -> subscription.merchantName to account
         }
+        // Spec: first_date "Must be after today" — never send today or the past.
+        val firstDate = (subscription.nextPaymentDate ?: LocalDate.now())
+            .let { if (it.isAfter(LocalDate.now())) it else LocalDate.now().plusDays(1) }
         return FireflyRecurringCreateRequest(
             type = type,
             title = subscription.merchantName,
-            first_date = subscription.nextPaymentDate?.format(DATE_FORMATTER)
-                ?: LocalDate.now().format(DATE_FORMATTER),
-            repeat_frequency = mapBillingCycleToFirefly(subscription.billingCycle),
-            amount = subscription.amount.abs().toPlainString(),
-            notes = "Synced from PennyWise subscription • cycle=${subscription.billingCycle}",
-            source_name = source,
-            destination_name = destination,
+            first_date = firstDate.format(DATE_FORMATTER),
+            // Spec: repeat_until is required; a far horizon keeps the recurrence
+            // active without an end date (use it or nr_of_repetitions, not both).
+            repeat_until = firstDate.plusYears(10).format(DATE_FORMATTER),
+            repetitions = listOf(
+                FireflyRecurrenceRepetitionStore(
+                    type = mapBillingCycleToFirefly(subscription.billingCycle),
+                    moment = "1"
+                )
+            ),
+            transactions = listOf(
+                FireflyRecurringTransactionStore(
+                    amount = subscription.amount.abs().toPlainString(),
+                    source_name = source,
+                    destination_name = destination,
+                    description = "Synced from Cashiro subscription • cycle=${subscription.billingCycle}".take(255)
+                )
+            ),
+            notes = "Synced from Cashiro subscription • cycle=${subscription.billingCycle}",
             active = subscription.state == SubscriptionState.ACTIVE,
             apply_rules = true
         )
@@ -2783,16 +2637,26 @@ class FireflyClient @Inject constructor(
         val title: String? = null,
         val notes: String? = null,
         val first_date: String? = null,
-        val repeat_frequency: String? = null,
-        val amount: String? = null,
         val active: Boolean = true,
         val created_at: String? = null,
         val updated_at: String? = null,
+        // Cadence lives on the first repetition, amount/accounts on the first
+        // transaction (spec: Recurrence) — the recurrence object itself has neither.
+        val repetitions: List<FireflyRecurrenceRepetition>? = null,
         val transactions: List<FireflyRecurringTransactionTemplate>? = null
     )
 
     @Serializable
+    private data class FireflyRecurrenceRepetition(
+        val type: String? = null,
+        val moment: String? = null,
+        val skip: Int? = null,
+        val weekend: Int? = null
+    )
+
+    @Serializable
     private data class FireflyRecurringTransactionTemplate(
+        val amount: String? = null,
         val source_name: String? = null,
         val destination_name: String? = null,
         val description: String? = null
@@ -2803,12 +2667,27 @@ class FireflyClient @Inject constructor(
         val type: String,
         val title: String,
         val first_date: String,
-        val repeat_frequency: String,
-        val amount: String,
-        val source_name: String? = null,
-        val destination_name: String? = null,
+        val repeat_until: String,
+        val repetitions: List<FireflyRecurrenceRepetitionStore>,
+        val transactions: List<FireflyRecurringTransactionStore>,
         val notes: String? = null,
         val active: Boolean = true,
         val apply_rules: Boolean = true
+    )
+
+    @Serializable
+    private data class FireflyRecurrenceRepetitionStore(
+        /** daily, weekly, monthly, quarterly, half-year or yearly. */
+        val type: String,
+        /** Moment of the repetition: day-of-month for monthly, day-of-week for weekly. */
+        val moment: String = "1"
+    )
+
+    @Serializable
+    private data class FireflyRecurringTransactionStore(
+        val amount: String,
+        val source_name: String? = null,
+        val destination_name: String? = null,
+        val description: String? = null
     )
 }

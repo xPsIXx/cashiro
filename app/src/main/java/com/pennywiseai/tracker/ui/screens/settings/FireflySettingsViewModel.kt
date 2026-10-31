@@ -396,7 +396,8 @@ class FireflySettingsViewModel @Inject constructor(
                 val result = fireflyClient.syncBudgetTargetsToPiggyBanks(
                     targetBudgets = targetBudgets,
                     baseUrl = config.url,
-                    accessToken = config.token
+                    accessToken = config.token,
+                    defaultAssetAccount = config.defaultAssetAccount
                 )
 
                 onResult(
