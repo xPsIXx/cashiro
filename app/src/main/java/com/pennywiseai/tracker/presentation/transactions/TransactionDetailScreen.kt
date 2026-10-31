@@ -873,7 +873,6 @@ private fun TransactionReceipt(
         // ── Firefly Sync Status ──
         if (transaction != null) {
             FireflySyncStatusSection(
-                transaction = transaction,
                 viewModel = viewModel
             )
         }
@@ -2213,18 +2212,19 @@ private fun GroupBottomSheet(
 
 @Composable
 private fun FireflySyncStatusSection(
-    transaction: TransactionEntity,
     viewModel: TransactionDetailViewModel
 ) {
-    val hasFireflyData = transaction.fireflySyncedAt != null || !transaction.fireflyLastError.isNullOrBlank()
-    val hasExternalId = !transaction.fireflyExternalId.isNullOrBlank()
+    // Sync state lives in the add-on sidecar DB; the app row knows nothing
+    // about Firefly anymore.
+    val state by viewModel.fireflyState.collectAsState()
+    val hasExternalId = !state?.externalId.isNullOrBlank()
 
     SectionHeaderV2(title = "Firefly III Sync")
 
     PennyWiseCard {
         Column(modifier = Modifier.padding(Spacing.md)) {
             when {
-                !transaction.fireflyLastError.isNullOrBlank() -> {
+                !state?.lastError.isNullOrBlank() -> {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Icon(
                             Icons.Default.Error,
@@ -2241,13 +2241,13 @@ private fun FireflySyncStatusSection(
                     }
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        transaction.fireflyLastError,
+                        state?.lastError.orEmpty(),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     if (hasExternalId) {
                         Text(
-                            "External ID: ${transaction.fireflyExternalId}",
+                            "External ID: ${state?.externalId}",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -2262,7 +2262,7 @@ private fun FireflySyncStatusSection(
                         Text("Retry Sync")
                     }
                 }
-                transaction.fireflySyncedAt != null -> {
+                state?.syncedAt != null -> {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Icon(
                             Icons.Default.CheckCircle,
@@ -2278,13 +2278,13 @@ private fun FireflySyncStatusSection(
                         )
                     }
                     Text(
-                        "Synced on ${transaction.fireflySyncedAt.format(DateTimeFormatter.ofPattern("dd MMM yyyy, HH:mm"))}",
+                        "Synced on ${state?.syncedAt?.format(DateTimeFormatter.ofPattern("dd MMM yyyy, HH:mm"))}",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     if (hasExternalId) {
                         Text(
-                            "External ID: ${transaction.fireflyExternalId}",
+                            "External ID: ${state?.externalId}",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )

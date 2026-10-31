@@ -56,7 +56,7 @@ import com.pennywiseai.tracker.data.database.entity.UnrecognizedSmsEntity
  * that needs to record the version it was exported against. Bump this in lock-
  * step with any schema change.
  */
-const val SCHEMA_VERSION = 51
+const val SCHEMA_VERSION = 52
 
 /**
  * The PennyWise Room database.
@@ -118,7 +118,10 @@ const val SCHEMA_VERSION = 51
         AutoMigration(from = 47, to = 48),
         AutoMigration(from = 48, to = 49),
         AutoMigration(from = 49, to = 50),
-        AutoMigration(from = 50, to = 51)
+        AutoMigration(from = 50, to = 51),
+        // 51→52 (fork-only): Firefly sync state moved to the add-on sidecar DB
+        // (cashiro_firefly.db); drop the firefly_* columns from the app tables.
+        AutoMigration(from = 51, to = 52, spec = Migration51To52::class)
     ]
 )
 @TypeConverters(Converters::class)
@@ -623,3 +626,27 @@ class Migration43To44 : AutoMigrationSpec {
         db.execSQL("INSERT OR IGNORE INTO profiles (id, name, color_hex, sort_order) VALUES (2, 'Business', '#2196F3', 1)")
     }
 }
+
+/**
+ * 51→52 (fork-only): the Firefly III sync columns moved out of the app schema
+ * into the add-on sidecar database ([com.pennywiseai.tracker.data.firefly.FireflySyncDatabase]).
+ * Room removes them (table recreation where native DROP COLUMN is unavailable).
+ *
+ * This migration exists so installs that upgraded through the firefly era
+ * (48–51) can reach the post-refactor schema without destructive fallback.
+ */
+@DeleteColumn.Entries(
+    DeleteColumn(tableName = "transactions", columnName = "firefly_synced_at"),
+    DeleteColumn(tableName = "transactions", columnName = "firefly_external_id"),
+    DeleteColumn(tableName = "transactions", columnName = "firefly_transaction_id"),
+    DeleteColumn(tableName = "transactions", columnName = "firefly_updated_at"),
+    DeleteColumn(tableName = "transactions", columnName = "firefly_last_error"),
+    DeleteColumn(tableName = "transactions", columnName = "firefly_source_name"),
+    DeleteColumn(tableName = "transactions", columnName = "firefly_destination_name"),
+    DeleteColumn(tableName = "budgets", columnName = "firefly_budget_id"),
+    DeleteColumn(tableName = "budgets", columnName = "firefly_limit_id"),
+    DeleteColumn(tableName = "budgets", columnName = "firefly_synced_at"),
+    DeleteColumn(tableName = "subscriptions", columnName = "firefly_recurring_id"),
+    DeleteColumn(tableName = "subscriptions", columnName = "firefly_recurring_synced_at")
+)
+class Migration51To52 : AutoMigrationSpec

@@ -10,8 +10,7 @@ import com.pennywiseai.tracker.data.database.entity.TransactionEntity
 import com.pennywiseai.tracker.data.database.entity.TransactionType
 import com.pennywiseai.tracker.data.mapper.toEntity
 import com.pennywiseai.tracker.data.mapper.toEntityType
-import com.pennywiseai.tracker.data.firefly.FireflyClient
-import com.pennywiseai.tracker.data.preferences.UserPreferencesRepository
+import com.pennywiseai.tracker.data.firefly.FireflySyncEngine
 import com.pennywiseai.tracker.data.repository.AccountBalanceRepository
 import com.pennywiseai.tracker.data.repository.CardRepository
 import com.pennywiseai.tracker.data.repository.MerchantMappingRepository
@@ -46,8 +45,7 @@ class SmsTransactionProcessor @Inject constructor(
     private val subscriptionRepository: SubscriptionRepository,
     private val ruleRepository: RuleRepository,
     private val ruleEngine: RuleEngine,
-    private val userPreferencesRepository: UserPreferencesRepository,
-    private val fireflyClient: FireflyClient,
+    private val fireflySyncEngine: FireflySyncEngine,
     private val diagnosticLogger: com.pennywiseai.tracker.data.diagnostic.DiagnosticLogger
 ) {
     private val syncScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -324,54 +322,16 @@ class SmsTransactionProcessor @Inject constructor(
     }
 
     /**
-     * Fire-and-forget sync of a newly parsed SMS transaction to Firefly III (if the user has enabled the integration).
+     * Fire-and-forget sync of a newly parsed SMS transaction to Firefly III
+     * (engine no-ops unless the user enabled the integration).
      * Runs off the main processing thread to avoid blocking SMS receipt.
      */
     private fun triggerFireflySyncIfEnabled(transactionId: Long, entity: TransactionEntity) {
         syncScope.launch {
-            try {
-                userPreferencesRepository.migrateTokenToSecureIfNeeded()
-
-                val prefs = userPreferencesRepository.userPreferences.first()
-                if (!prefs.fireflySyncEnabled) return@launch
-                val url = prefs.fireflyBaseUrl?.takeIf { it.isNotBlank() } ?: return@launch
-                val token = prefs.fireflyAccessToken?.takeIf { it.isNotBlank() } ?: return@launch
-
-                // Collect latest mappings (best effort)
-                val accountMappings = userPreferencesRepository.fireflyAccountMappingsFlow.first()
-                val categoryMappings = userPreferencesRepository.fireflyCategoryMappingsFlow.first()
-                val includeRawSms = userPreferencesRepository.fireflyIncludeRawSmsFlow.first()
-
-                val result = fireflyClient.syncTransaction(
-                    transaction = entity,
-                    baseUrl = url,
-                    accessToken = token,
-                    defaultAssetAccount = prefs.fireflyDefaultAssetAccount,
-                    accountMappings = accountMappings,
-                    categoryMappings = categoryMappings,
-                    includeRawSmsInNotes = includeRawSms
-                )
-
-                when (result) {
-                    is FireflyClient.SyncResult.Success -> {
-                        // Mark as synced in DB (best effort)
-                        val extId = fireflyClient.computeExternalId(entity)
-                        transactionRepository.markFireflySynced(transactionId, extId)
-                        userPreferencesRepository.updateFireflyLastSync(System.currentTimeMillis(), error = null)
-                        diagnosticLogger.d("SmsProcessor", "Firefly sync succeeded for tx $transactionId")
-                    }
-                    is FireflyClient.SyncResult.Error -> {
-                        // Record the error on the transaction and in prefs for UI visibility
-                        transactionRepository.markFireflyError(transactionId, result.message)
-                        userPreferencesRepository.updateFireflyLastSync(System.currentTimeMillis(), error = result.message)
-                        diagnosticLogger.w("SmsProcessor", "Firefly sync error for tx $transactionId: ${result.message}")
-                        com.pennywiseai.tracker.worker.FireflyRetryWorker.enqueue(appContext)
-                    }
-                    FireflyClient.SyncResult.Skipped -> Unit
-                }
-            } catch (e: Exception) {
+            runCatching {
+                fireflySyncEngine.onTransactionSaved(entity.copy(id = transactionId))
+            }.onFailure { e ->
                 diagnosticLogger.e("SmsProcessor", "Unexpected error during Firefly sync trigger", e)
-                com.pennywiseai.tracker.worker.FireflyRetryWorker.enqueue(appContext)
             }
         }
     }

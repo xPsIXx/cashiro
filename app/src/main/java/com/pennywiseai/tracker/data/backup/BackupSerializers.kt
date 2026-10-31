@@ -119,8 +119,10 @@ val backupJson: Json = Json {
 // transient IR/KSP backend errors during KSP (Room) + kotlinx.serialization
 // plugin interaction on complex entities. We use raw JsonElement storage in
 // DatabaseSnapshot for the transactions list only, and convert at I/O time.
-// This preserves all fields including the Firefly III sync columns and keeps
-// the on-disk backup JSON format stable/compatible.
+// This preserves all fields and keeps the on-disk backup JSON format
+// stable/compatible. Firefly sync state lives in the add-on sidecar DB
+// (cashiro_firefly.db) and is no longer part of back ups; external-id
+// re-derivation on restore re-links rows by content hash.
 
 private val txDateFormatter: DateTimeFormatter = DateTimeFormatter.ISO_LOCAL_DATE_TIME
 
@@ -153,9 +155,6 @@ fun transactionToJsonElement(tx: TransactionEntity): JsonElement = buildJsonObje
     put("budgetImpactType", tx.budgetImpactType?.let { JsonPrimitive(it.name) } ?: JsonNull)
     put("groupId", tx.groupId?.let { JsonPrimitive(it) } ?: JsonNull)
     put("profileId", tx.profileId?.let { JsonPrimitive(it) } ?: JsonNull)
-    put("fireflySyncedAt", tx.fireflySyncedAt?.let { JsonPrimitive(it.format(txDateFormatter)) } ?: JsonNull)
-    put("fireflyExternalId", tx.fireflyExternalId?.let { JsonPrimitive(it) } ?: JsonNull)
-    put("fireflyLastError", tx.fireflyLastError?.let { JsonPrimitive(it) } ?: JsonNull)
     put("excludedFromAnalytics", JsonPrimitive(tx.excludedFromAnalytics))
 }
 
@@ -199,9 +198,6 @@ fun jsonElementToTransaction(elem: JsonElement): TransactionEntity {
         budgetImpactType = bit("budgetImpactType"),
         groupId = l("groupId"),
         profileId = l("profileId"),
-        fireflySyncedAt = ldt("fireflySyncedAt"),
-        fireflyExternalId = s("fireflyExternalId"),
-        fireflyLastError = s("fireflyLastError"),
         excludedFromAnalytics = b("excludedFromAnalytics")
     )
 }

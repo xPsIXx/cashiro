@@ -14,6 +14,8 @@ import com.pennywiseai.tracker.data.repository.SubscriptionRepository
 import com.pennywiseai.tracker.data.repository.TransactionRepository
 import dagger.hilt.android.qualifiers.ApplicationContext
 import io.ktor.client.HttpClient
+import java.net.URLEncoder
+import java.nio.charset.StandardCharsets
 import io.ktor.client.engine.android.Android
 import io.ktor.client.plugins.HttpRequestRetry
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
@@ -67,6 +69,7 @@ import javax.inject.Singleton
 @Singleton
 class FireflyClient @Inject constructor(
     @ApplicationContext private val context: Context,
+    private val fireflySyncDao: FireflySyncDao,
     private val budgetRepository: BudgetRepository,
     private val subscriptionRepository: SubscriptionRepository,
     private val transactionRepository: TransactionRepository,
@@ -139,7 +142,9 @@ class FireflyClient @Inject constructor(
         val fireflyId: String? = null,
         val journalIds: List<String> = emptyList(),
         val remoteUpdatedAt: Instant? = null,
-        val message: String? = null
+        val message: String? = null,
+        /** True when the remote (Firefly) row was pulled down into the local row. */
+        val pulled: Boolean = false
     ) {
         enum class ItemStatus { SUCCESS, SKIPPED, ERROR }
     }
@@ -706,7 +711,9 @@ class FireflyClient @Inject constructor(
     suspend fun syncBudgets(
         budgets: List<BudgetEntity>,
         baseUrl: String,
-        accessToken: String
+        accessToken: String,
+        /** Last-known sidecar sync state per local budget id (from [FireflySyncEngine]). */
+        stateByBudget: Map<Long, FireflyBudgetStateEntity> = emptyMap()
     ): BudgetSyncResult {
         if (baseUrl.isBlank() || accessToken.isBlank()) {
             return BudgetSyncResult(created = 0, updated = 0, failed = budgets.size, error = "Firefly not configured")
@@ -727,7 +734,8 @@ class FireflyClient @Inject constructor(
                 // 1. Push / pull for every local budget
                 budgets.forEach { local ->
                     try {
-                        val remote = local.fireflyBudgetId?.let { id ->
+                        val state = stateByBudget[local.id]
+                        val remote = state?.fireflyBudgetId?.let { id ->
                             remoteCombined.find { it.budgetId == id }
                         } ?: remoteCombined.find { it.budgetName.equals(local.name, ignoreCase = true) }
 
@@ -756,11 +764,13 @@ class FireflyClient @Inject constructor(
                                 failed++
                                 return@forEach
                             }
-                            budgetRepository.updateFireflySyncInfo(
-                                budgetId = local.id,
-                                fireflyBudgetId = newBudgetId,
-                                fireflyLimitId = newLimitId,
-                                syncedAt = now
+                            fireflySyncDao.upsertBudgetState(
+                                FireflyBudgetStateEntity(
+                                    localBudgetId = local.id,
+                                    fireflyBudgetId = newBudgetId,
+                                    fireflyLimitId = newLimitId,
+                                    syncedAt = now
+                                )
                             )
                             created++
                             return@forEach
@@ -769,7 +779,7 @@ class FireflyClient @Inject constructor(
                         processedRemoteIds.add(remote.budgetId)
 
                         val localInstant = toInstant(local.updatedAt)
-                        val lastSyncInstant = local.fireflySyncedAt?.let { toInstant(it) }
+                        val lastSyncInstant = state?.syncedAt?.let { toInstant(it) }
                         val remoteInstant = listOfNotNull(remote.budgetUpdatedAt, remote.limitUpdatedAt).maxOrNull()
 
                         val localChanged = lastSyncInstant == null || localInstant.isAfter(lastSyncInstant)
@@ -778,8 +788,8 @@ class FireflyClient @Inject constructor(
                         when {
                             !localChanged && !remoteChanged -> {
                                 // Nothing changed, just refresh sync metadata
-                                budgetRepository.updateFireflySyncInfo(
-                                    budgetId = local.id,
+                                fireflySyncDao.updateBudgetSyncInfo(
+                                    localBudgetId = local.id,
                                     fireflyBudgetId = remote.budgetId,
                                     fireflyLimitId = remote.limitId,
                                     syncedAt = now
@@ -817,8 +827,8 @@ class FireflyClient @Inject constructor(
                                     ) != null
                                 }
                                 if (budgetOk && limitOk) {
-                                    budgetRepository.updateFireflySyncInfo(
-                                        budgetId = local.id,
+                                    fireflySyncDao.updateBudgetSyncInfo(
+                                        localBudgetId = local.id,
                                         fireflyBudgetId = remote.budgetId,
                                         fireflyLimitId = remote.limitId,
                                         syncedAt = now
@@ -838,7 +848,10 @@ class FireflyClient @Inject constructor(
                                     endDate = remote.endDate,
                                     currency = remote.currencyCode,
                                     periodType = inferPeriodType(remote.startDate, remote.endDate),
-                                    isActive = remote.active,
+                                    isActive = remote.active
+                                )
+                                fireflySyncDao.updateBudgetSyncInfo(
+                                    localBudgetId = local.id,
                                     fireflyBudgetId = remote.budgetId,
                                     fireflyLimitId = remote.limitId,
                                     syncedAt = now
@@ -867,11 +880,13 @@ class FireflyClient @Inject constructor(
                             categories = emptyList(),
                             color = "#1565C0"
                         )
-                        budgetRepository.updateFireflySyncInfo(
-                            budgetId = localId,
-                            fireflyBudgetId = remote.budgetId,
-                            fireflyLimitId = remote.limitId,
-                            syncedAt = now
+                        fireflySyncDao.upsertBudgetState(
+                            FireflyBudgetStateEntity(
+                                localBudgetId = localId,
+                                fireflyBudgetId = remote.budgetId,
+                                fireflyLimitId = remote.limitId,
+                                syncedAt = now
+                            )
                         )
                         created++
                     } catch (e: Exception) {
@@ -984,7 +999,9 @@ class FireflyClient @Inject constructor(
         categoryMappings: Map<String, String> = emptyMap(),
         includeRawSmsInNotes: Boolean = true,
         uploadReceipts: Boolean = true,
-        preferredBatchSize: Int = 50
+        preferredBatchSize: Int = 50,
+        /** Last-known sidecar sync state per local transaction id (from [FireflySyncEngine]). */
+        stateByTx: Map<Long, FireflyTransactionStateEntity> = emptyMap()
     ): BatchSyncResult {
         if (baseUrl.isBlank() || accessToken.isBlank()) {
             return BatchSyncResult(
@@ -1015,24 +1032,54 @@ class FireflyClient @Inject constructor(
                 val remote = getRemoteTransactionByExternalId(baseUrl, accessToken, extId)
 
                 if (remote == null) {
+                    diagnosticLogger.i(TAG, "${describe(tx)} → CREATE (not on Firefly)")
                     toCreate.add(syncable)
                     return@forEach
                 }
 
+                // Ours-only: a Firefly-native row (different/absent external_id)
+                // is never updated and never pulled into the phone.
+                if (!isOwnedByUs(remote, extId)) {
+                    diagnosticLogger.i(
+                        TAG,
+                        "${describe(tx)} → SKIP native ff=${remote.fireflyId} remoteExt=${remote.externalId ?: "(none)"}"
+                    )
+                    fireflySyncDao.markSynced(
+                        txId = tx.id,
+                        externalId = extId,
+                        remoteTxId = remote.fireflyId,
+                        updatedAt = remote.updatedAt?.let { instantToLocalDateTime(it) }
+                    )
+                    results.add(
+                        ItemResult(
+                            transactionId = tx.id,
+                            externalId = extId,
+                            status = ItemResult.ItemStatus.SKIPPED,
+                            fireflyId = remote.fireflyId,
+                            remoteUpdatedAt = remote.updatedAt,
+                            message = "Firefly-native entry — left untouched"
+                        )
+                    )
+                    return@forEach
+                }
+
                 val localInstant = toInstant(tx.updatedAt)
-                val lastSyncInstant = tx.fireflySyncedAt?.let { toInstant(it) }
-                val remoteKnownInstant = tx.fireflyUpdatedAt?.let { toInstant(it) }
+                // Last-sync timestamps now come from the sidecar state row.
+                val state = stateByTx[tx.id]
+                val lastSyncInstant = state?.syncedAt?.let { toInstant(it) }
+                val remoteKnownInstant = state?.fireflyUpdatedAt?.let { toInstant(it) }
                 val localChanged = lastSyncInstant == null || localInstant.isAfter(lastSyncInstant)
                 val remoteChanged = remote.updatedAt != null && (remoteKnownInstant == null || remote.updatedAt.isAfter(remoteKnownInstant))
 
                 when {
                     !localChanged && !remoteChanged -> {
                         // Nothing changed since last sync; just refresh metadata.
-                        transactionRepository.markFireflySynced(
-                            transactionId = tx.id,
+                        diagnosticLogger.i(TAG, "${describe(tx)} → SKIP (unchanged, ff=${remote.fireflyId})")
+                        fireflySyncDao.markSynced(
+                            txId = tx.id,
                             externalId = extId,
-                            fireflyTransactionId = remote.fireflyId,
-                            fireflyUpdatedAt = remote.updatedAt?.let { instantToLocalDateTime(it) }
+                            remoteTxId = remote.fireflyId,
+                            updatedAt = remote.updatedAt?.let { instantToLocalDateTime(it) }
                         )
                         results.add(
                             ItemResult(
@@ -1046,18 +1093,30 @@ class FireflyClient @Inject constructor(
                     }
                     localChanged && !remoteChanged -> {
                         // Local is newer → push update to Firefly.
+                        diagnosticLogger.i(TAG, "${describe(tx)} → UPDATE (local wins, ff=${remote.fireflyId})")
                         toUpdate.add(syncable to remote)
                     }
                     else -> {
                         // Remote is newer, or both changed and remote wins ties.
+                        diagnosticLogger.i(TAG, "${describe(tx)} → PULL (remote wins, ff=${remote.fireflyId})")
                         pullRemoteTransactionIntoLocal(syncable, remote, now)
+                        fireflySyncDao.markSynced(
+                            txId = tx.id,
+                            externalId = extId,
+                            remoteTxId = remote.fireflyId,
+                            updatedAt = remote.updatedAt?.let { instantToLocalDateTime(it) },
+                            source = remote.sourceName,
+                            destination = remote.destinationName,
+                            syncedAt = now
+                        )
                         results.add(
                             ItemResult(
                                 transactionId = tx.id,
                                 externalId = extId,
                                 status = ItemResult.ItemStatus.SUCCESS,
                                 fireflyId = remote.fireflyId,
-                                remoteUpdatedAt = remote.updatedAt
+                                remoteUpdatedAt = remote.updatedAt,
+                                pulled = true
                             )
                         )
                     }
@@ -1093,11 +1152,11 @@ class FireflyClient @Inject constructor(
                             )
                         }
 
-                        transactionRepository.markFireflySynced(
-                            transactionId = tx.id,
+                        fireflySyncDao.markSynced(
+                            txId = tx.id,
                             externalId = extId,
-                            fireflyTransactionId = updated.fireflyId,
-                            fireflyUpdatedAt = updated.updatedAt?.let { instantToLocalDateTime(it) }
+                            remoteTxId = updated.fireflyId,
+                            updatedAt = updated.updatedAt?.let { instantToLocalDateTime(it) }
                         )
                         results.add(
                             ItemResult(
@@ -1178,11 +1237,11 @@ class FireflyClient @Inject constructor(
                 if (item.status == ItemResult.ItemStatus.SUCCESS && item.remoteUpdatedAt != null) {
                     val tx = syncables.find { it.transaction.id == item.transactionId }?.transaction
                     tx?.let {
-                        transactionRepository.markFireflySynced(
-                            transactionId = it.id,
+                        fireflySyncDao.markSynced(
+                            txId = it.id,
                             externalId = item.externalId,
-                            fireflyTransactionId = item.fireflyId,
-                            fireflyUpdatedAt = instantToLocalDateTime(item.remoteUpdatedAt)
+                            remoteTxId = item.fireflyId,
+                            updatedAt = instantToLocalDateTime(item.remoteUpdatedAt)
                         )
                     }
                 }
@@ -1290,26 +1349,38 @@ class FireflyClient @Inject constructor(
 
     /**
      * Full remote transaction lookup for two-way sync (#7).
+     *
+     * Uses the search endpoint with `external_id_is:"…"` — the plain list
+     * endpoint does not filter by that field. Search results are deduped by the
+     * exact external id.
      */
     private suspend fun getRemoteTransactionByExternalId(
         baseUrl: String,
         accessToken: String,
         externalId: String
     ): RemoteTransactionInfo? {
-        if (baseUrl.isBlank() || accessToken.isBlank()) return null
+        if (baseUrl.isBlank() || accessToken.isBlank() || externalId.isBlank()) return null
 
         return withContext(Dispatchers.IO) {
             try {
                 val normalizedUrl = normalizeBaseUrl(baseUrl)
-                val response: HttpResponse = client.get("$normalizedUrl$API_PATH/transactions?external_id=$externalId") {
+                val query = URLEncoder.encode("external_id_is:\"$externalId\"", StandardCharsets.UTF_8.name())
+                val response: HttpResponse = client.get(
+                    "$normalizedUrl$API_PATH/search/transactions?query=$query&limit=5"
+                ) {
                     header("Authorization", "Bearer $accessToken")
                     header("Accept", "application/vnd.api+json")
                 }
 
-                if (!response.status.isSuccess()) return@withContext null
+                if (!response.status.isSuccess()) {
+                    diagnosticLogger.w(
+                        TAG,
+                        "Search $externalId HTTP ${response.status.value} ${response.bodyAsText().take(200)}"
+                    )
+                    return@withContext null
+                }
 
-                val body = response.bodyAsText()
-                parseRemoteTransaction(body)
+                parseRemoteTransaction(response.bodyAsText(), expectedExternalId = externalId)
             } catch (e: Exception) {
                 diagnosticLogger.e(TAG, "Failed to check external_id in Firefly", e)
                 null
@@ -1317,63 +1388,99 @@ class FireflyClient @Inject constructor(
         }
     }
 
-    private fun parseRemoteTransaction(body: String): RemoteTransactionInfo? {
+    private fun parseRemoteTransaction(body: String, expectedExternalId: String? = null): RemoteTransactionInfo? {
         return try {
             val root = json.parseToJsonElement(body).jsonObject
-            val data = root["data"]?.jsonArray?.firstOrNull()?.jsonObject ?: return null
-            val id = data["id"]?.jsonPrimitive?.contentOrNull ?: return null
-            val attrs = data["attributes"]?.jsonObject ?: return null
-            val updatedAt = parseInstant(attrs["updated_at"]?.jsonPrimitive?.contentOrNull)
-            val transactions = attrs["transactions"]?.jsonArray ?: return null
-            val first = transactions.firstOrNull()?.jsonObject ?: return null
-
-            val type = first["type"]?.jsonPrimitive?.contentOrNull ?: "withdrawal"
-            val amount = first["amount"]?.jsonPrimitive?.contentOrNull?.toBigDecimalOrNull() ?: java.math.BigDecimal.ZERO
-            val dateStr = first["date"]?.jsonPrimitive?.contentOrNull
-            val date = dateStr?.let { parseDate(it) }
-            val description = first["description"]?.jsonPrimitive?.contentOrNull
-                ?: attrs["title"]?.jsonPrimitive?.contentOrNull
-            val category = first["category_name"]?.jsonPrimitive?.contentOrNull
-            val sourceName = first["source_name"]?.jsonPrimitive?.contentOrNull
-            val destinationName = first["destination_name"]?.jsonPrimitive?.contentOrNull
-
-            // Collect journal IDs from all transaction journals; needed for receipt uploads.
-            val journalIds = transactions.mapNotNull { txElement ->
-                val txObj = txElement.jsonObject
-                txObj["transaction_journal_id"]?.jsonPrimitive?.longOrNull?.toString()
-                    ?: txObj["id"]?.jsonPrimitive?.contentOrNull
-            }
-
-            val splits = if (transactions.size > 1) {
-                transactions.mapNotNull { txElement ->
-                    val txObj = txElement.jsonObject
-                    val splitAmount = txObj["amount"]?.jsonPrimitive?.contentOrNull?.toBigDecimalOrNull()
-                        ?: return@mapNotNull null
-                    RemoteSplitInfo(
-                        amount = splitAmount,
-                        category = txObj["category_name"]?.jsonPrimitive?.contentOrNull,
-                        description = txObj["description"]?.jsonPrimitive?.contentOrNull
-                    )
+            val dataEl = root["data"] ?: return null
+            val objects = when {
+                dataEl is kotlinx.serialization.json.JsonArray -> dataEl.mapNotNull {
+                    runCatching { it.jsonObject }.getOrNull()
                 }
-            } else emptyList()
-
-            RemoteTransactionInfo(
-                fireflyId = id,
-                updatedAt = updatedAt,
-                type = type,
-                amount = amount,
-                date = date,
-                description = description,
-                category = category,
-                sourceName = sourceName,
-                destinationName = destinationName,
-                journalIds = journalIds,
-                splits = splits
-            )
+                dataEl is JsonObject -> listOf(dataEl)
+                else -> return null
+            }
+            val parsed = objects.mapNotNull { parseRemoteObject(it) }
+            if (expectedExternalId != null) {
+                parsed.firstOrNull { it.externalId == expectedExternalId }
+            } else {
+                parsed.firstOrNull()
+            }
         } catch (e: Exception) {
             diagnosticLogger.w(TAG, "Failed to parse remote transaction", e)
             null
         }
+    }
+
+    private fun parseRemoteObject(data: JsonObject): RemoteTransactionInfo? {
+        val id = data["id"]?.jsonPrimitive?.contentOrNull ?: return null
+        val attrs = data["attributes"]?.jsonObject ?: return null
+        val updatedAt = parseInstant(attrs["updated_at"]?.jsonPrimitive?.contentOrNull)
+        val transactions = attrs["transactions"]?.jsonArray ?: return null
+        val first = transactions.firstOrNull()?.jsonObject ?: return null
+
+        val type = first["type"]?.jsonPrimitive?.contentOrNull ?: "withdrawal"
+        val amount = first["amount"]?.jsonPrimitive?.contentOrNull?.toBigDecimalOrNull() ?: java.math.BigDecimal.ZERO
+        val dateStr = first["date"]?.jsonPrimitive?.contentOrNull
+        val date = dateStr?.let { parseDate(it) }
+        val description = first["description"]?.jsonPrimitive?.contentOrNull
+            ?: attrs["title"]?.jsonPrimitive?.contentOrNull
+        val category = first["category_name"]?.jsonPrimitive?.contentOrNull
+        val sourceName = first["source_name"]?.jsonPrimitive?.contentOrNull
+        val destinationName = first["destination_name"]?.jsonPrimitive?.contentOrNull
+        val externalId = first["external_id"]?.jsonPrimitive?.contentOrNull
+
+        // Collect journal IDs from all transaction journals; needed for receipt uploads.
+        val journalIds = transactions.mapNotNull { txElement ->
+            val txObj = txElement.jsonObject
+            txObj["transaction_journal_id"]?.jsonPrimitive?.longOrNull?.toString()
+                ?: txObj["id"]?.jsonPrimitive?.contentOrNull
+        }
+
+        val splits = if (transactions.size > 1) {
+            transactions.mapNotNull { txElement ->
+                val txObj = txElement.jsonObject
+                val splitAmount = txObj["amount"]?.jsonPrimitive?.contentOrNull?.toBigDecimalOrNull()
+                    ?: return@mapNotNull null
+                RemoteSplitInfo(
+                    amount = splitAmount,
+                    category = txObj["category_name"]?.jsonPrimitive?.contentOrNull,
+                    description = txObj["description"]?.jsonPrimitive?.contentOrNull
+                )
+            }
+        } else emptyList()
+
+        return RemoteTransactionInfo(
+            fireflyId = id,
+            updatedAt = updatedAt,
+            type = type,
+            amount = amount,
+            date = date,
+            description = description,
+            category = category,
+            sourceName = sourceName,
+            destinationName = destinationName,
+            journalIds = journalIds,
+            splits = splits,
+            externalId = externalId
+        )
+    }
+
+    /**
+     * Ours-only guard: a remote row is ours only when its external_id exactly
+     * matches the id we derived for it AND that id uses one of our prefixes
+     * (both `pennywise-` — this repo's rows — and `cashiro-` — rows created by
+     * the former cashiro fork — are owned by us). Firefly-native rows never
+     * match and are left untouched.
+     */
+    private fun isOwnedByUs(remote: RemoteTransactionInfo, expectedExternalId: String): Boolean {
+        if (expectedExternalId.isBlank()) return false
+        if (!expectedExternalId.startsWith("pennywise-") && !expectedExternalId.startsWith("cashiro-")) return false
+        return remote.externalId == expectedExternalId
+    }
+
+    private fun describe(tx: TransactionEntity): String {
+        val merchant = tx.merchantName.take(40)
+        return "tx #${tx.id} $merchant ${tx.currency} ${tx.amount} ${computeExternalId(tx)}"
     }
 
     private data class RemoteTransactionInfo(
@@ -1387,7 +1494,8 @@ class FireflyClient @Inject constructor(
         val sourceName: String?,
         val destinationName: String?,
         val journalIds: List<String> = emptyList(),
-        val splits: List<RemoteSplitInfo>
+        val splits: List<RemoteSplitInfo>,
+        val externalId: String? = null
     )
 
     private data class RemoteSplitInfo(
@@ -1730,6 +1838,8 @@ class FireflyClient @Inject constructor(
         val category = remote.category?.takeIf { it.isNotBlank() } ?: tx.category
         val dateTime = remote.date?.atStartOfDay() ?: tx.dateTime
 
+        // Local-data update only — sync state (incl. source/destination names
+        // and updated-at) is recorded in the sidecar DB by the caller.
         transactionRepository.updateTransactionFromFirefly(
             transactionId = tx.id,
             amount = amount,
@@ -1738,10 +1848,6 @@ class FireflyClient @Inject constructor(
             description = remote.description,
             dateTime = dateTime,
             transactionType = mapRemoteTypeToLocal(remote.type),
-            fireflyTransactionId = remote.fireflyId,
-            fireflySourceName = remote.sourceName,
-            fireflyDestinationName = remote.destinationName,
-            fireflyUpdatedAt = remote.updatedAt?.let { instantToLocalDateTime(it) },
             syncedAt = syncedAt
         )
 
@@ -2379,7 +2485,9 @@ class FireflyClient @Inject constructor(
         subscriptions: List<SubscriptionEntity>,
         baseUrl: String,
         accessToken: String,
-        defaultAssetAccount: String?
+        defaultAssetAccount: String?,
+        /** Last-known sidecar sync state per local subscription id (from [FireflySyncEngine]). */
+        stateBySubscription: Map<Long, FireflySubscriptionStateEntity> = emptyMap()
     ): RecurringSyncResult {
         if (baseUrl.isBlank() || accessToken.isBlank()) {
             return RecurringSyncResult(created = 0, updated = 0, failed = subscriptions.size, error = "Firefly not configured")
@@ -2396,7 +2504,8 @@ class FireflyClient @Inject constructor(
 
                 subscriptions.forEach { local ->
                     try {
-                        val remote = local.fireflyRecurringId?.let { id ->
+                        val state = stateBySubscription[local.id]
+                        val remote = state?.fireflyRecurringId?.let { id ->
                             remoteRecurrings.find { it.id == id }
                         } ?: remoteRecurrings.find { it.title.equals(local.merchantName, ignoreCase = true) }
 
@@ -2407,7 +2516,13 @@ class FireflyClient @Inject constructor(
                                 failed++
                                 return@forEach
                             }
-                            subscriptionRepository.updateRecurringSyncInfo(local.id, newId, now)
+                            fireflySyncDao.upsertSubscriptionState(
+                                FireflySubscriptionStateEntity(
+                                    localSubscriptionId = local.id,
+                                    fireflyRecurringId = newId,
+                                    syncedAt = now
+                                )
+                            )
                             created++
                             return@forEach
                         }
@@ -2415,7 +2530,7 @@ class FireflyClient @Inject constructor(
                         processedRemoteIds.add(remote.id)
 
                         val localInstant = toInstant(local.updatedAt)
-                        val lastSyncInstant = local.fireflyRecurringSyncedAt?.let { toInstant(it) }
+                        val lastSyncInstant = state?.syncedAt?.let { toInstant(it) }
                         val remoteInstant = remote.updatedAt
 
                         val localChanged = lastSyncInstant == null || localInstant.isAfter(lastSyncInstant)
@@ -2423,7 +2538,7 @@ class FireflyClient @Inject constructor(
 
                         when {
                             !localChanged && !remoteChanged -> {
-                                subscriptionRepository.updateRecurringSyncInfo(local.id, remote.id, now)
+                                fireflySyncDao.updateSubscriptionSyncInfo(local.id, remote.id, now)
                             }
                             localChanged && !remoteChanged -> {
                                 val ok = updateRecurringTransaction(
@@ -2434,7 +2549,7 @@ class FireflyClient @Inject constructor(
                                     defaultAssetAccount = defaultAssetAccount
                                 )
                                 if (ok) {
-                                    subscriptionRepository.updateRecurringSyncInfo(local.id, remote.id, now)
+                                    fireflySyncDao.updateSubscriptionSyncInfo(local.id, remote.id, now)
                                     updated++
                                 } else failed++
                             }
@@ -2447,10 +2562,9 @@ class FireflyClient @Inject constructor(
                                     nextPaymentDate = remote.firstDate,
                                     billingCycle = mapFireflyFrequencyToBillingCycle(remote.repeatFrequency),
                                     currency = local.currency,
-                                    direction = if (remote.type == "deposit") SubscriptionDirection.INCOME else SubscriptionDirection.EXPENSE,
-                                    recurringId = remote.id,
-                                    syncedAt = now
+                                    direction = if (remote.type == "deposit") SubscriptionDirection.INCOME else SubscriptionDirection.EXPENSE
                                 )
+                                fireflySyncDao.updateSubscriptionSyncInfo(local.id, remote.id, now)
                                 updated++
                             }
                         }
@@ -2476,7 +2590,13 @@ class FireflyClient @Inject constructor(
                                 billingCycle = mapFireflyFrequencyToBillingCycle(remote.repeatFrequency)
                             )
                         )
-                        subscriptionRepository.updateRecurringSyncInfo(insertId, remote.id, now)
+                        fireflySyncDao.upsertSubscriptionState(
+                            FireflySubscriptionStateEntity(
+                                localSubscriptionId = insertId,
+                                fireflyRecurringId = remote.id,
+                                syncedAt = now
+                            )
+                        )
                         created++
                     } catch (e: Exception) {
                         diagnosticLogger.e(TAG, "Failed to import recurring ${remote.title}", e)

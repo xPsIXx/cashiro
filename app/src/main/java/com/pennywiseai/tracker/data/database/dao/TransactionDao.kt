@@ -245,37 +245,6 @@ interface TransactionDao {
         dateEnd: LocalDateTime
     ): List<TransactionEntity>
 
-    // Firefly III sync status updates (called from processor after opt-in push)
-    @Query("""
-        UPDATE transactions 
-        SET firefly_synced_at = :syncedAt,
-            firefly_external_id = :externalId,
-            firefly_transaction_id = :transactionIdRemote,
-            firefly_updated_at = :fireflyUpdatedAt,
-            firefly_last_error = NULL,
-            updated_at = :updatedAt
-        WHERE id = :transactionId
-    """)
-    suspend fun markFireflySynced(
-        transactionId: Long,
-        externalId: String?,
-        transactionIdRemote: String? = null,
-        fireflyUpdatedAt: LocalDateTime? = null,
-        syncedAt: LocalDateTime = java.time.LocalDateTime.now(),
-        updatedAt: LocalDateTime = java.time.LocalDateTime.now()
-    )
-
-    @Query("""
-        UPDATE transactions 
-        SET firefly_last_error = :error, updated_at = :updatedAt 
-        WHERE id = :transactionId
-    """)
-    suspend fun markFireflyError(
-        transactionId: Long,
-        error: String,
-        updatedAt: LocalDateTime = java.time.LocalDateTime.now()
-    )
-
     @Query("""
         UPDATE transactions
         SET amount = :amount,
@@ -284,12 +253,6 @@ interface TransactionDao {
             description = :description,
             date_time = :dateTime,
             transaction_type = :transactionType,
-            firefly_transaction_id = :fireflyTransactionId,
-            firefly_source_name = :fireflySourceName,
-            firefly_destination_name = :fireflyDestinationName,
-            firefly_updated_at = :fireflyUpdatedAt,
-            firefly_synced_at = :syncedAt,
-            firefly_last_error = NULL,
             updated_at = :updatedAt
         WHERE id = :transactionId
     """)
@@ -301,30 +264,6 @@ interface TransactionDao {
         description: String?,
         dateTime: LocalDateTime,
         transactionType: String,
-        fireflyTransactionId: String?,
-        fireflySourceName: String?,
-        fireflyDestinationName: String?,
-        fireflyUpdatedAt: LocalDateTime?,
-        syncedAt: LocalDateTime?,
-        updatedAt: LocalDateTime = java.time.LocalDateTime.now()
-    )
-
-    // Failed Firefly syncs (for the retry queue screen)
-    @Query("""
-        SELECT * FROM transactions 
-        WHERE is_deleted = 0 
-        AND firefly_last_error IS NOT NULL 
-        ORDER BY date_time DESC
-    """)
-    fun getFailedFireflySyncs(): Flow<List<TransactionEntity>>
-
-    @Query("SELECT COUNT(*) FROM transactions WHERE is_deleted = 0 AND firefly_last_error IS NOT NULL")
-    fun getFailedFireflySyncCount(): Flow<Int>
-
-    @Query("UPDATE transactions SET firefly_external_id = :newExternalId, updated_at = :updatedAt WHERE id = :transactionId")
-    suspend fun updateFireflyExternalId(
-        transactionId: Long,
-        newExternalId: String,
         updatedAt: LocalDateTime = java.time.LocalDateTime.now()
     )
 }

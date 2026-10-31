@@ -45,15 +45,6 @@ class SubscriptionRepository @Inject constructor(
     suspend fun getSubscriptionById(id: Long): SubscriptionEntity? = 
         subscriptionDao.getSubscriptionById(id)
     
-    suspend fun getSubscriptionByFireflyRecurringId(id: String): SubscriptionEntity? =
-        subscriptionDao.getSubscriptionByFireflyRecurringId(id)
-
-    suspend fun updateRecurringSyncInfo(
-        subscriptionId: Long,
-        recurringId: String?,
-        syncedAt: LocalDateTime?
-    ) = subscriptionDao.updateRecurringSyncInfo(subscriptionId, recurringId, syncedAt)
-
     suspend fun updateSubscriptionFromSync(
         subscriptionId: Long,
         merchantName: String,
@@ -61,9 +52,7 @@ class SubscriptionRepository @Inject constructor(
         nextPaymentDate: LocalDate?,
         billingCycle: String,
         currency: String,
-        direction: SubscriptionDirection,
-        recurringId: String?,
-        syncedAt: LocalDateTime?
+        direction: SubscriptionDirection
     ) = subscriptionDao.updateSubscriptionFromSync(
         subscriptionId = subscriptionId,
         merchantName = merchantName,
@@ -71,9 +60,7 @@ class SubscriptionRepository @Inject constructor(
         nextPaymentDate = nextPaymentDate,
         billingCycle = billingCycle,
         currency = currency,
-        direction = direction,
-        recurringId = recurringId,
-        syncedAt = syncedAt
+        direction = direction
     )
 
     suspend fun insertSubscription(subscription: SubscriptionEntity): Long = 

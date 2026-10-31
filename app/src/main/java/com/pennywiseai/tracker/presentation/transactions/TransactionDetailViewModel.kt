@@ -23,6 +23,8 @@ import com.pennywiseai.tracker.data.repository.MerchantMappingRepository
 import com.pennywiseai.tracker.data.repository.TransactionGroupRepository
 import com.pennywiseai.tracker.data.repository.TransactionRepository
 import com.pennywiseai.tracker.data.firefly.FireflyClient
+import com.pennywiseai.tracker.data.firefly.FireflySyncEngine
+import com.pennywiseai.tracker.data.firefly.FireflyTransactionStateEntity
 import com.pennywiseai.tracker.data.database.entity.TransactionGroupEntity
 import com.pennywiseai.tracker.core.Constants
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -47,7 +49,7 @@ class TransactionDetailViewModel @Inject constructor(
     private val currencyConversionService: CurrencyConversionService,
     private val userPreferencesRepository: UserPreferencesRepository,
     private val receiptManager: ReceiptManager,
-    private val fireflyClient: FireflyClient,
+    private val fireflySyncEngine: FireflySyncEngine,
     private val diagnosticLogger: DiagnosticLogger,
     @dagger.hilt.android.qualifiers.ApplicationContext private val context: android.content.Context
 ) : ViewModel() {
@@ -97,8 +99,14 @@ class TransactionDetailViewModel @Inject constructor(
     val deleteSuccess: StateFlow<Boolean> = _deleteSuccess.asStateFlow()
     val existingTransactionCount: StateFlow<Int> = _existingTransactionCount.asStateFlow()
 
-    // Firefly sync
-    val isFireflySyncEnabled = userPreferencesRepository.fireflySyncEnabledFlow
+    // Firefly sync (add-on sidecar state; null = no sync for this transaction yet)
+    val isFireflySyncEnabled = fireflySyncEngine.syncEnabled()
+
+    val fireflyState: StateFlow<FireflyTransactionStateEntity?> = _transaction
+        .flatMapLatest { tx ->
+            if (tx == null) flowOf(null) else fireflySyncEngine.stateFor(tx.id)
+        }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
 
     // Budget impact state (for INCOME transactions only)
     private val _budgetImpactType = MutableStateFlow<BudgetImpactType?>(null)
@@ -948,53 +956,26 @@ class TransactionDetailViewModel @Inject constructor(
         }
     }
 
-    /** Manually sync (or retry) the current transaction to Firefly */
+    /** Manually sync (or retry) the current transaction to Firefly (engine handles config + state). */
     fun syncToFirefly() {
         val txn = _transaction.value ?: return
         viewModelScope.launch {
             try {
-                val prefs = userPreferencesRepository.userPreferences.first()
-                val url = prefs.fireflyBaseUrl?.takeIf { it.isNotBlank() }
-                val token = prefs.fireflyAccessToken?.takeIf { it.isNotBlank() }
-
-                if (url == null || token == null) {
-                    _errorMessage.value = "Firefly is not configured"
-                    return@launch
-                }
-
-                val accountMappings = userPreferencesRepository.fireflyAccountMappingsFlow.first()
-                val categoryMappings = userPreferencesRepository.fireflyCategoryMappingsFlow.first()
-                val includeRawSms = userPreferencesRepository.fireflyIncludeRawSmsFlow.first()
-
                 // Preserve splits when syncing from detail so they are not dropped remotely.
                 val splits = transactionRepository.getTransactionWithSplitsSync(txn.id)?.splits ?: emptyList()
 
-                val result = fireflyClient.syncTransaction(
-                    transaction = txn,
-                    splits = splits,
-                    baseUrl = url,
-                    accessToken = token,
-                    defaultAssetAccount = prefs.fireflyDefaultAssetAccount,
-                    accountMappings = accountMappings,
-                    categoryMappings = categoryMappings,
-                    includeRawSmsInNotes = includeRawSms,
-                    uploadReceipt = true
-                )
-
-                when (result) {
-                    is com.pennywiseai.tracker.data.firefly.FireflyClient.SyncResult.Success -> {
-                        val extId = fireflyClient.computeExternalId(txn)
-                        transactionRepository.markFireflySynced(txn.id, extId)
-                        // Refresh the transaction
+                val syncResult = fireflySyncEngine.syncTransaction(txn, splits)
+                when (syncResult) {
+                    is FireflyClient.SyncResult.Success -> {
+                        // Sidecar state row updates itself; refresh the local row.
                         _transaction.value = transactionRepository.getTransactionById(txn.id)
                         diagnosticLogger.d("TxnDetail", "Firefly sync succeeded for tx ${txn.id}")
                     }
-                    is com.pennywiseai.tracker.data.firefly.FireflyClient.SyncResult.Error -> {
-                        transactionRepository.markFireflyError(txn.id, result.message)
+                    is FireflyClient.SyncResult.Error -> {
                         _transaction.value = transactionRepository.getTransactionById(txn.id)
-                        diagnosticLogger.w("TxnDetail", "Firefly sync error for tx ${txn.id}: ${result.message}")
+                        diagnosticLogger.w("TxnDetail", "Firefly sync failed for tx ${txn.id}: ${syncResult.message}")
                     }
-                    else -> {}
+                    FireflyClient.SyncResult.Skipped -> Unit
                 }
             } catch (e: Exception) {
                 _errorMessage.value = "Firefly sync failed: ${e.message}"

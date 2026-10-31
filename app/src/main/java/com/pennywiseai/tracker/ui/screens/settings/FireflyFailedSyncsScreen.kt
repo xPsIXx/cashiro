@@ -101,11 +101,12 @@ fun FireflyFailedSyncsScreen(
                     contentPadding = PaddingValues(16.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    items(failedSyncs, key = { it.id }) { transaction ->
+                    items(failedSyncs, key = { it.transaction.id }) { failed ->
                         FailedSyncItem(
-                            transaction = transaction,
-                            isSyncing = syncingIds.contains(transaction.id),
-                            onRetry = { viewModel.retrySync(transaction) }
+                            transaction = failed.transaction,
+                            error = failed.error,
+                            isSyncing = syncingIds.contains(failed.transaction.id),
+                            onRetry = { viewModel.retrySync(failed.transaction) }
                         )
                     }
                 }
@@ -117,6 +118,7 @@ fun FireflyFailedSyncsScreen(
 @Composable
 private fun FailedSyncItem(
     transaction: TransactionEntity,
+    error: String?,
     isSyncing: Boolean,
     onRetry: () -> Unit
 ) {
@@ -159,9 +161,9 @@ private fun FailedSyncItem(
 
             Spacer(modifier = Modifier.height(8.dp))
 
-            transaction.fireflyLastError?.let { error ->
+            error?.let {
                 Text(
-                    text = error,
+                    text = it,
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.error,
                     maxLines = 2,

@@ -16,7 +16,10 @@ import kotlinx.coroutines.flow.map
 import javax.inject.Inject
 import javax.inject.Singleton
 
-private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(
+// `internal`, not private: the Firefly add-on reads the legacy firefly_* keys
+// by raw name during its one-time sidecar migration (see
+// com.pennywiseai.tracker.data.firefly.FireflyPreferencesRepository).
+internal val Context.dataStore: DataStore<Preferences> by preferencesDataStore(
     name = "user_preferences",
     produceMigrations = { _ ->
         listOf(
@@ -46,8 +49,7 @@ private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(
 
 @Singleton
 class UserPreferencesRepository @Inject constructor(
-    @ApplicationContext private val context: Context,
-    private val fireflyTokenManager: com.pennywiseai.tracker.data.firefly.FireflyTokenManager
+    @ApplicationContext private val context: Context
 ) {
     private object PreferencesKeys {
         val DARK_THEME_ENABLED = booleanPreferencesKey("dark_theme_enabled")
@@ -125,31 +127,6 @@ class UserPreferencesRepository @Inject constructor(
         // UPI VPA → contact name lookup (opt-in; gated by READ_CONTACTS).
         val USE_CONTACTS_FOR_VPA = booleanPreferencesKey("use_contacts_for_vpa")
 
-        // Firefly III integration (opt-in external sync for parsed transactions)
-        val FIREFLY_SYNC_ENABLED = booleanPreferencesKey("firefly_sync_enabled")
-        val FIREFLY_BASE_URL = stringPreferencesKey("firefly_base_url")
-        val FIREFLY_ACCESS_TOKEN = stringPreferencesKey("firefly_access_token")
-        val FIREFLY_DEFAULT_ASSET_ACCOUNT = stringPreferencesKey("firefly_default_asset_account")
-        val FIREFLY_LAST_SYNC_TIMESTAMP = longPreferencesKey("firefly_last_sync_timestamp")
-        val FIREFLY_LAST_SYNC_ERROR = stringPreferencesKey("firefly_last_sync_error")
-
-        // Firefly account mappings: JSON string of "BANK**LAST4" -> "Firefly Asset Account Name"
-        val FIREFLY_ACCOUNT_MAPPINGS = stringPreferencesKey("firefly_account_mappings")
-
-        // Firefly category mappings: JSON string of "PennyWise Category" -> "Firefly Category Name"
-        val FIREFLY_CATEGORY_MAPPINGS = stringPreferencesKey("firefly_category_mappings")
-
-        // Whether to include raw SMS body in Firefly notes
-        val FIREFLY_INCLUDE_RAW_SMS = booleanPreferencesKey("firefly_include_raw_sms")
-
-        // Auto sync interval for Firefly: "never", "daily", "weekly"
-        val FIREFLY_AUTO_SYNC_INTERVAL = stringPreferencesKey("firefly_auto_sync_interval")
-
-        // Flag to track if legacy Firefly external ID migration/reconcile has run
-        val FIREFLY_MIGRATION_RAN = booleanPreferencesKey("firefly_migration_ran")
-
-        // Flag to track if the plain-text DataStore token has been migrated to secure storage
-        val FIREFLY_TOKEN_MIGRATED_TO_SECURE = booleanPreferencesKey("firefly_token_migrated_to_secure")
     }
 
     val userPreferences: Flow<UserPreferences> = context.dataStore.data
@@ -189,15 +166,7 @@ class UserPreferencesRepository @Inject constructor(
                 profileBackgroundColor = preferences[PreferencesKeys.PROFILE_BACKGROUND_COLOR] ?: 0,
                 hasCompletedOnboarding = preferences[PreferencesKeys.HAS_COMPLETED_ONBOARDING] ?: false,
                 mainAccountKey = preferences[PreferencesKeys.MAIN_ACCOUNT_KEY],
-                baseCurrencyUserSet = preferences[PreferencesKeys.BASE_CURRENCY_USER_SET] ?: false,
-                fireflySyncEnabled = preferences[PreferencesKeys.FIREFLY_SYNC_ENABLED] ?: false,
-                fireflyBaseUrl = preferences[PreferencesKeys.FIREFLY_BASE_URL],
-                fireflyAccessToken = fireflyTokenManager.getAccessToken(),
-                fireflyDefaultAssetAccount = preferences[PreferencesKeys.FIREFLY_DEFAULT_ASSET_ACCOUNT],
-                fireflyLastSyncTimestamp = preferences[PreferencesKeys.FIREFLY_LAST_SYNC_TIMESTAMP],
-                fireflyLastSyncError = preferences[PreferencesKeys.FIREFLY_LAST_SYNC_ERROR],
-                fireflyAutoSyncInterval = preferences[PreferencesKeys.FIREFLY_AUTO_SYNC_INTERVAL] ?: "never",
-                fireflyMigrationRan = preferences[PreferencesKeys.FIREFLY_MIGRATION_RAN] ?: false
+                baseCurrencyUserSet = preferences[PreferencesKeys.BASE_CURRENCY_USER_SET] ?: false
             )
         }
 
@@ -717,212 +686,6 @@ class UserPreferencesRepository @Inject constructor(
         }
     }
 
-    // Firefly III integration (opt-in SMS -> Firefly sync)
-    val fireflySyncEnabledFlow: Flow<Boolean> = context.dataStore.data
-        .map { preferences -> preferences[PreferencesKeys.FIREFLY_SYNC_ENABLED] ?: false }
-
-    val fireflyBaseUrlFlow: Flow<String?> = context.dataStore.data
-        .map { preferences -> preferences[PreferencesKeys.FIREFLY_BASE_URL] }
-
-    // Token is stored in encrypted prefs, not DataStore, to avoid leaking the
-    // Personal Access Token to plain-text backups.
-    val fireflyAccessTokenFlow: Flow<String?> = fireflyTokenManager.accessTokenFlow
-
-    val fireflyDefaultAssetAccountFlow: Flow<String?> = context.dataStore.data
-        .map { preferences -> preferences[PreferencesKeys.FIREFLY_DEFAULT_ASSET_ACCOUNT] }
-
-    val fireflyLastSyncErrorFlow: Flow<String?> = context.dataStore.data
-        .map { preferences -> preferences[PreferencesKeys.FIREFLY_LAST_SYNC_ERROR] }
-
-    val fireflyAutoSyncIntervalFlow: Flow<String> = context.dataStore.data
-        .map { preferences -> preferences[PreferencesKeys.FIREFLY_AUTO_SYNC_INTERVAL] ?: "never" }
-
-    val fireflyMigrationRanFlow: Flow<Boolean> = context.dataStore.data
-        .map { preferences -> preferences[PreferencesKeys.FIREFLY_MIGRATION_RAN] ?: false }
-
-    suspend fun setFireflySyncEnabled(enabled: Boolean) {
-        context.dataStore.edit { preferences ->
-            preferences[PreferencesKeys.FIREFLY_SYNC_ENABLED] = enabled
-        }
-        if (!enabled) {
-            // Clear sensitive credentials from encrypted storage when disabling.
-            fireflyTokenManager.clearCredentials()
-        }
-    }
-
-    suspend fun setFireflyBaseUrl(url: String?) {
-        context.dataStore.edit { preferences ->
-            if (url.isNullOrBlank()) {
-                preferences.remove(PreferencesKeys.FIREFLY_BASE_URL)
-            } else {
-                preferences[PreferencesKeys.FIREFLY_BASE_URL] = url.trim().trimEnd('/')
-            }
-        }
-    }
-
-    suspend fun setFireflyDefaultAssetAccount(account: String?) {
-        context.dataStore.edit { preferences ->
-            if (account.isNullOrBlank()) {
-                preferences.remove(PreferencesKeys.FIREFLY_DEFAULT_ASSET_ACCOUNT)
-            } else {
-                preferences[PreferencesKeys.FIREFLY_DEFAULT_ASSET_ACCOUNT] = account.trim()
-            }
-        }
-    }
-
-    suspend fun updateFireflyLastSync(timestamp: Long, error: String? = null) {
-        context.dataStore.edit { preferences ->
-            preferences[PreferencesKeys.FIREFLY_LAST_SYNC_TIMESTAMP] = timestamp
-            if (error != null) {
-                preferences[PreferencesKeys.FIREFLY_LAST_SYNC_ERROR] = error
-            } else {
-                preferences.remove(PreferencesKeys.FIREFLY_LAST_SYNC_ERROR)
-            }
-        }
-    }
-
-    suspend fun clearFireflyLastError() {
-        context.dataStore.edit { preferences ->
-            preferences.remove(PreferencesKeys.FIREFLY_LAST_SYNC_ERROR)
-        }
-    }
-
-    // Firefly account mappings (BANK**LAST4 -> Firefly asset account name)
-    val fireflyAccountMappingsFlow: Flow<Map<String, String>> = context.dataStore.data
-        .map { preferences ->
-            val json = preferences[PreferencesKeys.FIREFLY_ACCOUNT_MAPPINGS] ?: "{}"
-            try {
-                // Simple manual parsing for "key":"value" pairs
-                if (json == "{}") emptyMap()
-                else json.trim('{', '}')
-                    .split(",")
-                    .mapNotNull { pair ->
-                        val parts = pair.split(":", limit = 2)
-                        if (parts.size == 2) {
-                            val k = parts[0].trim().trim('"')
-                            val v = parts[1].trim().trim('"')
-                            if (k.isNotBlank() && v.isNotBlank()) k to v else null
-                        } else null
-                    }.toMap()
-            } catch (e: Exception) {
-                emptyMap()
-            }
-        }
-
-    suspend fun setFireflyAccountMapping(accountKey: String, fireflyAccountName: String) {
-        context.dataStore.edit { preferences ->
-            val current = preferences[PreferencesKeys.FIREFLY_ACCOUNT_MAPPINGS]?.let {
-                try { it.trim('{','}').split(",").associate { p ->
-                    val parts = p.split(":", limit=2)
-                    parts[0].trim('"') to parts[1].trim('"')
-                } } catch (_: Exception) { emptyMap() }
-            } ?: emptyMap()
-
-            val updated = current.toMutableMap().apply {
-                if (fireflyAccountName.isBlank()) remove(accountKey) else put(accountKey, fireflyAccountName.trim())
-            }
-
-            val newJson = if (updated.isEmpty()) "{}" else updated.entries.joinToString(",", "{", "}") { "\"${it.key}\":\"${it.value}\"" }
-            preferences[PreferencesKeys.FIREFLY_ACCOUNT_MAPPINGS] = newJson
-        }
-    }
-
-    suspend fun clearFireflyAccountMapping(accountKey: String) {
-        setFireflyAccountMapping(accountKey, "")
-    }
-
-    suspend fun clearAllFireflyAccountMappings() {
-        context.dataStore.edit { preferences ->
-            preferences.remove(PreferencesKeys.FIREFLY_ACCOUNT_MAPPINGS)
-        }
-    }
-
-    // Firefly category mappings (PennyWise Category -> Firefly Category Name)
-    val fireflyCategoryMappingsFlow: Flow<Map<String, String>> = context.dataStore.data
-        .map { preferences ->
-            val json = preferences[PreferencesKeys.FIREFLY_CATEGORY_MAPPINGS] ?: "{}"
-            try {
-                if (json == "{}") emptyMap()
-                else json.trim('{', '}')
-                    .split(",")
-                    .mapNotNull { pair ->
-                        val parts = pair.split(":", limit = 2)
-                        if (parts.size == 2) {
-                            val k = parts[0].trim().trim('"')
-                            val v = parts[1].trim().trim('"')
-                            if (k.isNotBlank() && v.isNotBlank()) k to v else null
-                        } else null
-                    }.toMap()
-            } catch (e: Exception) {
-                emptyMap()
-            }
-        }
-
-    suspend fun setFireflyCategoryMapping(pennywiseCategory: String, fireflyCategory: String) {
-        context.dataStore.edit { preferences ->
-            val current = preferences[PreferencesKeys.FIREFLY_CATEGORY_MAPPINGS]?.let {
-                try {
-                    it.trim('{','}').split(",").associate { p ->
-                        val parts = p.split(":", limit=2)
-                        parts[0].trim('"') to parts[1].trim('"')
-                    }
-                } catch (_: Exception) { emptyMap() }
-            } ?: emptyMap()
-
-            val updated = current.toMutableMap().apply {
-                if (fireflyCategory.isBlank()) remove(pennywiseCategory) else put(pennywiseCategory.trim(), fireflyCategory.trim())
-            }
-
-            val newJson = if (updated.isEmpty()) "{}" else updated.entries.joinToString(",", "{", "}") { "\"${it.key}\":\"${it.value}\"" }
-            preferences[PreferencesKeys.FIREFLY_CATEGORY_MAPPINGS] = newJson
-        }
-    }
-
-    suspend fun clearFireflyCategoryMapping(pennywiseCategory: String) {
-        setFireflyCategoryMapping(pennywiseCategory, "")
-    }
-
-    // Whether to include raw SMS in Firefly notes (default = true to keep existing behavior)
-    val fireflyIncludeRawSmsFlow: Flow<Boolean> = context.dataStore.data
-        .map { it[PreferencesKeys.FIREFLY_INCLUDE_RAW_SMS] ?: true }
-
-    suspend fun setFireflyIncludeRawSms(include: Boolean) {
-        context.dataStore.edit { preferences ->
-            preferences[PreferencesKeys.FIREFLY_INCLUDE_RAW_SMS] = include
-        }
-    }
-
-    suspend fun setFireflyAutoSyncInterval(interval: String) {
-        context.dataStore.edit { preferences ->
-            preferences[PreferencesKeys.FIREFLY_AUTO_SYNC_INTERVAL] = interval
-        }
-    }
-
-    suspend fun setFireflyMigrationRan(ran: Boolean) {
-        context.dataStore.edit { preferences ->
-            preferences[PreferencesKeys.FIREFLY_MIGRATION_RAN] = ran
-        }
-    }
-
-    /**
-     * One-time migration: copy the legacy plain-text Firefly token from DataStore into
-     * EncryptedSharedPreferences, then remove the DataStore copy. Safe to call repeatedly.
-     */
-    suspend fun migrateTokenToSecureIfNeeded() {
-        context.dataStore.edit { preferences ->
-            if (preferences[PreferencesKeys.FIREFLY_TOKEN_MIGRATED_TO_SECURE] == true) return@edit
-
-            val legacyToken = preferences[PreferencesKeys.FIREFLY_ACCESS_TOKEN]
-            val legacyUrl = preferences[PreferencesKeys.FIREFLY_BASE_URL]
-            if (fireflyTokenManager.getAccessToken().isNullOrBlank() && !legacyToken.isNullOrBlank()) {
-                fireflyTokenManager.saveCredentials(legacyUrl, legacyToken)
-            }
-            preferences.remove(PreferencesKeys.FIREFLY_ACCESS_TOKEN)
-            preferences[PreferencesKeys.FIREFLY_TOKEN_MIGRATED_TO_SECURE] = true
-        }
-    }
-
-    fun getFireflyAutoSyncInterval(): Flow<String> = fireflyAutoSyncIntervalFlow
 }
 
 data class UserPreferences(
@@ -949,14 +712,5 @@ data class UserPreferences(
     val hasCompletedOnboarding: Boolean = false,
     val mainAccountKey: String? = null,
     val selectedProfileId: Long? = null,
-    val baseCurrencyUserSet: Boolean = false,
-    // Firefly III sync (opt-in)
-    val fireflySyncEnabled: Boolean = false,
-    val fireflyBaseUrl: String? = null,
-    val fireflyAccessToken: String? = null,
-    val fireflyDefaultAssetAccount: String? = null,
-    val fireflyLastSyncTimestamp: Long? = null,
-    val fireflyLastSyncError: String? = null,
-    val fireflyAutoSyncInterval: String = "never",  // "never", "daily", "weekly"
-    val fireflyMigrationRan: Boolean = false
+    val baseCurrencyUserSet: Boolean = false
 )

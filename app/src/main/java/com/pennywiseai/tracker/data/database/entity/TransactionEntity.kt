@@ -101,28 +101,6 @@ data class TransactionEntity(
     @ColumnInfo(name = "profile_id", defaultValue = "NULL")
     val profileId: Long? = null,
 
-    // Firefly III sync fields (opt-in integration)
-    @ColumnInfo(name = "firefly_synced_at", defaultValue = "NULL")
-    val fireflySyncedAt: LocalDateTime? = null,
-
-    @ColumnInfo(name = "firefly_external_id", defaultValue = "NULL")
-    val fireflyExternalId: String? = null,
-
-    @ColumnInfo(name = "firefly_transaction_id", defaultValue = "NULL")
-    val fireflyTransactionId: String? = null,
-
-    @ColumnInfo(name = "firefly_updated_at", defaultValue = "NULL")
-    val fireflyUpdatedAt: LocalDateTime? = null,
-
-    @ColumnInfo(name = "firefly_last_error", defaultValue = "NULL")
-    val fireflyLastError: String? = null,
-
-    @ColumnInfo(name = "firefly_source_name", defaultValue = "NULL")
-    val fireflySourceName: String? = null,
-
-    @ColumnInfo(name = "firefly_destination_name", defaultValue = "NULL")
-    val fireflyDestinationName: String? = null,
-
     @ColumnInfo(name = "excluded_from_analytics", defaultValue = "0")
     val excludedFromAnalytics: Boolean = false
 )

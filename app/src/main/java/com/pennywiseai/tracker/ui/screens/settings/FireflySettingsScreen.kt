@@ -26,8 +26,16 @@ import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.IconButton
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
+import android.content.Intent
+import com.pennywiseai.tracker.data.firefly.FireflyLogEntity
 import com.pennywiseai.tracker.ui.components.CustomTitleTopAppBar
 import com.pennywiseai.tracker.ui.theme.Spacing
+import java.time.format.DateTimeFormatter
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -35,7 +43,7 @@ fun FireflySettingsScreen(
     modifier: Modifier = Modifier,
     onNavigateBack: () -> Unit,
     onNavigateToFailedSyncs: () -> Unit = {},
-    viewModel: SettingsViewModel = hiltViewModel()
+    viewModel: FireflySettingsViewModel = hiltViewModel()
 ) {
     val fireflySyncEnabled by viewModel.fireflySyncEnabled.collectAsStateWithLifecycle(initialValue = false)
     val fireflyBaseUrl by viewModel.fireflyBaseUrl.collectAsStateWithLifecycle(initialValue = null)
@@ -395,6 +403,45 @@ fun FireflySettingsScreen(
                         ) {
                             Text("Dismiss")
                         }
+                    }
+                }
+            }
+
+            // Sync log (add-on sidecar)
+            Text(
+                "Sync log",
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.padding(top = 16.dp)
+            )
+            val syncLog by viewModel.fireflySyncLog.collectAsStateWithLifecycle(initialValue = emptyList())
+            val syncLogContext = LocalContext.current
+            val syncLogScope = rememberCoroutineScope()
+            Card {
+                Column(modifier = Modifier.padding(12.dp)) {
+                    if (syncLog.isEmpty()) {
+                        Text(
+                            "No sync activity yet",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    } else {
+                        syncLog.take(15).forEach { entry ->
+                            FireflySyncLogRow(entry)
+                        }
+                    }
+                    Row(horizontalArrangement = Arrangement.End, modifier = Modifier.fillMaxWidth()) {
+                        TextButton(onClick = {
+                            syncLogScope.launch {
+                                copySyncLogText(syncLogContext, viewModel.currentLogText())
+                            }
+                        }) { Text("Copy") }
+                        TextButton(onClick = {
+                            syncLogScope.launch {
+                                shareSyncLogText(syncLogContext, viewModel.currentLogText())
+                            }
+                        }) { Text("Share") }
+                        TextButton(onClick = { viewModel.clearSyncLog() }) { Text("Clear") }
                     }
                 }
             }
@@ -775,4 +822,66 @@ fun FireflySettingsScreen(
             }
         }
     }
+}
+
+@Composable
+private fun FireflySyncLogRow(entry: FireflyLogEntity) {
+    val statusLabel = when (entry.status) {
+        "ok" -> "OK"
+        "error" -> "ERROR"
+        "skip" -> "SKIP"
+        else -> entry.status
+    }
+    val statusColor = when (entry.status) {
+        "error" -> MaterialTheme.colorScheme.error
+        "ok" -> MaterialTheme.colorScheme.primary
+        else -> MaterialTheme.colorScheme.outline
+    }
+    Column(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                statusLabel,
+                style = MaterialTheme.typography.labelSmall,
+                color = statusColor,
+                fontWeight = FontWeight.SemiBold
+            )
+            Spacer(modifier = Modifier.width(6.dp))
+            Text(
+                entry.direction,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(modifier = Modifier.weight(1f))
+            Text(
+                entry.at.format(DateTimeFormatter.ofPattern("dd MMM HH:mm")),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        entry.message?.takeIf { it.isNotBlank() }?.let {
+            Text(
+                it,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 2,
+                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+            )
+        }
+    }
+}
+
+private fun copySyncLogText(context: Context, text: String) {
+    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+    clipboard.setPrimaryClip(ClipData.newPlainText("Firefly sync log", text))
+}
+
+private fun shareSyncLogText(context: Context, text: String) {
+    val intent = Intent(Intent.ACTION_SEND).apply {
+        type = "text/plain"
+        putExtra(Intent.EXTRA_TEXT, text)
+        putExtra(Intent.EXTRA_SUBJECT, "Cashiro Firefly sync log")
+    }
+    context.startActivity(Intent.createChooser(intent, "Share Firefly sync log").apply {
+        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    })
 }

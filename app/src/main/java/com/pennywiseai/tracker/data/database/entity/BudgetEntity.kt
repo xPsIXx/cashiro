@@ -59,16 +59,6 @@ data class BudgetEntity(
     @ColumnInfo(name = "display_order", defaultValue = "0")
     val displayOrder: Int = 0,
 
-    @ColumnInfo(name = "firefly_budget_id", defaultValue = "NULL")
-    val fireflyBudgetId: String? = null,
-
-    @ColumnInfo(name = "firefly_limit_id", defaultValue = "NULL")
-    val fireflyLimitId: String? = null,
-
-    @ColumnInfo(name = "firefly_synced_at", defaultValue = "NULL")
-    @Contextual
-    val fireflySyncedAt: LocalDateTime? = null,
-
     @ColumnInfo(name = "created_at")
     @Contextual
     val createdAt: LocalDateTime = LocalDateTime.now(),

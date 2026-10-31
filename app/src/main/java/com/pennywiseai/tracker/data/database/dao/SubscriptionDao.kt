@@ -69,22 +69,6 @@ interface SubscriptionDao {
     @Query("SELECT * FROM subscriptions WHERE state = :state ORDER BY next_payment_date ASC")
     suspend fun getSubscriptionsByStateList(state: SubscriptionState): List<SubscriptionEntity>
     
-    @Query("SELECT * FROM subscriptions WHERE firefly_recurring_id = :id LIMIT 1")
-    suspend fun getSubscriptionByFireflyRecurringId(id: String): SubscriptionEntity?
-
-    @Query("""
-        UPDATE subscriptions 
-        SET firefly_recurring_id = :recurringId,
-            firefly_recurring_synced_at = :syncedAt,
-            updated_at = datetime('now')
-        WHERE id = :subscriptionId
-    """)
-    suspend fun updateRecurringSyncInfo(
-        subscriptionId: Long,
-        recurringId: String?,
-        syncedAt: LocalDateTime?
-    )
-
     @Query("""
         UPDATE subscriptions 
         SET merchant_name = :merchantName,
@@ -93,8 +77,6 @@ interface SubscriptionDao {
             billing_cycle = :billingCycle,
             currency = :currency,
             direction = :direction,
-            firefly_recurring_id = :recurringId,
-            firefly_recurring_synced_at = :syncedAt,
             updated_at = datetime('now')
         WHERE id = :subscriptionId
     """)
@@ -105,9 +87,7 @@ interface SubscriptionDao {
         nextPaymentDate: LocalDate?,
         billingCycle: String,
         currency: String,
-        direction: com.pennywiseai.tracker.data.database.entity.SubscriptionDirection,
-        recurringId: String?,
-        syncedAt: LocalDateTime?
+        direction: com.pennywiseai.tracker.data.database.entity.SubscriptionDirection
     )
 
     @Query("DELETE FROM subscriptions")

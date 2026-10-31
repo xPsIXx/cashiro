@@ -1,0 +1,173 @@
+{
+  "formatVersion": 1,
+  "database": {
+    "version": 1,
+    "identityHash": "4d4ac59f1ecae97371f480e59dddbe7e",
+    "entities": [
+      {
+        "tableName": "firefly_transaction_state",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`localTransactionId` INTEGER NOT NULL, `externalId` TEXT, `fireflyTransactionId` TEXT, `fireflySourceName` TEXT, `fireflyDestinationName` TEXT, `fireflyUpdatedAt` TEXT, `syncedAt` TEXT, `lastError` TEXT, PRIMARY KEY(`localTransactionId`))",
+        "fields": [
+          {
+            "fieldPath": "localTransactionId",
+            "columnName": "localTransactionId",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "externalId",
+            "columnName": "externalId",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "fireflyTransactionId",
+            "columnName": "fireflyTransactionId",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "fireflySourceName",
+            "columnName": "fireflySourceName",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "fireflyDestinationName",
+            "columnName": "fireflyDestinationName",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "fireflyUpdatedAt",
+            "columnName": "fireflyUpdatedAt",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "syncedAt",
+            "columnName": "syncedAt",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "lastError",
+            "columnName": "lastError",
+            "affinity": "TEXT"
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "localTransactionId"
+          ]
+        }
+      },
+      {
+        "tableName": "firefly_budget_state",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`localBudgetId` INTEGER NOT NULL, `fireflyBudgetId` TEXT, `fireflyLimitId` TEXT, `syncedAt` TEXT, PRIMARY KEY(`localBudgetId`))",
+        "fields": [
+          {
+            "fieldPath": "localBudgetId",
+            "columnName": "localBudgetId",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "fireflyBudgetId",
+            "columnName": "fireflyBudgetId",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "fireflyLimitId",
+            "columnName": "fireflyLimitId",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "syncedAt",
+            "columnName": "syncedAt",
+            "affinity": "TEXT"
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "localBudgetId"
+          ]
+        }
+      },
+      {
+        "tableName": "firefly_subscription_state",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`localSubscriptionId` INTEGER NOT NULL, `fireflyRecurringId` TEXT, `syncedAt` TEXT, PRIMARY KEY(`localSubscriptionId`))",
+        "fields": [
+          {
+            "fieldPath": "localSubscriptionId",
+            "columnName": "localSubscriptionId",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "fireflyRecurringId",
+            "columnName": "fireflyRecurringId",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "syncedAt",
+            "columnName": "syncedAt",
+            "affinity": "TEXT"
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "localSubscriptionId"
+          ]
+        }
+      },
+      {
+        "tableName": "firefly_log",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `localTransactionId` INTEGER, `direction` TEXT NOT NULL, `status` TEXT NOT NULL, `message` TEXT, `at` TEXT NOT NULL)",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "localTransactionId",
+            "columnName": "localTransactionId",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "direction",
+            "columnName": "direction",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "status",
+            "columnName": "status",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "message",
+            "columnName": "message",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "at",
+            "columnName": "at",
+            "affinity": "TEXT",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        }
+      }
+    ],
+    "setupQueries": [
+      "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '4d4ac59f1ecae97371f480e59dddbe7e')"
+    ]
+  }
+}

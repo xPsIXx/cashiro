@@ -119,14 +119,10 @@ fun SettingsScreen(
     val exportedBackupFile by settingsViewModel.exportedBackupFile.collectAsStateWithLifecycle()
     val unifiedCurrencyMode by settingsViewModel.unifiedCurrencyMode.collectAsStateWithLifecycle(initialValue = false)
 
-    // Firefly III states (opt-in)
-    val fireflySyncEnabled by settingsViewModel.fireflySyncEnabled.collectAsStateWithLifecycle(initialValue = false)
-    val fireflyBaseUrl by settingsViewModel.fireflyBaseUrl.collectAsStateWithLifecycle(initialValue = null)
-    val fireflyDefaultAsset by settingsViewModel.fireflyDefaultAssetAccount.collectAsStateWithLifecycle(initialValue = null)
-    val fireflyLastError by settingsViewModel.fireflyLastSyncError.collectAsStateWithLifecycle(initialValue = null)
-    val fireflyFailedCount by settingsViewModel.fireflyFailedSyncCount.collectAsStateWithLifecycle(initialValue = 0)
-    val fireflyMappings by settingsViewModel.fireflyAccountMappings.collectAsStateWithLifecycle(initialValue = emptyMap())
-    val fireflyMappingAccounts by settingsViewModel.fireflyMappingAccounts.collectAsStateWithLifecycle(initialValue = emptyList())
+    // Firefly III enabled state (add-on sidecar; for the settings row subtitle).
+    // The dedicated Firefly screen owns all other Firefly state.
+    val fireflySettingsViewModel: FireflySettingsViewModel = hiltViewModel()
+    val fireflySyncEnabled by fireflySettingsViewModel.fireflySyncEnabled.collectAsStateWithLifecycle(initialValue = false)
     val displayCurrency by settingsViewModel.displayCurrency.collectAsStateWithLifecycle(initialValue = "")
     val availableCurrencies by settingsViewModel.availableCurrencies.collectAsStateWithLifecycle()
     val useContactsForVpa by settingsViewModel.useContactsForVpa.collectAsStateWithLifecycle(initialValue = false)

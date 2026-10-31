@@ -29,18 +29,6 @@ class TransactionRepository @Inject constructor(
     suspend fun getTransactionById(id: Long): TransactionEntity? = 
         transactionDao.getTransactionById(id)
 
-    suspend fun markFireflySynced(
-        transactionId: Long,
-        externalId: String?,
-        fireflyTransactionId: String? = null,
-        fireflyUpdatedAt: LocalDateTime? = null
-    ) = transactionDao.markFireflySynced(
-        transactionId = transactionId,
-        externalId = externalId,
-        transactionIdRemote = fireflyTransactionId,
-        fireflyUpdatedAt = fireflyUpdatedAt
-    )
-
     suspend fun updateTransactionFromFirefly(
         transactionId: Long,
         amount: BigDecimal,
@@ -49,11 +37,7 @@ class TransactionRepository @Inject constructor(
         description: String?,
         dateTime: LocalDateTime,
         transactionType: com.pennywiseai.tracker.data.database.entity.TransactionType,
-        fireflyTransactionId: String?,
-        fireflySourceName: String?,
-        fireflyDestinationName: String?,
-        fireflyUpdatedAt: LocalDateTime?,
-        syncedAt: LocalDateTime?
+        syncedAt: LocalDateTime
     ) = transactionDao.updateTransactionFromFirefly(
         transactionId = transactionId,
         amount = amount,
@@ -62,16 +46,9 @@ class TransactionRepository @Inject constructor(
         description = description,
         dateTime = dateTime,
         transactionType = transactionType.name,
-        fireflyTransactionId = fireflyTransactionId,
-        fireflySourceName = fireflySourceName,
-        fireflyDestinationName = fireflyDestinationName,
-        fireflyUpdatedAt = fireflyUpdatedAt,
-        syncedAt = syncedAt
+        updatedAt = syncedAt
     )
 
-    suspend fun markFireflyError(transactionId: Long, error: String) =
-        transactionDao.markFireflyError(transactionId, error)
-    
     fun getTransactionsBetweenDates(
         startDate: LocalDateTime,
         endDate: LocalDateTime
@@ -466,14 +443,4 @@ class TransactionRepository @Inject constructor(
      */
     suspend fun deleteSplit(split: TransactionSplitEntity) =
         transactionSplitDao.deleteSplit(split)
-
-    // Firefly failed syncs
-    fun getFailedFireflySyncs(): Flow<List<TransactionEntity>> =
-        transactionDao.getFailedFireflySyncs()
-
-    fun getFailedFireflySyncCount(): Flow<Int> =
-        transactionDao.getFailedFireflySyncCount()
-
-    suspend fun updateFireflyExternalId(transactionId: Long, newExternalId: String) =
-        transactionDao.updateFireflyExternalId(transactionId, newExternalId)
 }
