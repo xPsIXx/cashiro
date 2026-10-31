@@ -103,7 +103,7 @@ fun DiagnosticScreen(
                                     val intent = Intent(Intent.ACTION_SEND).apply {
                                         type = "text/plain"
                                         putExtra(Intent.EXTRA_STREAM, uri)
-                                        putExtra(Intent.EXTRA_SUBJECT, "PennyWise Diagnostic Log")
+                                        putExtra(Intent.EXTRA_SUBJECT, "Cashiro Diagnostic Log")
                                         addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                                     }
                                     context.startActivity(

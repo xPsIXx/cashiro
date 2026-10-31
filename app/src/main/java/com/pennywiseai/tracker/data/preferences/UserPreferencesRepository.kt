@@ -216,7 +216,7 @@ open class UserPreferencesRepository @Inject constructor(
         .map { preferences ->
             UserPreferences(
                 isDarkThemeEnabled = preferences[PreferencesKeys.DARK_THEME_ENABLED],
-                isDynamicColorEnabled = preferences[PreferencesKeys.DYNAMIC_COLOR_ENABLED] ?: false,
+                isDynamicColorEnabled = preferences[PreferencesKeys.DYNAMIC_COLOR_ENABLED] ?: true,
                 themeStyle = preferences[PreferencesKeys.THEME_STYLE]?.let {
                     try { ThemeStyle.valueOf(it) } catch (_: Exception) { ThemeStyle.DYNAMIC }
                 } ?: ThemeStyle.DYNAMIC,
@@ -232,10 +232,10 @@ open class UserPreferencesRepository @Inject constructor(
                 hasShownScanTutorial = preferences[PreferencesKeys.HAS_SHOWN_SCAN_TUTORIAL] ?: false,
                 smsScanMonths = preferences[PreferencesKeys.SMS_SCAN_MONTHS] ?: 3,
                 smsScanAllTime = preferences[PreferencesKeys.SMS_SCAN_ALL_TIME] ?: true,
-                baseCurrency = preferences[PreferencesKeys.BASE_CURRENCY] ?: "INR",
+                baseCurrency = preferences[PreferencesKeys.BASE_CURRENCY] ?: "AED",
                 unifiedCurrencyMode = preferences[PreferencesKeys.UNIFIED_CURRENCY_MODE] ?: false,
                 displayCurrency = preferences[PreferencesKeys.DISPLAY_CURRENCY]
-                    ?: preferences[PreferencesKeys.BASE_CURRENCY] ?: "INR",
+                    ?: preferences[PreferencesKeys.BASE_CURRENCY] ?: "AED",
                 blurEffectsEnabled = preferences[PreferencesKeys.BLUR_EFFECTS_ENABLED] ?: true,
                 navBarStyle = preferences[PreferencesKeys.NAV_BAR_STYLE]?.let {
                     try { NavBarStyle.valueOf(it) } catch (_: Exception) { NavBarStyle.FLOATING }
@@ -1154,7 +1154,7 @@ open class UserPreferencesRepository @Inject constructor(
 
 data class UserPreferences(
     val isDarkThemeEnabled: Boolean? = null, // null means follow system
-    val isDynamicColorEnabled: Boolean = false, // Default to custom brand colors
+    val isDynamicColorEnabled: Boolean = true, // Follow Android Material You
     val themeStyle: ThemeStyle = ThemeStyle.DYNAMIC,
     val accentColor: AccentColor = AccentColor.SURFACE,
     val isAmoledMode: Boolean = false,

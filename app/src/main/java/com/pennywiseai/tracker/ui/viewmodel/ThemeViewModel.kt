@@ -118,7 +118,7 @@ class ThemeViewModel @Inject constructor(
 data class ThemeUiState(
     val isLoading: Boolean = true,
     val isDarkTheme: Boolean? = null, // null = follow system
-    val isDynamicColorEnabled: Boolean = false,
+    val isDynamicColorEnabled: Boolean = true,
     val themeStyle: ThemeStyle = ThemeStyle.DYNAMIC,
     val accentColor: AccentColor = AccentColor.SURFACE,
     val isAmoledMode: Boolean = false,

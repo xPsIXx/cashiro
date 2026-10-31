@@ -18,11 +18,11 @@ android {
     }
 
     defaultConfig {
-        applicationId = "com.pennywiseai.tracker"
+        applicationId = "com.xpsixx.cashiro"
         minSdk = 26
         targetSdk = 36
-        versionCode = 108
-        versionName = "2.24.0"
+        versionCode = 94
+        versionName = "2.0.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         

@@ -1449,7 +1449,7 @@ fun SettingsScreen(
         val timestamp = java.time.LocalDateTime.now().format(
             java.time.format.DateTimeFormatter.ofPattern("yyyy_MM_dd_HHmmss")
         )
-        val fileName = "PennyWise_Backup_$timestamp.pennywisebackup"
+        val fileName = "Cashiro_Backup_$timestamp.pennywisebackup"
 
         AlertDialog(
             onDismissRequest = {

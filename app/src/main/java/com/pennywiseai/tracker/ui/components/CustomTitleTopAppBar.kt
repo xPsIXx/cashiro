@@ -405,7 +405,7 @@ private fun HomeBarTitle(
         }
         Spacer(modifier = Modifier.width(Spacing.smd))
         Text(
-            text = userName.ifBlank { "PennyWise" },
+            text = userName.ifBlank { "Cashiro" },
             style = MaterialTheme.typography.titleLarge,
             textAlign = TextAlign.Start,
         )

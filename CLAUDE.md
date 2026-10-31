@@ -1,9 +1,18 @@
-# PennyWise — Agent Guide
+# Cashiro — Agent Guide
 
-PennyWise is a privacy-first, AI-powered expense tracker that extracts
-transactions from bank SMS **entirely on-device**. The primary app is Android
-(Jetpack Compose + Material 3); the repo also contains a Kotlin Multiplatform
-`shared` module, an `iosApp`, and a `pennywise-web` frontend.
+Cashiro is a privacy-first expense tracker (a PennyWise AI fork) that extracts
+transactions from bank SMS **entirely on-device**, plus an add-on that syncs
+two-way (ours-only) with a self-hosted Firefly III instance. The primary app is
+Android (Jetpack Compose + Material 3); the repo also contains a Kotlin
+Multiplatform `shared` module, an `iosApp`, and a `pennywise-web` frontend.
+
+> **Before touching Firefly code, the Firefly add-on, or any file in the seam
+> inventory (entities/DAOs/prefs/backup/repos, transaction add/SMS hooks,
+> transaction detail, settings/nav, toolchain pins), read
+> [`docs/upstream-sync.md`](docs/upstream-sync.md).** It defines the add-on-owned
+> vs upstream-owned split and the merge conflict recipe that keeps upstream
+> updates cheap. Never bump the add-on sidecar DB together with upstream schema
+> bumps.
 
 **This file is a router, not a manual.** Read the linked topic doc when a task
 touches its area. Everything under **Hard Constraints** is non-negotiable.
