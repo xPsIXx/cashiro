@@ -62,11 +62,15 @@ open class TransactionRepository @Inject constructor(
      *    remote direction genuinely differs (`deposit` → INCOME, `transfer` →
      *    TRANSFER). When the caller supplies the remote source/destination
      *    account names, direction is verified from them.
-     *  - **`updatedAt` is not the sync timestamp.** The row keeps its own
-     *    `updatedAt` (it records *local* edits, and overwriting it with
-     *    `syncedAt` makes every pulled row look locally-modified on the next
-     *    run). If the caller supplies the remote `updated_at`, that wins;
-     *    `syncedAt` is only a fallback for when the row can't be read.
+     *  - **`updatedAt` is not the sync timestamp and never the remote edit
+     *    time.** The row keeps its own `updatedAt` (it records *local* edits;
+     *    M4's staleness rule `t.updated_at > ff.syncedAt` keys off it, and
+     *    stamping a server-supplied instant — possibly skewed ahead of the
+     *    phone clock — makes every pulled row look locally-modified forever,
+     *    causing a resync storm each run). The remote `updated_at` lives in
+     *    the sidecar state row (`fireflyUpdatedAt`), which is where change
+     *    detection compares it. `syncedAt` is only a fallback for when the
+     *    row can't be read.
      */
     suspend fun updateTransactionFromFirefly(
         transactionId: Long,
@@ -78,8 +82,7 @@ open class TransactionRepository @Inject constructor(
         transactionType: com.pennywiseai.tracker.data.database.entity.TransactionType,
         syncedAt: LocalDateTime,
         remoteSourceName: String? = null,
-        remoteDestinationName: String? = null,
-        remoteUpdatedAt: LocalDateTime? = null
+        remoteDestinationName: String? = null
     ) {
         val existing = transactionDao.getTransactionById(transactionId)
 
@@ -95,9 +98,9 @@ open class TransactionRepository @Inject constructor(
             remoteDestinationName = remoteDestinationName
         )
 
-        // updatedAt semantics: remote edit time if known, else keep the row's
-        // own edit time; the sync wall-clock is the last-resort fallback.
-        val effectiveUpdatedAt = remoteUpdatedAt ?: existing?.updatedAt ?: syncedAt
+        // updatedAt semantics (M2 final): the row KEEPS its own local edit
+        // time; the remote edit time belongs in the sidecar's fireflyUpdatedAt.
+        val effectiveUpdatedAt = existing?.updatedAt ?: syncedAt
 
         transactionDao.updateTransactionFromFirefly(
             transactionId = transactionId,

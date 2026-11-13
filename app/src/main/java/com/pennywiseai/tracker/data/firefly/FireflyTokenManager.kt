@@ -94,11 +94,18 @@ open class FireflyTokenManager @Inject constructor(
     /** False once the encrypted file has failed to open — callers must not expect persistence. */
     fun isSecureStorageAvailable(): Boolean = encryptedPrefs != null
 
-    private val _accessTokenFlow = MutableStateFlow(getAccessToken())
-    val accessTokenFlow: StateFlow<String?> = _accessTokenFlow.asStateFlow()
+    // Seeded lazily on purpose. Eager seeding called getAccessToken()/getBaseUrl()
+    // during BASE-class initialisation — a this-escape that fired the
+    // encryptedPrefs lazy (and the createEncryptedPreferences test seam) before
+    // any subclass constructor state existed, so a subclass overriding the seam
+    // could not read its own fields and storage was permanently reported broken.
+    // getAccessToken()/getBaseUrl() never touch these flows, so lazy seeding is
+    // recursion-free; saveCredentials()/clearCredentials() update values directly.
+    private val _accessTokenFlow by lazy { MutableStateFlow(getAccessToken()) }
+    val accessTokenFlow: StateFlow<String?> by lazy { _accessTokenFlow.asStateFlow() }
 
-    private val _baseUrlFlow = MutableStateFlow(getBaseUrl())
-    val baseUrlFlow: StateFlow<String?> = _baseUrlFlow.asStateFlow()
+    private val _baseUrlFlow by lazy { MutableStateFlow(getBaseUrl()) }
+    val baseUrlFlow: StateFlow<String?> by lazy { _baseUrlFlow.asStateFlow() }
 
     fun saveCredentials(baseUrl: String?, accessToken: String?) {
         val prefs = encryptedPrefs

@@ -232,17 +232,18 @@ internal const val SYNC_CANDIDATE_SQL = """
            ff.syncedAt AS candidate_synced_at,
            ff.lastError AS candidate_last_error
     FROM transactions t
-    LEFT JOIN ff.firefly_transaction_state
-        ON ff.firefly_transaction_state.local_transaction_id = t.id
+    LEFT JOIN ff.firefly_transaction_state AS ff
+        ON ff.localTransactionId = t.id
     WHERE t.is_deleted = 0
       AND (
-            ff.local_transaction_id IS NULL
+            ff.localTransactionId IS NULL
             OR ff.lastError IS NOT NULL
             OR ff.syncedAt IS NULL
             OR (ff.syncedAt IS NOT NULL AND t.updated_at > ff.syncedAt)
           )
       AND (
-            ff.local_transaction_id IS NOT NULL
+            ff.localTransactionId IS NOT NULL
+            OR :cutoff IS NULL
             OR t.updated_at >= :cutoff
           )
     ORDER BY t.updated_at DESC

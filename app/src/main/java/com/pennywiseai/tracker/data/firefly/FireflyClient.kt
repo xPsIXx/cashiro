@@ -98,22 +98,45 @@ class FireflyClient @Inject constructor(
         private fun defaultJson() = Json {
             ignoreUnknownKeys = true
             isLenient = true
-            encodeDefaults = false
+            // L1 guard: request DTOs declare apply_rules=false / fire_webhooks=false
+            // as Kotlin defaults. With encodeDefaults=false kotlinx dropped both
+            // keys and Firefly re-applied its own server-side default TRUE —
+            // rules and webhooks mutated every synced journal despite the intent.
+            // Encode defaults; keep null-defaulted fields out of payloads.
+            encodeDefaults = true
+            explicitNulls = false
         }
 
-        private fun defaultHttpClient(json: Json): HttpClient = HttpClient(Android) {
+        private fun defaultHttpClient(json: Json): HttpClient =
+            HttpClient(Android) {
+                applyFireflyClientConfig(json)
+                // Reasonable timeouts for mobile (engine-specific: Android only).
+                engine {
+                    connectTimeout = 15_000
+                    socketTimeout = 30_000
+                }
+            }
+
+        /**
+         * THE single source of truth for client config: content negotiation bound
+         * to [defaultJson] (the L1 serialization contract — apply_rules /
+         * fire_webhooks must survive encoding) plus the H1 retry policy.
+         * Engine-specific settings (timeouts) stay with the concrete engines.
+         * [buildHttpClientForTest] feeds the identical config to MockEngine
+         * harnesses, so payload-shape tests exercise the real serialization
+         * settings instead of a hand-copied approximation.
+         */
+        private fun HttpClientConfig<*>.applyFireflyClientConfig(json: Json) {
             install(ContentNegotiation) {
                 json(json)
             }
             // H1: see [installFireflyRetryPolicy] at the bottom of this file for the
             // 429-aware, commit-safe retry policy this replaces.
             installFireflyRetryPolicy()
-            // Reasonable timeouts for mobile
-            engine {
-                connectTimeout = 15_000
-                socketTimeout = 30_000
-            }
         }
+
+        internal fun buildHttpClientForTest(engine: io.ktor.client.engine.HttpClientEngine): HttpClient =
+            HttpClient(engine) { applyFireflyClientConfig(defaultJson()) }
     }
 
     // Account info now includes the Firefly id so callers can use id/name interchangeably.
@@ -315,11 +338,14 @@ class FireflyClient @Inject constructor(
             }
             val p = outcome as FireflyPageOutcome.Page
             if (p.objects.isEmpty()) break
-            if (p.currentPage <= 0 || p.currentPage >= p.lastPage) break
+            val metaSaysMore = p.currentPage > 0 && p.currentPage < p.lastPage
             val nextUrl = p.nextPageUrl
-            if (nextUrl != null && nextUrl.isNotBlank()) {
-                // links.next fallback: some instances only advertise the next
-                // page through an absolute URL; follow it verbatim once.
+            if (!metaSaysMore && nextUrl != null && nextUrl.isNotBlank()) {
+                // links.next fallback: some instances expose no usable
+                // meta.pagination (current_page/last_page stay 1) and only
+                // advertise the next page through an absolute URL. A non-empty
+                // links.next IS the instance's claim that another page exists —
+                // consult it before breaking, follow it verbatim once.
                 val raw = runCatching {
                     client.get(nextUrl) {
                         header("Authorization", "Bearer $accessToken")
@@ -340,8 +366,10 @@ class FireflyClient @Inject constructor(
                 val np = nextOutcome as FireflyPageOutcome.Page
                 if (np.objects.isEmpty() || np.currentPage <= p.currentPage) break
                 page = np.currentPage + 1
-            } else {
+            } else if (metaSaysMore) {
                 page = p.currentPage + 1
+            } else {
+                break
             }
         }
         return items
@@ -1776,16 +1804,45 @@ class FireflyClient @Inject constructor(
             )
             when (outcome) {
                 is FireflyPageOutcome.Page -> {
-                    rows += outcome.objects.mapNotNull { row ->
-                        runCatching { json.encodeToString(JsonObject.serializer(), row) }
-                            .getOrNull()
-                            ?.let { parseRemoteSearchRows(it) }
-                            ?.firstOrNull()
-                    }
+                    // Page.objects are already unpacked per-journal rows (the
+                    // envelope is split by parseFireflyPageEnvelope); parse them
+                    // directly. Wrapping each row back into a String and feeding
+                    // it to parseRemoteSearchRows — which requires a {data:[…]}
+                    // envelope — silently dropped every match.
+                    rows += outcome.objects.mapNotNull { parseRemoteObject(it) }
                     paging = outcome.objects.isNotEmpty() &&
                         outcome.currentPage > 0 &&
                         outcome.currentPage < outcome.lastPage
-                    if (paging) page = outcome.currentPage + 1
+                    if (paging) {
+                        page = outcome.currentPage + 1
+                    } else if (outcome.objects.isNotEmpty() && !outcome.nextPageUrl.isNullOrBlank()) {
+                        // links.next fallback, same contract as paginate(): some
+                        // instances omit meta.pagination (last_page stays 1) and
+                        // only advertise the next page as an absolute URL.
+                        val raw = runCatching {
+                            client.get(outcome.nextPageUrl!!) {
+                                header("Authorization", "Bearer $accessToken")
+                                header("Accept", "application/vnd.api+json")
+                            }
+                        }
+                        if (raw.isFailure) {
+                            diagnosticLogger.w(TAG, "Firefly search links.next request failed: ${raw.exceptionOrNull()?.message}")
+                            paging = false
+                        } else {
+                            val nextOutcome = classifyFireflyPage(raw.getOrThrow(), "/search/transactions links.next")
+                            if (nextOutcome is FireflyPageOutcome.Page) {
+                                rows += nextOutcome.objects.mapNotNull { parseRemoteObject(it) }
+                                paging = nextOutcome.objects.isNotEmpty() &&
+                                    nextOutcome.currentPage > outcome.currentPage &&
+                                    (nextOutcome.currentPage < nextOutcome.lastPage || !nextOutcome.nextPageUrl.isNullOrBlank())
+                                if (paging) page = nextOutcome.currentPage + 1
+                            } else if (nextOutcome is FireflyPageOutcome.Failure) {
+                                failureReason = nextOutcome.reason
+                                retryAfter = nextOutcome.retryAfterSeconds?.toString()
+                                paging = false
+                            }
+                        }
+                    }
                 }
                 is FireflyPageOutcome.Failure -> {
                     failureReason = outcome.reason
@@ -2302,8 +2359,7 @@ class FireflyClient @Inject constructor(
             transactionType = mapRemoteTypeToLocal(remote.type),
             syncedAt = syncedAt,
             remoteSourceName = remote.sourceName,
-            remoteDestinationName = remote.destinationName,
-            remoteUpdatedAt = remote.updatedAt?.let { instantToLocalDateTime(it) }
+            remoteDestinationName = remote.destinationName
         )
 
         if (remote.splits.isNotEmpty()) {
