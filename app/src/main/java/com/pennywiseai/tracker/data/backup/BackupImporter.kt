@@ -28,7 +28,18 @@ class BackupImporter @Inject constructor(
     private val database: PennyWiseDatabase,
     private val userPreferencesRepository: UserPreferencesRepository,
     private val licenseManager: LicenseManager,
-    private val ignoredAccountsStore: IgnoredAccountsStore
+    private val ignoredAccountsStore: IgnoredAccountsStore,
+    /**
+     * Cashiro add-on seam (intentional fork divergence): a REPLACE restore
+     * wipes every table and re-inserts the backup's own ids. The Firefly
+     * sidecar's id-keyed mappings would then describe dead pre-restore rows
+     * whose ids the imported rows are about to reuse — so REPLACE wipes the
+     * add-on state with the data. Re-linked rows find their Firefly twins via
+     * the content-derived `pennywise-<hash>` external-id lookup instead of
+     * inheriting a foreign journal mapping. Nullable with a default so manual
+     * test constructions keep compiling; Hilt always supplies it.
+     */
+    private val fireflySyncDatabase: com.pennywiseai.tracker.data.firefly.FireflySyncDatabase? = null
 ) {
     
     /**
@@ -150,6 +161,17 @@ class BackupImporter @Inject constructor(
                 database.tagDao().deleteAllTags()
                 database.recurringTransactionDao().deleteAll()
                 database.goalDao().deleteAllGoals() // cascades goal_contributions
+
+                // Cashiro add-on: the wipe above invalidated every id-keyed
+                // Firefly mapping (the imported rows are about to reuse those
+                // ids) — clear the sidecar state with it. See the ctor note:
+                // missing state is the safe direction; it self-heals via the
+                // content-derived external-id re-link on the next sync.
+                fireflySyncDatabase?.fireflySyncDao()?.let { ffDao ->
+                    ffDao.clearTransactionStates()
+                    ffDao.clearBudgetStates()
+                    ffDao.clearSubscriptionStates()
+                }
                 // Note: budget categories and transaction splits are deleted via cascade (budget categories via budget deletion, transaction splits via transaction deletion)
                 // Profiles deliberately preserved — defaults (Personal=1, Business=2)
                 // are seeded on first launch and we don't want to wipe them.

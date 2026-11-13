@@ -27,7 +27,9 @@ import javax.inject.Singleton
 class BudgetRepository @Inject constructor(
     private val budgetDao: BudgetDao,
     private val transactionDao: TransactionDao,
-    private val transactionSplitDao: TransactionSplitDao
+    private val transactionSplitDao: TransactionSplitDao,
+    /** Cashiro add-on seam — see [TransactionRepository]'s ctor note. */
+    private val fireflySyncDao: com.pennywiseai.tracker.data.firefly.FireflySyncDao? = null
 ) {
     fun getActiveBudgets(): Flow<List<BudgetEntity>> =
         budgetDao.getActiveBudgets()
@@ -154,6 +156,9 @@ class BudgetRepository @Inject constructor(
 
     suspend fun deleteBudget(budgetId: Long) {
         budgetDao.deleteBudgetById(budgetId)
+        // Hard delete: budget ids are plain rowids and can be reused — the
+        // Firefly budget mapping must not outlive the budget.
+        fireflySyncDao?.deleteBudgetState(budgetId)
     }
 
     suspend fun deactivateBudget(budgetId: Long) {

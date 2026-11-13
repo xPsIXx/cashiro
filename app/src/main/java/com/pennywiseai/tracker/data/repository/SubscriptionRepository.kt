@@ -23,7 +23,9 @@ import android.util.Log
 @Singleton
 class SubscriptionRepository @Inject constructor(
     private val subscriptionDao: SubscriptionDao,
-    private val categoryDao: com.pennywiseai.tracker.data.database.dao.CategoryDao
+    private val categoryDao: com.pennywiseai.tracker.data.database.dao.CategoryDao,
+    /** Cashiro add-on seam — see [TransactionRepository]'s ctor note. */
+    private val fireflySyncDao: com.pennywiseai.tracker.data.firefly.FireflySyncDao? = null
 ) {
     
     companion object {
@@ -101,8 +103,12 @@ class SubscriptionRepository @Inject constructor(
     suspend fun reactivateSubscription(id: Long) =
         updateSubscriptionState(id, SubscriptionState.ACTIVE)
     
-    suspend fun deleteSubscription(id: Long) = 
+    suspend fun deleteSubscription(id: Long) {
         subscriptionDao.deleteSubscriptionById(id)
+        // Hard delete: subscription ids are plain rowids and can be reused —
+        // the Firefly recurring mapping must not outlive the subscription.
+        fireflySyncDao?.deleteSubscriptionState(id)
+    }
     
     /**
      * Creates or updates a subscription from HDFC E-Mandate info

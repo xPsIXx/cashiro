@@ -97,6 +97,29 @@ interface FireflySyncDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertTransactionState(state: FireflyTransactionStateEntity)
 
+    /**
+     * Remove the sidecar state of one HARD-deleted transaction.
+     *
+     * Required hygiene: `transactions.id` is a plain rowid — SQLite REUSES the
+     * id of the highest deleted row for the next insert. A stale state row
+     * would re-pin a brand-new, unrelated transaction (same id) to the old
+     * row's remote journal: M3's "persisted sidecar external id wins" rule
+     * makes the engine PUT over that unrelated remote journal. EVERY
+     * hard-delete path in the app must call this. Soft deletes keep their
+     * state — the row may be undeleted, and candidate SQL already excludes
+     * `is_deleted` rows.
+     */
+    @Query("DELETE FROM firefly_transaction_state WHERE localTransactionId = :txId")
+    suspend fun deleteTransactionState(txId: Long)
+
+    /** Bulk variant. Callers MUST pass a non-empty list (SQLite rejects `IN ()`). */
+    @Query("DELETE FROM firefly_transaction_state WHERE localTransactionId IN (:ids)")
+    suspend fun deleteTransactionStates(ids: List<Long>)
+
+    /** Full wipe for paths that remove EVERY transaction (delete-all, backup REPLACE). */
+    @Query("DELETE FROM firefly_transaction_state")
+    suspend fun clearTransactionStates()
+
     // ── Budget state ────────────────────────────────────────────────────────
 
     @Query("SELECT * FROM firefly_budget_state WHERE localBudgetId = :localBudgetId")
@@ -127,6 +150,13 @@ interface FireflySyncDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertBudgetState(state: FireflyBudgetStateEntity)
 
+    /** See [deleteTransactionState] — same rowid-reuse hazard for budgets. */
+    @Query("DELETE FROM firefly_budget_state WHERE localBudgetId = :budgetId")
+    suspend fun deleteBudgetState(budgetId: Long)
+
+    @Query("DELETE FROM firefly_budget_state")
+    suspend fun clearBudgetStates()
+
     // ── Subscription state ───────────────────────────────────────────────────
 
     @Query("SELECT * FROM firefly_subscription_state WHERE localSubscriptionId = :localSubscriptionId")
@@ -155,6 +185,13 @@ interface FireflySyncDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertSubscriptionState(state: FireflySubscriptionStateEntity)
 
+    /** See [deleteTransactionState] — same rowid-reuse hazard for subscriptions. */
+    @Query("DELETE FROM firefly_subscription_state WHERE localSubscriptionId = :subscriptionId")
+    suspend fun deleteSubscriptionState(subscriptionId: Long)
+
+    @Query("DELETE FROM firefly_subscription_state")
+    suspend fun clearSubscriptionStates()
+
     // ── Sync log ─────────────────────────────────────────────────────────────
 
     @Insert
@@ -165,6 +202,17 @@ interface FireflySyncDao {
 
     @Query("DELETE FROM firefly_log")
     suspend fun deleteAllLogs()
+
+    /**
+     * Hygiene: the log grows with every sync item and was never trimmed.
+     * Keep the newest [keepRows] entries, drop the rest. [recentLogs] reads in
+     * the same id order, so trimming never removes anything the UI can see.
+     */
+    @Query("""
+        DELETE FROM firefly_log
+        WHERE id NOT IN (SELECT id FROM firefly_log ORDER BY id DESC LIMIT :keepRows)
+    """)
+    suspend fun trimLogs(keepRows: Int)
 }
 
 /**
@@ -221,6 +269,12 @@ data class FireflySyncCandidate(
  * (`2026-11-13T15:50:19.123`), which orders lexicographically exactly like
  * chronologically.
  *
+ * ORDER BY prioritizes by rule severity, not by recency: error rows first,
+ * then claimed-but-unsynced, then stale edits, then never-seen. With the
+ * `MAX_CANDIDATE_BATCH` limit this matters — a `updated_at DESC` ordering alone
+ * would let a flood of recently-edited rows starve an old error row forever,
+ * contradicting rule 1 ("retried on EVERY run regardless of age").
+ *
  * `ff.` is the ATTACH alias for the sidecar file (see [selectSyncCandidates]);
  * `transactions` is the MAIN database's own table — this SQL runs on the main
  * connection, where it needs no alias. Written for SQLite 3.18 (minSdk 26):
@@ -246,7 +300,10 @@ internal const val SYNC_CANDIDATE_SQL = """
             OR :cutoff IS NULL
             OR t.updated_at >= :cutoff
           )
-    ORDER BY t.updated_at DESC
+    ORDER BY
+        CASE WHEN ff.lastError IS NOT NULL THEN 0 ELSE 1 END,
+        CASE WHEN ff.localTransactionId IS NOT NULL AND ff.syncedAt IS NULL THEN 0 ELSE 1 END,
+        t.updated_at DESC
     LIMIT :limit
 """
 
@@ -262,10 +319,13 @@ internal const val SYNC_CANDIDATE_UNBOUNDED_LIMIT: Long = Long.MAX_VALUE
  * (`RoomDatabase.openHelper.writableDatabase` — Room owns the connection, this
  * never opens a second copy of the file), which ATTACHes the sidecar database
  * file under the alias `ff` for the duration of the select. Reading the sidecar
- * as an attached database takes a SHARED lock for the (short) SELECT only; the
- * sidecar is not WAL, so it never conflicts with Room's own sidecar
- * connections beyond SQLite's normal lock waits. ATTACH/DETACH are wrapped so a
- * failure can never leave the connection attached.
+ * the duration of the select. Room runs BOTH databases in WAL mode (its
+ * default — nothing here disables it). An ATTACHed WAL database is read
+ * through its WAL snapshot, so this SELECT neither blocks behind nor blocks
+ * the sidecar's own Room writers; residual contention surfaces only as a
+ * busy `SQLiteException`, which callers already degrade to the full-scan
+ * fallback. ATTACH/DETACH are wrapped so a failure can never leave the
+ * connection attached.
  *
  * Room's generated `@Query` path cannot express this SQL (the main
  * `transactions` table belongs to a different Room database), which is why the
@@ -307,6 +367,48 @@ internal fun selectSyncCandidates(
             }
         }
         return out
+    } finally {
+        runCatching { mainWritableConnection.execSQL("DETACH DATABASE ff") }
+    }
+}
+
+/**
+ * Sidecar hygiene: drop state rows whose MAIN-database row no longer exists,
+ * across all three state tables.
+ *
+ * Why this exists: `transactions.id` (and budget/subscription ids) are plain
+ * rowids — SQLite reuses the id of the highest deleted row for the next
+ * insert. A state row that outlives its hard-deleted row would then mis-pin a
+ * brand-new, unrelated transaction to the old row's remote journal. Known
+ * hard-delete paths prune their state immediately (TransactionRepository,
+ * BackupImporter.replaceAllData); this is the safety net for ANY hard delete
+ * that bypasses those call sites, run at the start of every resync BEFORE
+ * candidate matching can consume a stale row.
+ *
+ * Each DELETE is a separate statement — cross-database statements are not
+ * atomic. A busy sidecar aborts this best-effort pass; callers never treat a
+ * failure as fatal and the next resync retries. Returns total rows removed.
+ */
+internal fun pruneOrphanedSidecarState(
+    mainWritableConnection: SupportSQLiteDatabase,
+    sidecarDbFile: java.io.File
+): Int {
+    mainWritableConnection.execSQL("ATTACH DATABASE '${sidecarDbFile.absolutePath}' AS ff")
+    try {
+        var removed = 0
+        removed += mainWritableConnection.compileStatement(
+            "DELETE FROM ff.firefly_transaction_state " +
+                "WHERE localTransactionId NOT IN (SELECT id FROM main.transactions)"
+        ).executeUpdateDelete()
+        removed += mainWritableConnection.compileStatement(
+            "DELETE FROM ff.firefly_budget_state " +
+                "WHERE localBudgetId NOT IN (SELECT id FROM main.budgets)"
+        ).executeUpdateDelete()
+        removed += mainWritableConnection.compileStatement(
+            "DELETE FROM ff.firefly_subscription_state " +
+                "WHERE localSubscriptionId NOT IN (SELECT id FROM main.subscriptions)"
+        ).executeUpdateDelete()
+        return removed
     } finally {
         runCatching { mainWritableConnection.execSQL("DETACH DATABASE ff") }
     }

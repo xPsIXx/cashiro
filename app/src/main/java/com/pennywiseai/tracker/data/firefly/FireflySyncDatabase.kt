@@ -21,8 +21,10 @@ import java.time.LocalDateTime
  * re-migrating Firefly data, and merging upstream never collides here.
  *
  * Schema version is add-on-local: starts at 1 and only changes when the
- * ADD-ON changes its own schema (roughly never — column-adds are handled with
- * validation/fallback, see [FireflySyncDatabase.MIGRATION_1_2] history notes).
+ * ADD-ON changes its own schema. There are no migrations yet and NO
+ * destructive fallback by design — a future schema change must ship an
+ * explicit Migration in this file (or upgrade will crash, loudly and
+ * correctly, rather than silently losing sync state).
  */
 @Database(
     entities = [

@@ -30,7 +30,17 @@ open class TransactionRepository @Inject constructor(
     private val transactionSplitDao: TransactionSplitDao,
     private val userPreferencesRepository: UserPreferencesRepository,
     private val categoryDao: com.pennywiseai.tracker.data.database.dao.CategoryDao,
-    private val goalRepository: GoalRepository
+    private val goalRepository: GoalRepository,
+    /**
+     * Cashiro add-on seam (intentional fork divergence): the Firefly sidecar
+     * must never outlive a HARD-deleted transaction — SQLite reuses the id of
+     * the highest deleted row for the next insert, and a surviving state row
+     * would mis-pin the new row onto the old row's remote journal. Soft
+     * deletes keep their state (undo/undelete relies on it; the candidate SQL
+     * excludes `is_deleted` rows anyway). Nullable with a default so upstream-
+     * style hand constructions (tests) keep compiling; Hilt always supplies it.
+     */
+    private val fireflySyncDao: com.pennywiseai.tracker.data.firefly.FireflySyncDao? = null
 ) {
     suspend fun getWebhookChanges(start: LocalDateTime, end: LocalDateTime, currency: String, profileId: String) =
         transactionDao.getWebhookChanges(start, end, currency, profileId)
@@ -267,6 +277,10 @@ open class TransactionRepository @Inject constructor(
     open suspend fun deleteTransaction(transaction: TransactionEntity, hardDelete: Boolean = false) {
         if (hardDelete) {
             transactionDao.deleteTransaction(transaction)
+            // Sidecar cleanup AFTER the main delete: a missing state row for a
+            // row that somehow survived is self-healing (external-id lookup
+            // re-links it); a stale state row for a reused id is not.
+            fireflySyncDao?.deleteTransactionState(transaction.id)
         } else {
             transactionDao.softDeleteTransaction(transaction.id)
         }
@@ -275,14 +289,20 @@ open class TransactionRepository @Inject constructor(
     suspend fun deleteTransactionById(id: Long, hardDelete: Boolean = false) {
         if (hardDelete) {
             transactionDao.deleteTransactionById(id)
+            fireflySyncDao?.deleteTransactionState(id)
         } else {
             transactionDao.softDeleteTransaction(id)
         }
     }
 
     /** @return the number of rows actually removed. */
-    suspend fun deleteAllTransactions(): Int =
-        transactionDao.deleteAllTransactions()
+    suspend fun deleteAllTransactions(): Int {
+        val removed = transactionDao.deleteAllTransactions()
+        // Every id is gone and every one may be reused — wipe the add-on's
+        // per-transaction state with it (see the ctor note).
+        fireflySyncDao?.clearTransactionStates()
+        return removed
+    }
 
     /** See [TransactionDao.observeAllTransactionCount]. */
     fun observeAllTransactionCount(): Flow<Int> =
@@ -296,7 +316,16 @@ open class TransactionRepository @Inject constructor(
     suspend fun countAllTransactions(): Int =
         transactionDao.countAllTransactions()
 
-    /** See [TransactionDao.deleteRebuildableSmsTransactions]. */
+    /**
+     * See [TransactionDao.deleteRebuildableSmsTransactions]. The removed rows'
+     * ids are NOT enumerated here (the DELETE is one predicate); instead the
+     * engine's [com.pennywiseai.tracker.data.firefly.pruneOrphanedSidecarState]
+     * safety net drops their state at the start of the next resync. Immediate
+     * misattribution via reused ids is provably harmless in THIS path: the SMS
+     * re-parse recreates the same logical transactions (identical content ->
+     * identical pennywise-<hash> external ids), so a surviving state row still
+     * describes the same transaction.
+     */
     suspend fun deleteRebuildableSmsTransactions(from: LocalDateTime) =
         transactionDao.deleteRebuildableSmsTransactions(
             com.pennywiseai.tracker.receiver.BankNotificationConfig.notificationAliases.toList(),

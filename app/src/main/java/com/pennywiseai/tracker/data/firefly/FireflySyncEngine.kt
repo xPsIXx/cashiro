@@ -82,6 +82,8 @@ class FireflySyncEngine @Inject constructor(
         const val LOG_STATUS_SKIP = "skip"
         /** Cap on one candidate batch: protects WorkManager runs from giant backlogs. */
         const val MAX_CANDIDATE_BATCH = 500L
+        /** Bound for the sidecar sync log kept after each batch ([FireflySyncDao.trimLogs]). */
+        const val MAX_LOG_ROWS = 2000
     }
 
     /**
@@ -256,6 +258,8 @@ class FireflySyncEngine @Inject constructor(
             runCatching { backfill.runIfNeeded() }
                 .onFailure { diagnosticLogger.w(TAG, "Staging backfill skipped (non-fatal)", it) }
         }
+        // Sidecar hygiene BEFORE any candidate matching (see [pruneOrphanedSidecarState]).
+        pruneOrphanedSidecarStateBestEffort()
         val config = fetchConfig() ?: return SyncSummary()
 
         val lookbackCutoff = scopeDays?.let { LocalDateTime.now().minusDays(it.toLong()) }
@@ -316,7 +320,36 @@ class FireflySyncEngine @Inject constructor(
         )
     }
 
-    /**
+        /**
+     * Sidecar hygiene pass — see [pruneOrphanedSidecarState] for the data-
+     * integrity reason. Best-effort by contract: any failure (busy sidecar,
+     * main DB not open yet) is logged and skipped; the immediate cleanups in
+     * the delete paths remain the primary guarantee and the next resync
+     * retries this net. Never throws, never blocks the resync.
+     */
+    private suspend fun pruneOrphanedSidecarStateBestEffort() {
+        val database = syncDatabase ?: return
+        withContext(Dispatchers.IO) {
+            runCatching {
+                if (!database.isOpen) return@runCatching
+                val helper = database.openHelper ?: return@runCatching
+                val removed = pruneOrphanedSidecarState(
+                    helper.writableDatabase,
+                    context.getDatabasePath(FireflySyncDatabase.DATABASE_NAME)
+                )
+                if (removed > 0) {
+                    diagnosticLogger.i(TAG, "Pruned $removed orphaned Firefly sidecar state row(s)")
+                }
+            }.onFailure {
+                diagnosticLogger.d(
+                    TAG,
+                    "Sidecar orphan prune skipped (busy or main DB unavailable): ${it.message ?: it.javaClass.simpleName}"
+                )
+            }
+        }
+    }
+
+/**
      * M4: candidate discovery via [selectSyncCandidates] on the main DB's
      * Room-owned writer connection. Returns null ONLY when the candidate path
      * is unavailable (no main DB injected, Room has not opened it yet, or the
@@ -568,6 +601,9 @@ class FireflySyncEngine @Inject constructor(
             // Release the claims even if the client or the DAO throws, so a
             // failed attempt can be retried by the next pass.
             inFlightTxIds.removeAll(claimedIds)
+            // Hygiene: the sidecar sync log grows with every sync item; keep
+            // it bounded after each batch so it cannot balloon forever.
+            runCatching { fireflySyncDao.trimLogs(MAX_LOG_ROWS) }
         }
     }
 
