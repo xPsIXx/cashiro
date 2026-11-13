@@ -11,6 +11,7 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import java.time.LocalDateTime
+import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -22,8 +23,10 @@ import javax.inject.Singleton
  * Responsibilities:
  *  - one-time legacy prefs migration,
  *  - configuration check (url + token + enabled),
- *  - pushing/syncing transactions (hooks + manual sync),
+ *  - pushing/syncing transactions (hooks + manual sync), guarded so the same
+ *    transaction is never synced by two paths at the same time,
  *  - resync of never-synced/failed rows, retry of failed rows,
+ *  - one-time consumption of the fork-era migration staging table,
  *  - budget + subscription two-way sync,
  *  - persisting every action to the in-app sync log.
  */
@@ -36,7 +39,19 @@ class FireflySyncEngine @Inject constructor(
     private val budgetRepository: BudgetRepository,
     private val subscriptionRepository: SubscriptionRepository,
     private val diagnosticLogger: DiagnosticLogger,
-    @ApplicationContext private val context: Context
+    @ApplicationContext private val context: Context,
+    /**
+     * One-shot consumer of the `firefly_sync_state_staging` table left behind
+     * by the fork-era (schemas 47-52) -> 67 migrations. [resyncAll] runs it
+     * before it scans rows so sync state staged during the upgrade lands in
+     * the sidecar and already-synced transactions are not re-created on
+     * Firefly. See [FireflySyncStagingBackfill].
+     *
+     * Nullable with a default only so hand-constructed engines (the live E2E
+     * test builds one directly) keep compiling; Hilt always supplies the
+     * singleton in production. When null, resync simply skips the backfill.
+     */
+    private val stagingBackfill: FireflySyncStagingBackfill? = null
 ) {
 
     private companion object {
@@ -50,6 +65,36 @@ class FireflySyncEngine @Inject constructor(
         const val LOG_STATUS_ERROR = "error"
         const val LOG_STATUS_SKIP = "skip"
     }
+
+    /**
+     * Process-wide single-flight guard for transaction sync (H2).
+     *
+     * `onTransactionSaved` is called synchronously from the save paths
+     * (manual add, SMS parse) while `FireflyAutoSyncWorker`/`FireflyRetryWorker`
+     * may run `resyncAll()`/`retryFailedTxs()` on another thread at the same
+     * moment. Without a guard, both paths search Firefly for the same
+     * never-synced row, both get "not found", and both create it — a duplicate
+     * transaction group on the user's Firefly.
+     *
+     * A transaction id is claimed here before that row's search-then-create
+     * critical section starts and released in a `finally` when the section
+     * ends, so at most one path per id is ever in flight in this process.
+     * Every engine entry point (the hook, the manual "Sync now" button, the
+     * resync batch and the retry batch) funnels through [runBatch], which is
+     * the single place the claim happens — so the hook path and the worker
+     * paths share one guard by construction. A second concurrent attempt for
+     * the same id performs no HTTP at all and is reported as SKIPPED.
+     *
+     * Coroutine/thread safety: [ConcurrentHashMap.newKeySet] is a concurrent
+     * set whose `add` is an atomic compare-and-insert — it returns true only
+     * for the first claimer, so check-and-claim needs no lock and cannot be
+     * interleaved by coroutines resumed on different threads (Room,
+     * WorkManager and Ktor each dispatch on their own pool). Claiming is a
+     * plain (non-suspending) call, so a coroutine can never yield between
+     * checking and claiming an id. Claims are per id, so unrelated
+     * transactions never block each other.
+     */
+    private val inFlightTxIds: MutableSet<Long> = ConcurrentHashMap.newKeySet<Long>()
 
     data class FireflyConfig(
         val url: String,
@@ -115,6 +160,10 @@ class FireflySyncEngine @Inject constructor(
     /**
      * Hook invoked when a transaction is created/edited locally (SMS parse,
      * manual add). No-op unless the user enabled Firefly sync.
+     *
+     * Guarded by [inFlightTxIds]: if a worker is already syncing this exact
+     * transaction, the attempt returns a SKIPPED result without touching
+     * Firefly (see [runBatch]).
      */
     suspend fun onTransactionSaved(tx: TransactionEntity, splits: List<TransactionSplitEntity> = emptyList()) {
         val config = fetchConfig() ?: return
@@ -123,7 +172,8 @@ class FireflySyncEngine @Inject constructor(
 
     /**
      * Manual "Sync now" / retry entry from the transaction detail screen.
-     * Returns the per-item result for the UI.
+     * Returns the per-item result for the UI. A row that another path is
+     * already syncing reports [FireflyClient.SyncResult.Skipped].
      */
     suspend fun syncTransaction(
         tx: TransactionEntity,
@@ -148,10 +198,21 @@ class FireflySyncEngine @Inject constructor(
 
     /**
      * Full resync of transactions that never reached a successful sync
-     * (including previously failed ones). Restricts to the last [scopeDays]
-     * days when non-null.
+     * **or whose last sync attempt errored** (H3: a row that synced once and
+     * then failed an update must not be skipped forever). Restricts to the
+     * last [scopeDays] days when non-null.
+     *
+     * Runs the one-time fork-era staging backfill first: the 47-52 -> 67
+     * migrations stage legacy `firefly_*` state into the main database, and
+     * consuming it here is what stops already-synced transactions from being
+     * re-created on Firefly after an upgrade. The call is advisory — a
+     * backfill failure is logged and never breaks the sync.
      */
     suspend fun resyncAll(scopeDays: Int? = null): SyncSummary {
+        stagingBackfill?.let { backfill ->
+            runCatching { backfill.runIfNeeded() }
+                .onFailure { diagnosticLogger.w(TAG, "Staging backfill skipped (non-fatal)", it) }
+        }
         val config = fetchConfig() ?: return SyncSummary()
         val all = transactionRepository.getAllTransactionsList()
         val scoped = if (scopeDays == null) {
@@ -161,7 +222,10 @@ class FireflySyncEngine @Inject constructor(
             all.filter { it.dateTime.isAfter(cutoff) }
         }
         val states = fireflySyncDao.statesFor(scoped.map { it.id }).associateBy { it.localTransactionId }
-        val toSync = scoped.filter { states[it.id]?.syncedAt == null }
+        // Rows with no state, rows that never synced, and rows whose last sync
+        // errored are all candidates (H3); guard-skips inside runBatch keep
+        // rows another path is currently syncing out of this batch.
+        val toSync = scoped.filter { val s = states[it.id]; s == null || s.syncedAt == null || s.lastError != null }
         if (toSync.isEmpty()) return SyncSummary()
 
         val result = runBatch(
@@ -286,26 +350,90 @@ class FireflySyncEngine @Inject constructor(
         diagnosticLoggerMessage: (() -> String)? = null,
         stateOverrides: Map<Long, FireflyTransactionStateEntity> = emptyMap()
     ): FireflyClient.BatchSyncResult {
-        val states = if (stateOverrides.isNotEmpty()) stateOverrides else {
-            fireflySyncDao.statesFor(syncables.map { it.transaction.id }).associateBy { it.localTransactionId }
+        // ── H2 single-flight guard: claim ids BEFORE any HTTP work ────────────
+        // See [inFlightTxIds]. The hook path (onTransactionSaved /
+        // syncTransaction) and the worker paths (resyncAll / retryFailedTxs)
+        // all end up here, so one guard covers every concurrent combination.
+        val claimed = ArrayList<FireflyClient.SyncableTransaction>(syncables.size)
+        val busy = ArrayList<FireflyClient.SyncableTransaction>()
+        for (item in syncables) {
+            if (inFlightTxIds.add(item.transaction.id)) claimed += item else busy += item
         }
-
-        diagnosticLoggerMessage?.let { diagnosticLogger.i(TAG, it()) }
-
-        val result = fireflyClient.syncTransactionsBatch(
-            syncables = syncables,
-            baseUrl = config.url,
-            accessToken = config.token,
-            defaultAssetAccount = config.defaultAssetAccount,
-            accountMappings = config.accountMappings,
-            categoryMappings = config.categoryMappings,
-            includeRawSmsInNotes = config.includeRawSms,
-            uploadReceipts = true,
-            stateByTx = states
-        )
+        val busySkipped = busy.map { item ->
+            FireflyClient.ItemResult(
+                transactionId = item.transaction.id,
+                externalId = fireflyClient.computeExternalId(item.transaction),
+                status = FireflyClient.ItemResult.ItemStatus.SKIPPED
+            )
+        }
+        if (busySkipped.isNotEmpty()) {
+            diagnosticLogger.w(
+                TAG,
+                "Single-flight guard: ${busySkipped.size} transaction(s) already in flight on another " +
+                    "sync path — skipped without HTTP: ${busySkipped.joinToString { it.transactionId.toString() }}"
+            )
+            logItemResults(busySkipped, direction, LocalDateTime.now())
+        }
+        if (claimed.isEmpty()) {
+            return FireflyClient.BatchSyncResult(
+                total = syncables.size,
+                skipped = busySkipped.size,
+                details = busySkipped
+            )
+        }
+        val claimedIds = ArrayList<Long>(claimed.size)
+        for (item in claimed) claimedIds += item.transaction.id
 
         val now = LocalDateTime.now()
-        result.details.forEach { item ->
+        try {
+            val states = if (stateOverrides.isNotEmpty()) stateOverrides else {
+                fireflySyncDao.statesFor(claimedIds).associateBy { it.localTransactionId }
+            }
+
+            diagnosticLoggerMessage?.let { diagnosticLogger.i(TAG, it()) }
+
+            val result = fireflyClient.syncTransactionsBatch(
+                syncables = claimed,
+                baseUrl = config.url,
+                accessToken = config.token,
+                defaultAssetAccount = config.defaultAssetAccount,
+                accountMappings = config.accountMappings,
+                categoryMappings = config.categoryMappings,
+                includeRawSmsInNotes = config.includeRawSms,
+                uploadReceipts = true,
+                stateByTx = states
+            )
+
+            logItemResults(result.details, direction, now)
+
+            fireflyPreferencesRepository.updateLastSync(
+                System.currentTimeMillis(),
+                error = if (result.failed > 0) "${result.failed} failed" else null
+            )
+            if (result.failed > 0) {
+                com.pennywiseai.tracker.worker.FireflyRetryWorker.enqueue(context)
+            }
+            return FireflyClient.BatchSyncResult(
+                total = result.total + busySkipped.size,
+                created = result.created,
+                skipped = result.skipped + busySkipped.size,
+                failed = result.failed,
+                details = result.details + busySkipped
+            )
+        } finally {
+            // Release the claims even if the client or the DAO throws, so a
+            // failed attempt can be retried by the next pass.
+            inFlightTxIds.removeAll(claimedIds)
+        }
+    }
+
+    /** Persist one sync-log row per item result (unchanged semantics). */
+    private suspend fun logItemResults(
+        details: List<FireflyClient.ItemResult>,
+        direction: String,
+        at: LocalDateTime
+    ) {
+        details.forEach { item ->
             val status = when (item.status) {
                 FireflyClient.ItemResult.ItemStatus.SUCCESS -> LOG_STATUS_OK
                 FireflyClient.ItemResult.ItemStatus.SKIPPED -> LOG_STATUS_SKIP
@@ -324,18 +452,9 @@ class FireflySyncEngine @Inject constructor(
                             if (item.pulled) "Pulled remote update into local row"
                             else "Synced to Firefly"
                     },
-                    at = now
+                    at = at
                 )
             )
         }
-
-        fireflyPreferencesRepository.updateLastSync(
-            System.currentTimeMillis(),
-            error = if (result.failed > 0) "${result.failed} failed" else null
-        )
-        if (result.failed > 0) {
-            com.pennywiseai.tracker.worker.FireflyRetryWorker.enqueue(context)
-        }
-        return result
     }
 }
