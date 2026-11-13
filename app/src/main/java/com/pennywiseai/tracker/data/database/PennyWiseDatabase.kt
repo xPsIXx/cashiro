@@ -753,469 +753,190 @@ abstract class PennyWiseDatabase : RoomDatabase() {
             }
         }
 
-        val MIGRATION_47_67 = object : Migration(47, 67) {
-            override fun migrate(db: SupportSQLiteDatabase) {
-                // Fork-era install (47) -> consolidated upstream schema 67.
-                // Drop the firefly_* columns (state lives in the add-on sidecar DB now)
-                // by recreating the tables at the post-refactor shape.
-                db.execSQL("""
-CREATE TABLE IF NOT EXISTS ``transactions_new`` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `amount` TEXT NOT NULL, `merchant_name` TEXT NOT NULL, `category` TEXT NOT NULL, `transaction_type` TEXT NOT NULL, `date_time` TEXT NOT NULL, `description` TEXT, `sms_body` TEXT, `bank_name` TEXT, `sms_sender` TEXT, `account_number` TEXT, `balance_after` TEXT, `transaction_hash` TEXT NOT NULL DEFAULT '', `is_recurring` INTEGER NOT NULL, `is_deleted` INTEGER NOT NULL DEFAULT 0, `created_at` TEXT NOT NULL, `updated_at` TEXT NOT NULL, `currency` TEXT NOT NULL DEFAULT 'INR', `from_account` TEXT, `to_account` TEXT, `reference` TEXT, `loan_id` INTEGER DEFAULT NULL, `loan_contribution` TEXT DEFAULT NULL, `receipt_path` TEXT DEFAULT NULL, `budget_category` TEXT DEFAULT NULL, `budget_impact_type` TEXT DEFAULT NULL, `group_id` INTEGER DEFAULT NULL, `profile_id` INTEGER DEFAULT NULL, `excluded_from_analytics` INTEGER NOT NULL DEFAULT 0)
-""")
-                db.execSQL("""
-INSERT INTO `transactions_new` (`id`, `amount`, `merchant_name`, `category`, `transaction_type`, `date_time`, `description`, `sms_body`, `bank_name`, `sms_sender`, `account_number`, `balance_after`, `transaction_hash`, `is_recurring`, `is_deleted`, `created_at`, `updated_at`, `currency`, `from_account`, `to_account`, `reference`, `loan_id`, `loan_contribution`, `receipt_path`, `budget_category`, `budget_impact_type`, `group_id`, `profile_id`, `excluded_from_analytics`) SELECT `id`, `amount`, `merchant_name`, `category`, `transaction_type`, `date_time`, `description`, `sms_body`, `bank_name`, `sms_sender`, `account_number`, `balance_after`, `transaction_hash`, `is_recurring`, `is_deleted`, `created_at`, `updated_at`, `currency`, `from_account`, `to_account`, `reference`, `loan_id`, `loan_contribution`, `receipt_path`, `budget_category`, `budget_impact_type`, `group_id`, `profile_id`, `excluded_from_analytics` FROM `transactions`
-""")
-                db.execSQL("DROP TABLE `transactions`")
-                db.execSQL("ALTER TABLE `transactions_new` RENAME TO `transactions`")
-                db.execSQL("""
-CREATE UNIQUE INDEX IF NOT EXISTS `index_transactions_transaction_hash` ON ``transactions`` (`transaction_hash`)
-""")
-                // Tables added upstream after the fork point.
-                db.execSQL("""
-CREATE TABLE IF NOT EXISTS ``merchant_aliases`` (`merchant_name` TEXT NOT NULL, `alias` TEXT NOT NULL, `created_at` TEXT NOT NULL, `updated_at` TEXT NOT NULL, PRIMARY KEY(`merchant_name`))
-""")
-                db.execSQL("""
-CREATE TABLE IF NOT EXISTS ``tags`` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `name` TEXT NOT NULL, `created_at` TEXT NOT NULL)
-""")
-                db.execSQL("""
-CREATE TABLE IF NOT EXISTS ``transaction_tag_cross_ref`` (`transaction_id` INTEGER NOT NULL, `tag_id` INTEGER NOT NULL, PRIMARY KEY(`transaction_id`, `tag_id`), FOREIGN KEY(`transaction_id`) REFERENCES `transactions`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE , FOREIGN KEY(`tag_id`) REFERENCES `tags`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )
-""")
-                db.execSQL("""
-CREATE TABLE IF NOT EXISTS ``recurring_transactions`` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `uid` TEXT NOT NULL DEFAULT '', `merchant_name` TEXT NOT NULL, `amount` TEXT NOT NULL, `currency` TEXT NOT NULL DEFAULT 'INR', `category` TEXT NOT NULL DEFAULT 'Others', `transaction_type` TEXT NOT NULL DEFAULT 'EXPENSE', `frequency` TEXT NOT NULL DEFAULT 'MONTHLY', `day_of_month` INTEGER, `day_of_week` INTEGER, `next_due_date` TEXT NOT NULL, `is_active` INTEGER NOT NULL DEFAULT 1, `account_last4` TEXT, `bank_name` TEXT, `note` TEXT, `profile_id` INTEGER NOT NULL DEFAULT 1, `created_at` TEXT NOT NULL, `updated_at` TEXT NOT NULL)
-""")
-                db.execSQL("""
-CREATE TABLE IF NOT EXISTS ``webhook_profiles`` (`id` TEXT NOT NULL, `name` TEXT NOT NULL, `url` TEXT NOT NULL, `enabled` INTEGER NOT NULL DEFAULT 1, `range_preset` TEXT NOT NULL, `custom_start` TEXT, `custom_end` TEXT, `data_types` TEXT NOT NULL DEFAULT 'SUMMARY,TRANSACTIONS,BUDGETS,ACCOUNTS,SUBSCRIPTIONS', `headers_json` TEXT NOT NULL DEFAULT '[]', `currency` TEXT NOT NULL DEFAULT 'INR', `last_error` TEXT, `consecutive_failures` INTEGER NOT NULL DEFAULT 0, `last_synced_at` TEXT, `created_at` TEXT NOT NULL, `updated_at` TEXT NOT NULL, PRIMARY KEY(`id`))
-""")
-                db.execSQL("""
-CREATE TABLE IF NOT EXISTS ``webhook_logs`` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `profile_id` TEXT NOT NULL, `profile_name` TEXT NOT NULL, `sync_reason` TEXT NOT NULL, `status` TEXT NOT NULL, `message` TEXT NOT NULL, `http_status` INTEGER, `batch_count` INTEGER NOT NULL DEFAULT 0, `created_at` TEXT NOT NULL, FOREIGN KEY(`profile_id`) REFERENCES `webhook_profiles`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )
-""")
-                db.execSQL("""
-CREATE TABLE IF NOT EXISTS ``webhook_cursors`` (`profile_id` TEXT NOT NULL, `data_type` TEXT NOT NULL, `last_success_at` TEXT, `last_range_end` TEXT, `updated_at` TEXT NOT NULL, PRIMARY KEY(`profile_id`, `data_type`), FOREIGN KEY(`profile_id`) REFERENCES `webhook_profiles`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )
-""")
-                db.execSQL("""
-CREATE TABLE IF NOT EXISTS ``webhook_delivered_transactions`` (`profile_id` TEXT NOT NULL, `transaction_id` INTEGER NOT NULL, PRIMARY KEY(`profile_id`, `transaction_id`), FOREIGN KEY(`profile_id`) REFERENCES `webhook_profiles`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )
-""")
-                db.execSQL("""
-CREATE TABLE IF NOT EXISTS ``goals`` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `uid` TEXT NOT NULL, `name` TEXT NOT NULL, `target_amount` TEXT NOT NULL, `currency` TEXT NOT NULL, `due_date` TEXT NOT NULL, `color` TEXT NOT NULL, `already_saved` TEXT NOT NULL, `is_archived` INTEGER NOT NULL, `created_at` TEXT NOT NULL, `updated_at` TEXT NOT NULL)
-""")
-                db.execSQL("""
-CREATE TABLE IF NOT EXISTS ``goal_contributions`` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `uid` TEXT NOT NULL, `goal_id` INTEGER NOT NULL, `amount` TEXT NOT NULL, `date` TEXT NOT NULL, `note` TEXT, `original_amount` TEXT, `original_currency` TEXT, `transaction_id` INTEGER, `created_at` TEXT NOT NULL, `updated_at` TEXT NOT NULL, FOREIGN KEY(`goal_id`) REFERENCES `goals`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE , FOREIGN KEY(`transaction_id`) REFERENCES `transactions`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )
-""")
-                db.execSQL("""
-CREATE TABLE IF NOT EXISTS ``loan_shares`` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `transaction_id` INTEGER NOT NULL, `loan_id` INTEGER NOT NULL, `amount` TEXT NOT NULL, `created_at` TEXT NOT NULL, FOREIGN KEY(`loan_id`) REFERENCES `loans`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE , FOREIGN KEY(`transaction_id`) REFERENCES `transactions`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )
-""")
-                // Columns added upstream after the fork point.
-                db.execSQL("ALTER TABLE `transactions` ADD COLUMN `from_bank_name` TEXT DEFAULT NULL")
-                db.execSQL("ALTER TABLE `transactions` ADD COLUMN `to_bank_name` TEXT DEFAULT NULL")
-                db.execSQL("ALTER TABLE `transactions` ADD COLUMN `lent_shares_total` TEXT DEFAULT NULL")
-                db.execSQL("ALTER TABLE `subscriptions` ADD COLUMN `account_last4` TEXT DEFAULT NULL")
-                db.execSQL("ALTER TABLE `categories` ADD COLUMN `icon` TEXT DEFAULT NULL")
-                db.execSQL("ALTER TABLE `categories` ADD COLUMN `parent_id` INTEGER DEFAULT NULL")
-                db.execSQL("ALTER TABLE `categories` ADD COLUMN `system_name` TEXT DEFAULT NULL")
-                db.execSQL("ALTER TABLE `categories` ADD COLUMN `is_hidden` INTEGER NOT NULL DEFAULT 0")
-                db.execSQL("ALTER TABLE `account_balances` ADD COLUMN `lowBalanceThreshold` TEXT DEFAULT NULL")
-                db.execSQL("ALTER TABLE `budgets` ADD COLUMN `weekday_anchor` INTEGER DEFAULT NULL")
-                db.execSQL("ALTER TABLE `budgets` ADD COLUMN `month_anchor` INTEGER DEFAULT NULL")
-                db.execSQL("ALTER TABLE `budget_categories` ADD COLUMN `match_type` TEXT DEFAULT NULL")
-                db.execSQL("ALTER TABLE `budget_category_month_snapshots` ADD COLUMN `match_type` TEXT DEFAULT NULL")
+        /** True if [column] already exists in [table] (PRAGMA-based, safe across fork/upstream installs). */
+        private fun hasColumn(db: SupportSQLiteDatabase, table: String, column: String): Boolean {
+            val cursor = db.query("PRAGMA table_info(`$table`)")
+            try {
+                while (cursor.moveToNext()) {
+                    val nameIndex = cursor.getColumnIndex("name")
+                    if (nameIndex != -1 && cursor.getString(nameIndex) == column) {
+                        return true
+                    }
+                }
+            } finally {
+                cursor.close()
             }
+            return false
+        }
+
+        /** Column names currently present in [table], in declaration order. */
+        private fun columnsOf(db: SupportSQLiteDatabase, table: String): List<String> {
+            val cursor = db.query("PRAGMA table_info(`$table`)")
+            try {
+                return cursor.generateSequence().mapNotNull { it.getColumnIndex("name").takeIf { i -> i != -1 }?.let(cursor::getString) }
+            } finally {
+                cursor.close()
+            }
+        }
+
+        private fun quoteColumns(columns: List<String>) = columns.joinToString(", ") { "`$it`" }
+
+        /**
+         * Rebuilds [table] at its v67 shape ([newDdl]), copying only the columns that exist in BOTH the
+         * live source table and the target definition (intersection). Data is preserved, fork-only
+         * columns (e.g. the legacy firefly_* state) are dropped, and missing target columns take their
+         * DEFAULT via ALTER afterwards. Introspecting the live schema instead of hardcoding per-source
+         * column lists is deliberate: fork-era installs at 47-52 do not all share the same columns
+         * (excluded_from_analytics only exists from 51, match_type from 52), so a hardcoded list
+         * crashes on some edge with "no such column" / "duplicate column name".
+         */
+        private fun rebuildTableAt67(
+            db: SupportSQLiteDatabase,
+            table: String,
+            newDdl: String,
+            targetColumns: List<String>,
+            postRenameSql: List<String> = emptyList(),
+            stageSyncState: Boolean = false,
+        ) {
+            if (!hasColumn(db, table, "firefly_synced_at")) return // already at target shape (no legacy state columns)
+            db.execSQL("CREATE TABLE IF NOT EXISTS `${table}_new` ($newDdl)")
+            val shared = columnsOf(db, table).filter { it in targetColumns }
+            db.execSQL("INSERT INTO `${table}_new` (${quoteColumns(shared)}) SELECT ${quoteColumns(shared)} FROM `$table`")
+            // The fork kept Firefly sync state in firefly_* columns; the consolidated schema stores
+            // it in the add-on sidecar DB instead. Without staging, an upgrade would silently lose
+            // "which transactions are already synced", so the first post-upgrade sync would
+            // re-create every transaction on Firefly. The app-side backfill reads this table into
+            // the sidecar and then drops it.
+            if (stageSyncState) {
+                db.execSQL("""
+CREATE TABLE IF NOT EXISTS `firefly_sync_state_staging` (`transaction_id` INTEGER NOT NULL, `external_id` TEXT, `remote_id` TEXT, `synced_at` TEXT, PRIMARY KEY(`transaction_id`))
+""")
+                db.execSQL("""
+INSERT OR REPLACE INTO `firefly_sync_state_staging` (`transaction_id`, `external_id`, `remote_id`, `synced_at`) SELECT `id`, `firefly_external_id`, `firefly_external_id`, `firefly_synced_at` FROM `$table` WHERE `firefly_synced_at` IS NOT NULL
+""")
+            }
+            db.execSQL("DROP TABLE `$table`")
+            db.execSQL("ALTER TABLE `${table}_new` RENAME TO `$table`")
+            postRenameSql.forEach(db::execSQL)
+            targetColumns.filter { !hasColumn(db, table, it) }.forEach { col ->
+                val def = TARGET_COLUMN_DEFS[col]
+                    ?: error("rebuildTableAt67: no DEFAULT defined for target column $table.$col")
+                db.execSQL("ALTER TABLE `$table` ADD COLUMN `$col` $def")
+            }
+        }
+
+        /**
+         * Shared consolidation for every fork-era install (schema 47-52) into the merged upstream
+         * schema 67. All six direct edges delegate here. Idempotent and schema-introspecting, so it
+         * behaves correctly whichever fork version the install is actually on.
+         */
+        private fun consolidateToForkEra67(db: SupportSQLiteDatabase) {
+            // Rebuild the tables that carried fork-only firefly_* state columns. Rebuild FIRST so
+            // tables created below can reference the final `transactions` in their FKs.
+            rebuildTableAt67(
+                db, "transactions",
+                "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `amount` TEXT NOT NULL, `merchant_name` TEXT NOT NULL, `category` TEXT NOT NULL, `transaction_type` TEXT NOT NULL, `date_time` TEXT NOT NULL, `description` TEXT, `sms_body` TEXT, `bank_name` TEXT, `sms_sender` TEXT, `account_number` TEXT, `balance_after` TEXT, `transaction_hash` TEXT NOT NULL DEFAULT '', `is_recurring` INTEGER NOT NULL, `is_deleted` INTEGER NOT NULL DEFAULT 0, `created_at` TEXT NOT NULL, `updated_at` TEXT NOT NULL, `currency` TEXT NOT NULL DEFAULT 'INR', `from_account` TEXT, `to_account` TEXT, `reference` TEXT, `loan_id` INTEGER DEFAULT NULL, `loan_contribution` TEXT DEFAULT NULL, `receipt_path` TEXT DEFAULT NULL, `budget_category` TEXT DEFAULT NULL, `budget_impact_type` TEXT DEFAULT NULL, `group_id` INTEGER DEFAULT NULL, `profile_id` INTEGER DEFAULT NULL, `excluded_from_analytics` INTEGER NOT NULL DEFAULT 0",
+                listOf("id", "amount", "merchant_name", "category", "transaction_type", "date_time", "description", "sms_body", "bank_name", "sms_sender", "account_number", "balance_after", "transaction_hash", "is_recurring", "is_deleted", "excluded_from_analytics", "created_at", "updated_at", "currency", "from_account", "to_account", "reference", "loan_id", "loan_contribution", "lent_shares_total", "receipt_path", "budget_category", "budget_impact_type", "group_id", "profile_id", "from_bank_name", "to_bank_name"),
+                listOf("CREATE UNIQUE INDEX IF NOT EXISTS `index_transactions_transaction_hash` ON `transactions` (`transaction_hash`)"),
+                stageSyncState = true,
+            )
+            rebuildTableAt67(
+                db, "budgets",
+                "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `name` TEXT NOT NULL, `limit_amount` TEXT NOT NULL, `period_type` TEXT NOT NULL, `start_date` TEXT NOT NULL, `end_date` TEXT NOT NULL, `currency` TEXT NOT NULL DEFAULT 'INR', `is_active` INTEGER NOT NULL DEFAULT 1, `include_all_categories` INTEGER NOT NULL DEFAULT 0, `color` TEXT NOT NULL DEFAULT '#1565C0', `group_type` TEXT NOT NULL DEFAULT 'LIMIT', `display_order` INTEGER NOT NULL DEFAULT 0, `created_at` TEXT NOT NULL, `updated_at` TEXT NOT NULL",
+                listOf("id", "name", "limit_amount", "period_type", "start_date", "end_date", "weekday_anchor", "month_anchor", "currency", "is_active", "include_all_categories", "color", "group_type", "display_order", "created_at", "updated_at"),
+                listOf(
+                    "CREATE INDEX IF NOT EXISTS `index_budgets_name` ON `budgets` (`name`)",
+                    "CREATE INDEX IF NOT EXISTS `index_budgets_is_active` ON `budgets` (`is_active`)",
+                ),
+            )
+            rebuildTableAt67(
+                db, "subscriptions",
+                "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `merchant_name` TEXT NOT NULL, `amount` TEXT NOT NULL, `next_payment_date` TEXT, `state` TEXT NOT NULL, `bank_name` TEXT, `umn` TEXT, `category` TEXT, `sms_body` TEXT, `created_at` TEXT NOT NULL, `updated_at` TEXT NOT NULL, `currency` TEXT NOT NULL DEFAULT 'INR', `direction` TEXT NOT NULL DEFAULT 'EXPENSE', `billing_cycle` TEXT NOT NULL DEFAULT 'Monthly', `last_paid_at` TEXT",
+                listOf("id", "merchant_name", "amount", "next_payment_date", "state", "bank_name", "account_last4", "umn", "category", "sms_body", "created_at", "updated_at", "currency", "direction", "billing_cycle", "last_paid_at"),
+            )
+
+            // Tables added upstream after the fork point.
+            db.execSQL("CREATE TABLE IF NOT EXISTS `merchant_aliases` (`merchant_name` TEXT NOT NULL, `alias` TEXT NOT NULL, `created_at` TEXT NOT NULL, `updated_at` TEXT NOT NULL, PRIMARY KEY(`merchant_name`))")
+            db.execSQL("CREATE TABLE IF NOT EXISTS `tags` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `name` TEXT NOT NULL, `created_at` TEXT NOT NULL)")
+            db.execSQL("CREATE TABLE IF NOT EXISTS `transaction_tag_cross_ref` (`transaction_id` INTEGER NOT NULL, `tag_id` INTEGER NOT NULL, PRIMARY KEY(`transaction_id`, `tag_id`), FOREIGN KEY(`transaction_id`) REFERENCES `transactions`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE , FOREIGN KEY(`tag_id`) REFERENCES `tags`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )")
+            db.execSQL("CREATE TABLE IF NOT EXISTS `recurring_transactions` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `uid` TEXT NOT NULL DEFAULT '', `merchant_name` TEXT NOT NULL, `amount` TEXT NOT NULL, `currency` TEXT NOT NULL DEFAULT 'INR', `category` TEXT NOT NULL DEFAULT 'Others', `transaction_type` TEXT NOT NULL DEFAULT 'EXPENSE', `frequency` TEXT NOT NULL DEFAULT 'MONTHLY', `day_of_month` INTEGER, `day_of_week` INTEGER, `next_due_date` TEXT NOT NULL, `is_active` INTEGER NOT NULL DEFAULT 1, `account_last4` TEXT, `bank_name` TEXT, `note` TEXT, `profile_id` INTEGER NOT NULL DEFAULT 1, `created_at` TEXT NOT NULL, `updated_at` TEXT NOT NULL)")
+            db.execSQL("CREATE TABLE IF NOT EXISTS `webhook_profiles` (`id` TEXT NOT NULL, `name` TEXT NOT NULL, `url` TEXT NOT NULL, `enabled` INTEGER NOT NULL DEFAULT 1, `range_preset` TEXT NOT NULL, `custom_start` TEXT, `custom_end` TEXT, `data_types` TEXT NOT NULL DEFAULT 'SUMMARY,TRANSACTIONS,BUDGETS,ACCOUNTS,SUBSCRIPTIONS', `headers_json` TEXT NOT NULL DEFAULT '[]', `currency` TEXT NOT NULL DEFAULT 'INR', `last_error` TEXT, `consecutive_failures` INTEGER NOT NULL DEFAULT 0, `last_synced_at` TEXT, `created_at` TEXT NOT NULL, `updated_at` TEXT NOT NULL, PRIMARY KEY(`id`))")
+            db.execSQL("CREATE TABLE IF NOT EXISTS `webhook_logs` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `profile_id` TEXT NOT NULL, `profile_name` TEXT NOT NULL, `sync_reason` TEXT NOT NULL, `status` TEXT NOT NULL, `message` TEXT NOT NULL, `http_status` INTEGER, `batch_count` INTEGER NOT NULL DEFAULT 0, `created_at` TEXT NOT NULL, FOREIGN KEY(`profile_id`) REFERENCES `webhook_profiles`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )")
+            db.execSQL("CREATE TABLE IF NOT EXISTS `webhook_cursors` (`profile_id` TEXT NOT NULL, `data_type` TEXT NOT NULL, `last_success_at` TEXT, `last_range_end` TEXT, `updated_at` TEXT NOT NULL, PRIMARY KEY(`profile_id`, `data_type`), FOREIGN KEY(`profile_id`) REFERENCES `webhook_profiles`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )")
+            db.execSQL("CREATE TABLE IF NOT EXISTS `webhook_delivered_transactions` (`profile_id` TEXT NOT NULL, `transaction_id` INTEGER NOT NULL, PRIMARY KEY(`profile_id`, `transaction_id`), FOREIGN KEY(`profile_id`) REFERENCES `webhook_profiles`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )")
+            db.execSQL("CREATE TABLE IF NOT EXISTS `goals` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `uid` TEXT NOT NULL, `name` TEXT NOT NULL, `target_amount` TEXT NOT NULL, `currency` TEXT NOT NULL, `due_date` TEXT NOT NULL, `color` TEXT NOT NULL, `already_saved` TEXT NOT NULL, `is_archived` INTEGER NOT NULL, `created_at` TEXT NOT NULL, `updated_at` TEXT NOT NULL)")
+            db.execSQL("CREATE TABLE IF NOT EXISTS `goal_contributions` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `uid` TEXT NOT NULL, `goal_id` INTEGER NOT NULL, `amount` TEXT NOT NULL, `date` TEXT NOT NULL, `note` TEXT, `original_amount` TEXT, `original_currency` TEXT, `transaction_id` INTEGER, `created_at` TEXT NOT NULL, `updated_at` TEXT NOT NULL, FOREIGN KEY(`goal_id`) REFERENCES `goals`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE , FOREIGN KEY(`transaction_id`) REFERENCES `transactions`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )")
+            db.execSQL("CREATE TABLE IF NOT EXISTS `loan_shares` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `transaction_id` INTEGER NOT NULL, `loan_id` INTEGER NOT NULL, `amount` TEXT NOT NULL, `created_at` TEXT NOT NULL, FOREIGN KEY(`loan_id`) REFERENCES `loans`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE , FOREIGN KEY(`transaction_id`) REFERENCES `transactions`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )")
+
+            // Columns added upstream after the fork point — guarded, because several fork-era
+            // migrations (50->51 excluded_from_analytics, 51->52 match_type) already ran before
+            // these direct edges; a bare ADD would crash with "duplicate column name".
+            addColumnIfMissing(db, "transactions", "from_bank_name", "TEXT DEFAULT NULL")
+            addColumnIfMissing(db, "transactions", "to_bank_name", "TEXT DEFAULT NULL")
+            addColumnIfMissing(db, "transactions", "lent_shares_total", "TEXT DEFAULT NULL")
+            addColumnIfMissing(db, "subscriptions", "account_last4", "TEXT DEFAULT NULL")
+            addColumnIfMissing(db, "categories", "icon", "TEXT DEFAULT NULL")
+            addColumnIfMissing(db, "categories", "parent_id", "INTEGER DEFAULT NULL")
+            addColumnIfMissing(db, "categories", "system_name", "TEXT DEFAULT NULL")
+            addColumnIfMissing(db, "categories", "is_hidden", "INTEGER NOT NULL DEFAULT 0")
+            addColumnIfMissing(db, "account_balances", "lowBalanceThreshold", "TEXT DEFAULT NULL")
+            // Fork installs exactly at 49 lack `alias` (added by fork migration 49->50); without it
+            // Room's post-migration schema validation rejects the direct 49->67 edge.
+            addColumnIfMissing(db, "account_balances", "alias", "TEXT DEFAULT NULL")
+            addColumnIfMissing(db, "budgets", "weekday_anchor", "INTEGER DEFAULT NULL")
+            addColumnIfMissing(db, "budgets", "month_anchor", "INTEGER DEFAULT NULL")
+            addColumnIfMissing(db, "budget_categories", "match_type", "TEXT DEFAULT NULL")
+            addColumnIfMissing(db, "budget_category_month_snapshots", "match_type", "TEXT DEFAULT NULL")
+            // Fork installs at 49/50 lack it entirely (it arrived at 50->51) and their tables carry
+            // no firefly_* state, so the rebuild path never runs — the guarded ADD must cover it.
+            addColumnIfMissing(db, "transactions", "excluded_from_analytics", "INTEGER NOT NULL DEFAULT 0")
+        }
+
+        private fun addColumnIfMissing(db: SupportSQLiteDatabase, table: String, column: String, definition: String) {
+            if (!hasColumn(db, table, column)) {
+                db.execSQL("ALTER TABLE `$table` ADD COLUMN `$column` $definition")
+            }
+        }
+
+        /** DEFAULT fragments for columns a fork-era source table may lack after a rebuild. */
+        private val TARGET_COLUMN_DEFS = mapOf(
+            "excluded_from_analytics" to "INTEGER NOT NULL DEFAULT 0",
+            "weekday_anchor" to "INTEGER DEFAULT NULL",
+            "month_anchor" to "INTEGER DEFAULT NULL",
+            "from_bank_name" to "TEXT DEFAULT NULL",
+            "to_bank_name" to "TEXT DEFAULT NULL",
+            "lent_shares_total" to "TEXT DEFAULT NULL",
+            "excluded_from_analytics" to "INTEGER NOT NULL DEFAULT 0",
+            "account_last4" to "TEXT DEFAULT NULL",
+            "last_paid_at" to "TEXT",
+        )
+
+        // Fork-era installs (47-52) jump straight to the consolidated schema 67. Every edge delegates
+        // to consolidateToForkEra67 — the SQL is identical for all of them BECAUSE it introspects the
+        // live schema; hardcoding per-version column lists is what previously broke these edges.
+        val MIGRATION_47_67 = object : Migration(47, 67) {
+            override fun migrate(db: SupportSQLiteDatabase) = consolidateToForkEra67(db)
         }
 
         val MIGRATION_48_67 = object : Migration(48, 67) {
-            override fun migrate(db: SupportSQLiteDatabase) {
-                // Fork-era install (48) -> consolidated upstream schema 67.
-                // Drop the firefly_* columns (state lives in the add-on sidecar DB now)
-                // by recreating the tables at the post-refactor shape.
-                db.execSQL("""
-CREATE TABLE IF NOT EXISTS ``transactions_new`` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `amount` TEXT NOT NULL, `merchant_name` TEXT NOT NULL, `category` TEXT NOT NULL, `transaction_type` TEXT NOT NULL, `date_time` TEXT NOT NULL, `description` TEXT, `sms_body` TEXT, `bank_name` TEXT, `sms_sender` TEXT, `account_number` TEXT, `balance_after` TEXT, `transaction_hash` TEXT NOT NULL DEFAULT '', `is_recurring` INTEGER NOT NULL, `is_deleted` INTEGER NOT NULL DEFAULT 0, `created_at` TEXT NOT NULL, `updated_at` TEXT NOT NULL, `currency` TEXT NOT NULL DEFAULT 'INR', `from_account` TEXT, `to_account` TEXT, `reference` TEXT, `loan_id` INTEGER DEFAULT NULL, `loan_contribution` TEXT DEFAULT NULL, `receipt_path` TEXT DEFAULT NULL, `budget_category` TEXT DEFAULT NULL, `budget_impact_type` TEXT DEFAULT NULL, `group_id` INTEGER DEFAULT NULL, `profile_id` INTEGER DEFAULT NULL, `excluded_from_analytics` INTEGER NOT NULL DEFAULT 0)
-""")
-                db.execSQL("""
-INSERT INTO `transactions_new` (`id`, `amount`, `merchant_name`, `category`, `transaction_type`, `date_time`, `description`, `sms_body`, `bank_name`, `sms_sender`, `account_number`, `balance_after`, `transaction_hash`, `is_recurring`, `is_deleted`, `created_at`, `updated_at`, `currency`, `from_account`, `to_account`, `reference`, `loan_id`, `loan_contribution`, `receipt_path`, `budget_category`, `budget_impact_type`, `group_id`, `profile_id`, `excluded_from_analytics`) SELECT `id`, `amount`, `merchant_name`, `category`, `transaction_type`, `date_time`, `description`, `sms_body`, `bank_name`, `sms_sender`, `account_number`, `balance_after`, `transaction_hash`, `is_recurring`, `is_deleted`, `created_at`, `updated_at`, `currency`, `from_account`, `to_account`, `reference`, `loan_id`, `loan_contribution`, `receipt_path`, `budget_category`, `budget_impact_type`, `group_id`, `profile_id`, `excluded_from_analytics` FROM `transactions`
-""")
-                db.execSQL("DROP TABLE `transactions`")
-                db.execSQL("ALTER TABLE `transactions_new` RENAME TO `transactions`")
-                db.execSQL("""
-CREATE UNIQUE INDEX IF NOT EXISTS `index_transactions_transaction_hash` ON ``transactions`` (`transaction_hash`)
-""")
-                db.execSQL("""
-CREATE TABLE IF NOT EXISTS ``budgets_new`` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `name` TEXT NOT NULL, `limit_amount` TEXT NOT NULL, `period_type` TEXT NOT NULL, `start_date` TEXT NOT NULL, `end_date` TEXT NOT NULL, `currency` TEXT NOT NULL DEFAULT 'INR', `is_active` INTEGER NOT NULL DEFAULT 1, `include_all_categories` INTEGER NOT NULL DEFAULT 0, `color` TEXT NOT NULL DEFAULT '#1565C0', `group_type` TEXT NOT NULL DEFAULT 'LIMIT', `display_order` INTEGER NOT NULL DEFAULT 0, `created_at` TEXT NOT NULL, `updated_at` TEXT NOT NULL)
-""")
-                db.execSQL("""
-INSERT INTO `budgets_new` (`id`, `name`, `limit_amount`, `period_type`, `start_date`, `end_date`, `currency`, `is_active`, `include_all_categories`, `color`, `group_type`, `display_order`, `created_at`, `updated_at`) SELECT `id`, `name`, `limit_amount`, `period_type`, `start_date`, `end_date`, `currency`, `is_active`, `include_all_categories`, `color`, `group_type`, `display_order`, `created_at`, `updated_at` FROM `budgets`
-""")
-                db.execSQL("DROP TABLE `budgets`")
-                db.execSQL("ALTER TABLE `budgets_new` RENAME TO `budgets`")
-                db.execSQL("""
-CREATE INDEX IF NOT EXISTS `index_budgets_name` ON ``budgets`` (`name`);
-CREATE INDEX IF NOT EXISTS `index_budgets_is_active` ON ``budgets`` (`is_active`)
-""")
-                // Tables added upstream after the fork point.
-                db.execSQL("""
-CREATE TABLE IF NOT EXISTS ``merchant_aliases`` (`merchant_name` TEXT NOT NULL, `alias` TEXT NOT NULL, `created_at` TEXT NOT NULL, `updated_at` TEXT NOT NULL, PRIMARY KEY(`merchant_name`))
-""")
-                db.execSQL("""
-CREATE TABLE IF NOT EXISTS ``tags`` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `name` TEXT NOT NULL, `created_at` TEXT NOT NULL)
-""")
-                db.execSQL("""
-CREATE TABLE IF NOT EXISTS ``transaction_tag_cross_ref`` (`transaction_id` INTEGER NOT NULL, `tag_id` INTEGER NOT NULL, PRIMARY KEY(`transaction_id`, `tag_id`), FOREIGN KEY(`transaction_id`) REFERENCES `transactions`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE , FOREIGN KEY(`tag_id`) REFERENCES `tags`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )
-""")
-                db.execSQL("""
-CREATE TABLE IF NOT EXISTS ``recurring_transactions`` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `uid` TEXT NOT NULL DEFAULT '', `merchant_name` TEXT NOT NULL, `amount` TEXT NOT NULL, `currency` TEXT NOT NULL DEFAULT 'INR', `category` TEXT NOT NULL DEFAULT 'Others', `transaction_type` TEXT NOT NULL DEFAULT 'EXPENSE', `frequency` TEXT NOT NULL DEFAULT 'MONTHLY', `day_of_month` INTEGER, `day_of_week` INTEGER, `next_due_date` TEXT NOT NULL, `is_active` INTEGER NOT NULL DEFAULT 1, `account_last4` TEXT, `bank_name` TEXT, `note` TEXT, `profile_id` INTEGER NOT NULL DEFAULT 1, `created_at` TEXT NOT NULL, `updated_at` TEXT NOT NULL)
-""")
-                db.execSQL("""
-CREATE TABLE IF NOT EXISTS ``webhook_profiles`` (`id` TEXT NOT NULL, `name` TEXT NOT NULL, `url` TEXT NOT NULL, `enabled` INTEGER NOT NULL DEFAULT 1, `range_preset` TEXT NOT NULL, `custom_start` TEXT, `custom_end` TEXT, `data_types` TEXT NOT NULL DEFAULT 'SUMMARY,TRANSACTIONS,BUDGETS,ACCOUNTS,SUBSCRIPTIONS', `headers_json` TEXT NOT NULL DEFAULT '[]', `currency` TEXT NOT NULL DEFAULT 'INR', `last_error` TEXT, `consecutive_failures` INTEGER NOT NULL DEFAULT 0, `last_synced_at` TEXT, `created_at` TEXT NOT NULL, `updated_at` TEXT NOT NULL, PRIMARY KEY(`id`))
-""")
-                db.execSQL("""
-CREATE TABLE IF NOT EXISTS ``webhook_logs`` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `profile_id` TEXT NOT NULL, `profile_name` TEXT NOT NULL, `sync_reason` TEXT NOT NULL, `status` TEXT NOT NULL, `message` TEXT NOT NULL, `http_status` INTEGER, `batch_count` INTEGER NOT NULL DEFAULT 0, `created_at` TEXT NOT NULL, FOREIGN KEY(`profile_id`) REFERENCES `webhook_profiles`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )
-""")
-                db.execSQL("""
-CREATE TABLE IF NOT EXISTS ``webhook_cursors`` (`profile_id` TEXT NOT NULL, `data_type` TEXT NOT NULL, `last_success_at` TEXT, `last_range_end` TEXT, `updated_at` TEXT NOT NULL, PRIMARY KEY(`profile_id`, `data_type`), FOREIGN KEY(`profile_id`) REFERENCES `webhook_profiles`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )
-""")
-                db.execSQL("""
-CREATE TABLE IF NOT EXISTS ``webhook_delivered_transactions`` (`profile_id` TEXT NOT NULL, `transaction_id` INTEGER NOT NULL, PRIMARY KEY(`profile_id`, `transaction_id`), FOREIGN KEY(`profile_id`) REFERENCES `webhook_profiles`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )
-""")
-                db.execSQL("""
-CREATE TABLE IF NOT EXISTS ``goals`` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `uid` TEXT NOT NULL, `name` TEXT NOT NULL, `target_amount` TEXT NOT NULL, `currency` TEXT NOT NULL, `due_date` TEXT NOT NULL, `color` TEXT NOT NULL, `already_saved` TEXT NOT NULL, `is_archived` INTEGER NOT NULL, `created_at` TEXT NOT NULL, `updated_at` TEXT NOT NULL)
-""")
-                db.execSQL("""
-CREATE TABLE IF NOT EXISTS ``goal_contributions`` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `uid` TEXT NOT NULL, `goal_id` INTEGER NOT NULL, `amount` TEXT NOT NULL, `date` TEXT NOT NULL, `note` TEXT, `original_amount` TEXT, `original_currency` TEXT, `transaction_id` INTEGER, `created_at` TEXT NOT NULL, `updated_at` TEXT NOT NULL, FOREIGN KEY(`goal_id`) REFERENCES `goals`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE , FOREIGN KEY(`transaction_id`) REFERENCES `transactions`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )
-""")
-                db.execSQL("""
-CREATE TABLE IF NOT EXISTS ``loan_shares`` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `transaction_id` INTEGER NOT NULL, `loan_id` INTEGER NOT NULL, `amount` TEXT NOT NULL, `created_at` TEXT NOT NULL, FOREIGN KEY(`loan_id`) REFERENCES `loans`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE , FOREIGN KEY(`transaction_id`) REFERENCES `transactions`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )
-""")
-                // Columns added upstream after the fork point.
-                db.execSQL("ALTER TABLE `transactions` ADD COLUMN `from_bank_name` TEXT DEFAULT NULL")
-                db.execSQL("ALTER TABLE `transactions` ADD COLUMN `to_bank_name` TEXT DEFAULT NULL")
-                db.execSQL("ALTER TABLE `transactions` ADD COLUMN `lent_shares_total` TEXT DEFAULT NULL")
-                db.execSQL("ALTER TABLE `subscriptions` ADD COLUMN `account_last4` TEXT DEFAULT NULL")
-                db.execSQL("ALTER TABLE `categories` ADD COLUMN `icon` TEXT DEFAULT NULL")
-                db.execSQL("ALTER TABLE `categories` ADD COLUMN `parent_id` INTEGER DEFAULT NULL")
-                db.execSQL("ALTER TABLE `categories` ADD COLUMN `system_name` TEXT DEFAULT NULL")
-                db.execSQL("ALTER TABLE `categories` ADD COLUMN `is_hidden` INTEGER NOT NULL DEFAULT 0")
-                db.execSQL("ALTER TABLE `account_balances` ADD COLUMN `lowBalanceThreshold` TEXT DEFAULT NULL")
-                db.execSQL("ALTER TABLE `budgets` ADD COLUMN `weekday_anchor` INTEGER DEFAULT NULL")
-                db.execSQL("ALTER TABLE `budgets` ADD COLUMN `month_anchor` INTEGER DEFAULT NULL")
-                db.execSQL("ALTER TABLE `budget_categories` ADD COLUMN `match_type` TEXT DEFAULT NULL")
-                db.execSQL("ALTER TABLE `budget_category_month_snapshots` ADD COLUMN `match_type` TEXT DEFAULT NULL")
-            }
+            override fun migrate(db: SupportSQLiteDatabase) = consolidateToForkEra67(db)
         }
 
         val MIGRATION_49_67 = object : Migration(49, 67) {
-            override fun migrate(db: SupportSQLiteDatabase) {
-                // Fork-era install (49) -> consolidated upstream schema 67.
-                // Drop the firefly_* columns (state lives in the add-on sidecar DB now)
-                // by recreating the tables at the post-refactor shape.
-                db.execSQL("""
-CREATE TABLE IF NOT EXISTS ``transactions_new`` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `amount` TEXT NOT NULL, `merchant_name` TEXT NOT NULL, `category` TEXT NOT NULL, `transaction_type` TEXT NOT NULL, `date_time` TEXT NOT NULL, `description` TEXT, `sms_body` TEXT, `bank_name` TEXT, `sms_sender` TEXT, `account_number` TEXT, `balance_after` TEXT, `transaction_hash` TEXT NOT NULL DEFAULT '', `is_recurring` INTEGER NOT NULL, `is_deleted` INTEGER NOT NULL DEFAULT 0, `created_at` TEXT NOT NULL, `updated_at` TEXT NOT NULL, `currency` TEXT NOT NULL DEFAULT 'INR', `from_account` TEXT, `to_account` TEXT, `reference` TEXT, `loan_id` INTEGER DEFAULT NULL, `loan_contribution` TEXT DEFAULT NULL, `receipt_path` TEXT DEFAULT NULL, `budget_category` TEXT DEFAULT NULL, `budget_impact_type` TEXT DEFAULT NULL, `group_id` INTEGER DEFAULT NULL, `profile_id` INTEGER DEFAULT NULL, `excluded_from_analytics` INTEGER NOT NULL DEFAULT 0)
-""")
-                db.execSQL("""
-INSERT INTO `transactions_new` (`id`, `amount`, `merchant_name`, `category`, `transaction_type`, `date_time`, `description`, `sms_body`, `bank_name`, `sms_sender`, `account_number`, `balance_after`, `transaction_hash`, `is_recurring`, `is_deleted`, `created_at`, `updated_at`, `currency`, `from_account`, `to_account`, `reference`, `loan_id`, `loan_contribution`, `receipt_path`, `budget_category`, `budget_impact_type`, `group_id`, `profile_id`, `excluded_from_analytics`) SELECT `id`, `amount`, `merchant_name`, `category`, `transaction_type`, `date_time`, `description`, `sms_body`, `bank_name`, `sms_sender`, `account_number`, `balance_after`, `transaction_hash`, `is_recurring`, `is_deleted`, `created_at`, `updated_at`, `currency`, `from_account`, `to_account`, `reference`, `loan_id`, `loan_contribution`, `receipt_path`, `budget_category`, `budget_impact_type`, `group_id`, `profile_id`, `excluded_from_analytics` FROM `transactions`
-""")
-                db.execSQL("DROP TABLE `transactions`")
-                db.execSQL("ALTER TABLE `transactions_new` RENAME TO `transactions`")
-                db.execSQL("""
-CREATE UNIQUE INDEX IF NOT EXISTS `index_transactions_transaction_hash` ON ``transactions`` (`transaction_hash`)
-""")
-                db.execSQL("""
-CREATE TABLE IF NOT EXISTS ``budgets_new`` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `name` TEXT NOT NULL, `limit_amount` TEXT NOT NULL, `period_type` TEXT NOT NULL, `start_date` TEXT NOT NULL, `end_date` TEXT NOT NULL, `currency` TEXT NOT NULL DEFAULT 'INR', `is_active` INTEGER NOT NULL DEFAULT 1, `include_all_categories` INTEGER NOT NULL DEFAULT 0, `color` TEXT NOT NULL DEFAULT '#1565C0', `group_type` TEXT NOT NULL DEFAULT 'LIMIT', `display_order` INTEGER NOT NULL DEFAULT 0, `created_at` TEXT NOT NULL, `updated_at` TEXT NOT NULL)
-""")
-                db.execSQL("""
-INSERT INTO `budgets_new` (`id`, `name`, `limit_amount`, `period_type`, `start_date`, `end_date`, `currency`, `is_active`, `include_all_categories`, `color`, `group_type`, `display_order`, `created_at`, `updated_at`) SELECT `id`, `name`, `limit_amount`, `period_type`, `start_date`, `end_date`, `currency`, `is_active`, `include_all_categories`, `color`, `group_type`, `display_order`, `created_at`, `updated_at` FROM `budgets`
-""")
-                db.execSQL("DROP TABLE `budgets`")
-                db.execSQL("ALTER TABLE `budgets_new` RENAME TO `budgets`")
-                db.execSQL("""
-CREATE INDEX IF NOT EXISTS `index_budgets_name` ON ``budgets`` (`name`);
-CREATE INDEX IF NOT EXISTS `index_budgets_is_active` ON ``budgets`` (`is_active`)
-""")
-                db.execSQL("""
-CREATE TABLE IF NOT EXISTS ``subscriptions_new`` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `merchant_name` TEXT NOT NULL, `amount` TEXT NOT NULL, `next_payment_date` TEXT, `state` TEXT NOT NULL, `bank_name` TEXT, `umn` TEXT, `category` TEXT, `sms_body` TEXT, `created_at` TEXT NOT NULL, `updated_at` TEXT NOT NULL, `currency` TEXT NOT NULL DEFAULT 'INR', `direction` TEXT NOT NULL DEFAULT 'EXPENSE', `billing_cycle` TEXT NOT NULL DEFAULT 'Monthly', `last_paid_at` TEXT)
-""")
-                db.execSQL("""
-INSERT INTO `subscriptions_new` (`id`, `merchant_name`, `amount`, `next_payment_date`, `state`, `bank_name`, `umn`, `category`, `sms_body`, `created_at`, `updated_at`, `currency`, `direction`, `billing_cycle`, `last_paid_at`) SELECT `id`, `merchant_name`, `amount`, `next_payment_date`, `state`, `bank_name`, `umn`, `category`, `sms_body`, `created_at`, `updated_at`, `currency`, `direction`, `billing_cycle`, `last_paid_at` FROM `subscriptions`
-""")
-                db.execSQL("DROP TABLE `subscriptions`")
-                db.execSQL("ALTER TABLE `subscriptions_new` RENAME TO `subscriptions`")
-                // Tables added upstream after the fork point.
-                db.execSQL("""
-CREATE TABLE IF NOT EXISTS ``merchant_aliases`` (`merchant_name` TEXT NOT NULL, `alias` TEXT NOT NULL, `created_at` TEXT NOT NULL, `updated_at` TEXT NOT NULL, PRIMARY KEY(`merchant_name`))
-""")
-                db.execSQL("""
-CREATE TABLE IF NOT EXISTS ``tags`` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `name` TEXT NOT NULL, `created_at` TEXT NOT NULL)
-""")
-                db.execSQL("""
-CREATE TABLE IF NOT EXISTS ``transaction_tag_cross_ref`` (`transaction_id` INTEGER NOT NULL, `tag_id` INTEGER NOT NULL, PRIMARY KEY(`transaction_id`, `tag_id`), FOREIGN KEY(`transaction_id`) REFERENCES `transactions`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE , FOREIGN KEY(`tag_id`) REFERENCES `tags`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )
-""")
-                db.execSQL("""
-CREATE TABLE IF NOT EXISTS ``recurring_transactions`` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `uid` TEXT NOT NULL DEFAULT '', `merchant_name` TEXT NOT NULL, `amount` TEXT NOT NULL, `currency` TEXT NOT NULL DEFAULT 'INR', `category` TEXT NOT NULL DEFAULT 'Others', `transaction_type` TEXT NOT NULL DEFAULT 'EXPENSE', `frequency` TEXT NOT NULL DEFAULT 'MONTHLY', `day_of_month` INTEGER, `day_of_week` INTEGER, `next_due_date` TEXT NOT NULL, `is_active` INTEGER NOT NULL DEFAULT 1, `account_last4` TEXT, `bank_name` TEXT, `note` TEXT, `profile_id` INTEGER NOT NULL DEFAULT 1, `created_at` TEXT NOT NULL, `updated_at` TEXT NOT NULL)
-""")
-                db.execSQL("""
-CREATE TABLE IF NOT EXISTS ``webhook_profiles`` (`id` TEXT NOT NULL, `name` TEXT NOT NULL, `url` TEXT NOT NULL, `enabled` INTEGER NOT NULL DEFAULT 1, `range_preset` TEXT NOT NULL, `custom_start` TEXT, `custom_end` TEXT, `data_types` TEXT NOT NULL DEFAULT 'SUMMARY,TRANSACTIONS,BUDGETS,ACCOUNTS,SUBSCRIPTIONS', `headers_json` TEXT NOT NULL DEFAULT '[]', `currency` TEXT NOT NULL DEFAULT 'INR', `last_error` TEXT, `consecutive_failures` INTEGER NOT NULL DEFAULT 0, `last_synced_at` TEXT, `created_at` TEXT NOT NULL, `updated_at` TEXT NOT NULL, PRIMARY KEY(`id`))
-""")
-                db.execSQL("""
-CREATE TABLE IF NOT EXISTS ``webhook_logs`` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `profile_id` TEXT NOT NULL, `profile_name` TEXT NOT NULL, `sync_reason` TEXT NOT NULL, `status` TEXT NOT NULL, `message` TEXT NOT NULL, `http_status` INTEGER, `batch_count` INTEGER NOT NULL DEFAULT 0, `created_at` TEXT NOT NULL, FOREIGN KEY(`profile_id`) REFERENCES `webhook_profiles`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )
-""")
-                db.execSQL("""
-CREATE TABLE IF NOT EXISTS ``webhook_cursors`` (`profile_id` TEXT NOT NULL, `data_type` TEXT NOT NULL, `last_success_at` TEXT, `last_range_end` TEXT, `updated_at` TEXT NOT NULL, PRIMARY KEY(`profile_id`, `data_type`), FOREIGN KEY(`profile_id`) REFERENCES `webhook_profiles`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )
-""")
-                db.execSQL("""
-CREATE TABLE IF NOT EXISTS ``webhook_delivered_transactions`` (`profile_id` TEXT NOT NULL, `transaction_id` INTEGER NOT NULL, PRIMARY KEY(`profile_id`, `transaction_id`), FOREIGN KEY(`profile_id`) REFERENCES `webhook_profiles`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )
-""")
-                db.execSQL("""
-CREATE TABLE IF NOT EXISTS ``goals`` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `uid` TEXT NOT NULL, `name` TEXT NOT NULL, `target_amount` TEXT NOT NULL, `currency` TEXT NOT NULL, `due_date` TEXT NOT NULL, `color` TEXT NOT NULL, `already_saved` TEXT NOT NULL, `is_archived` INTEGER NOT NULL, `created_at` TEXT NOT NULL, `updated_at` TEXT NOT NULL)
-""")
-                db.execSQL("""
-CREATE TABLE IF NOT EXISTS ``goal_contributions`` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `uid` TEXT NOT NULL, `goal_id` INTEGER NOT NULL, `amount` TEXT NOT NULL, `date` TEXT NOT NULL, `note` TEXT, `original_amount` TEXT, `original_currency` TEXT, `transaction_id` INTEGER, `created_at` TEXT NOT NULL, `updated_at` TEXT NOT NULL, FOREIGN KEY(`goal_id`) REFERENCES `goals`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE , FOREIGN KEY(`transaction_id`) REFERENCES `transactions`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )
-""")
-                db.execSQL("""
-CREATE TABLE IF NOT EXISTS ``loan_shares`` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `transaction_id` INTEGER NOT NULL, `loan_id` INTEGER NOT NULL, `amount` TEXT NOT NULL, `created_at` TEXT NOT NULL, FOREIGN KEY(`loan_id`) REFERENCES `loans`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE , FOREIGN KEY(`transaction_id`) REFERENCES `transactions`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )
-""")
-                // Columns added upstream after the fork point.
-                db.execSQL("ALTER TABLE `transactions` ADD COLUMN `from_bank_name` TEXT DEFAULT NULL")
-                db.execSQL("ALTER TABLE `transactions` ADD COLUMN `to_bank_name` TEXT DEFAULT NULL")
-                db.execSQL("ALTER TABLE `transactions` ADD COLUMN `lent_shares_total` TEXT DEFAULT NULL")
-                db.execSQL("ALTER TABLE `subscriptions` ADD COLUMN `account_last4` TEXT DEFAULT NULL")
-                db.execSQL("ALTER TABLE `categories` ADD COLUMN `icon` TEXT DEFAULT NULL")
-                db.execSQL("ALTER TABLE `categories` ADD COLUMN `parent_id` INTEGER DEFAULT NULL")
-                db.execSQL("ALTER TABLE `categories` ADD COLUMN `system_name` TEXT DEFAULT NULL")
-                db.execSQL("ALTER TABLE `categories` ADD COLUMN `is_hidden` INTEGER NOT NULL DEFAULT 0")
-                db.execSQL("ALTER TABLE `account_balances` ADD COLUMN `lowBalanceThreshold` TEXT DEFAULT NULL")
-                db.execSQL("ALTER TABLE `budgets` ADD COLUMN `weekday_anchor` INTEGER DEFAULT NULL")
-                db.execSQL("ALTER TABLE `budgets` ADD COLUMN `month_anchor` INTEGER DEFAULT NULL")
-                db.execSQL("ALTER TABLE `budget_categories` ADD COLUMN `match_type` TEXT DEFAULT NULL")
-                db.execSQL("ALTER TABLE `budget_category_month_snapshots` ADD COLUMN `match_type` TEXT DEFAULT NULL")
-            }
+            override fun migrate(db: SupportSQLiteDatabase) = consolidateToForkEra67(db)
         }
 
         val MIGRATION_50_67 = object : Migration(50, 67) {
-            override fun migrate(db: SupportSQLiteDatabase) {
-                // Fork-era install (50) -> consolidated upstream schema 67.
-                // Drop the firefly_* columns (state lives in the add-on sidecar DB now)
-                // by recreating the tables at the post-refactor shape.
-                db.execSQL("""
-CREATE TABLE IF NOT EXISTS ``transactions_new`` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `amount` TEXT NOT NULL, `merchant_name` TEXT NOT NULL, `category` TEXT NOT NULL, `transaction_type` TEXT NOT NULL, `date_time` TEXT NOT NULL, `description` TEXT, `sms_body` TEXT, `bank_name` TEXT, `sms_sender` TEXT, `account_number` TEXT, `balance_after` TEXT, `transaction_hash` TEXT NOT NULL DEFAULT '', `is_recurring` INTEGER NOT NULL, `is_deleted` INTEGER NOT NULL DEFAULT 0, `created_at` TEXT NOT NULL, `updated_at` TEXT NOT NULL, `currency` TEXT NOT NULL DEFAULT 'INR', `from_account` TEXT, `to_account` TEXT, `reference` TEXT, `loan_id` INTEGER DEFAULT NULL, `loan_contribution` TEXT DEFAULT NULL, `receipt_path` TEXT DEFAULT NULL, `budget_category` TEXT DEFAULT NULL, `budget_impact_type` TEXT DEFAULT NULL, `group_id` INTEGER DEFAULT NULL, `profile_id` INTEGER DEFAULT NULL, `excluded_from_analytics` INTEGER NOT NULL DEFAULT 0)
-""")
-                db.execSQL("""
-INSERT INTO `transactions_new` (`id`, `amount`, `merchant_name`, `category`, `transaction_type`, `date_time`, `description`, `sms_body`, `bank_name`, `sms_sender`, `account_number`, `balance_after`, `transaction_hash`, `is_recurring`, `is_deleted`, `created_at`, `updated_at`, `currency`, `from_account`, `to_account`, `reference`, `loan_id`, `loan_contribution`, `receipt_path`, `budget_category`, `budget_impact_type`, `group_id`, `profile_id`, `excluded_from_analytics`) SELECT `id`, `amount`, `merchant_name`, `category`, `transaction_type`, `date_time`, `description`, `sms_body`, `bank_name`, `sms_sender`, `account_number`, `balance_after`, `transaction_hash`, `is_recurring`, `is_deleted`, `created_at`, `updated_at`, `currency`, `from_account`, `to_account`, `reference`, `loan_id`, `loan_contribution`, `receipt_path`, `budget_category`, `budget_impact_type`, `group_id`, `profile_id`, `excluded_from_analytics` FROM `transactions`
-""")
-                db.execSQL("DROP TABLE `transactions`")
-                db.execSQL("ALTER TABLE `transactions_new` RENAME TO `transactions`")
-                db.execSQL("""
-CREATE UNIQUE INDEX IF NOT EXISTS `index_transactions_transaction_hash` ON ``transactions`` (`transaction_hash`)
-""")
-                db.execSQL("""
-CREATE TABLE IF NOT EXISTS ``budgets_new`` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `name` TEXT NOT NULL, `limit_amount` TEXT NOT NULL, `period_type` TEXT NOT NULL, `start_date` TEXT NOT NULL, `end_date` TEXT NOT NULL, `currency` TEXT NOT NULL DEFAULT 'INR', `is_active` INTEGER NOT NULL DEFAULT 1, `include_all_categories` INTEGER NOT NULL DEFAULT 0, `color` TEXT NOT NULL DEFAULT '#1565C0', `group_type` TEXT NOT NULL DEFAULT 'LIMIT', `display_order` INTEGER NOT NULL DEFAULT 0, `created_at` TEXT NOT NULL, `updated_at` TEXT NOT NULL)
-""")
-                db.execSQL("""
-INSERT INTO `budgets_new` (`id`, `name`, `limit_amount`, `period_type`, `start_date`, `end_date`, `currency`, `is_active`, `include_all_categories`, `color`, `group_type`, `display_order`, `created_at`, `updated_at`) SELECT `id`, `name`, `limit_amount`, `period_type`, `start_date`, `end_date`, `currency`, `is_active`, `include_all_categories`, `color`, `group_type`, `display_order`, `created_at`, `updated_at` FROM `budgets`
-""")
-                db.execSQL("DROP TABLE `budgets`")
-                db.execSQL("ALTER TABLE `budgets_new` RENAME TO `budgets`")
-                db.execSQL("""
-CREATE INDEX IF NOT EXISTS `index_budgets_name` ON ``budgets`` (`name`);
-CREATE INDEX IF NOT EXISTS `index_budgets_is_active` ON ``budgets`` (`is_active`)
-""")
-                db.execSQL("""
-CREATE TABLE IF NOT EXISTS ``subscriptions_new`` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `merchant_name` TEXT NOT NULL, `amount` TEXT NOT NULL, `next_payment_date` TEXT, `state` TEXT NOT NULL, `bank_name` TEXT, `umn` TEXT, `category` TEXT, `sms_body` TEXT, `created_at` TEXT NOT NULL, `updated_at` TEXT NOT NULL, `currency` TEXT NOT NULL DEFAULT 'INR', `direction` TEXT NOT NULL DEFAULT 'EXPENSE', `billing_cycle` TEXT NOT NULL DEFAULT 'Monthly', `last_paid_at` TEXT)
-""")
-                db.execSQL("""
-INSERT INTO `subscriptions_new` (`id`, `merchant_name`, `amount`, `next_payment_date`, `state`, `bank_name`, `umn`, `category`, `sms_body`, `created_at`, `updated_at`, `currency`, `direction`, `billing_cycle`, `last_paid_at`) SELECT `id`, `merchant_name`, `amount`, `next_payment_date`, `state`, `bank_name`, `umn`, `category`, `sms_body`, `created_at`, `updated_at`, `currency`, `direction`, `billing_cycle`, `last_paid_at` FROM `subscriptions`
-""")
-                db.execSQL("DROP TABLE `subscriptions`")
-                db.execSQL("ALTER TABLE `subscriptions_new` RENAME TO `subscriptions`")
-                // Tables added upstream after the fork point.
-                db.execSQL("""
-CREATE TABLE IF NOT EXISTS ``merchant_aliases`` (`merchant_name` TEXT NOT NULL, `alias` TEXT NOT NULL, `created_at` TEXT NOT NULL, `updated_at` TEXT NOT NULL, PRIMARY KEY(`merchant_name`))
-""")
-                db.execSQL("""
-CREATE TABLE IF NOT EXISTS ``tags`` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `name` TEXT NOT NULL, `created_at` TEXT NOT NULL)
-""")
-                db.execSQL("""
-CREATE TABLE IF NOT EXISTS ``transaction_tag_cross_ref`` (`transaction_id` INTEGER NOT NULL, `tag_id` INTEGER NOT NULL, PRIMARY KEY(`transaction_id`, `tag_id`), FOREIGN KEY(`transaction_id`) REFERENCES `transactions`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE , FOREIGN KEY(`tag_id`) REFERENCES `tags`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )
-""")
-                db.execSQL("""
-CREATE TABLE IF NOT EXISTS ``recurring_transactions`` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `uid` TEXT NOT NULL DEFAULT '', `merchant_name` TEXT NOT NULL, `amount` TEXT NOT NULL, `currency` TEXT NOT NULL DEFAULT 'INR', `category` TEXT NOT NULL DEFAULT 'Others', `transaction_type` TEXT NOT NULL DEFAULT 'EXPENSE', `frequency` TEXT NOT NULL DEFAULT 'MONTHLY', `day_of_month` INTEGER, `day_of_week` INTEGER, `next_due_date` TEXT NOT NULL, `is_active` INTEGER NOT NULL DEFAULT 1, `account_last4` TEXT, `bank_name` TEXT, `note` TEXT, `profile_id` INTEGER NOT NULL DEFAULT 1, `created_at` TEXT NOT NULL, `updated_at` TEXT NOT NULL)
-""")
-                db.execSQL("""
-CREATE TABLE IF NOT EXISTS ``webhook_profiles`` (`id` TEXT NOT NULL, `name` TEXT NOT NULL, `url` TEXT NOT NULL, `enabled` INTEGER NOT NULL DEFAULT 1, `range_preset` TEXT NOT NULL, `custom_start` TEXT, `custom_end` TEXT, `data_types` TEXT NOT NULL DEFAULT 'SUMMARY,TRANSACTIONS,BUDGETS,ACCOUNTS,SUBSCRIPTIONS', `headers_json` TEXT NOT NULL DEFAULT '[]', `currency` TEXT NOT NULL DEFAULT 'INR', `last_error` TEXT, `consecutive_failures` INTEGER NOT NULL DEFAULT 0, `last_synced_at` TEXT, `created_at` TEXT NOT NULL, `updated_at` TEXT NOT NULL, PRIMARY KEY(`id`))
-""")
-                db.execSQL("""
-CREATE TABLE IF NOT EXISTS ``webhook_logs`` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `profile_id` TEXT NOT NULL, `profile_name` TEXT NOT NULL, `sync_reason` TEXT NOT NULL, `status` TEXT NOT NULL, `message` TEXT NOT NULL, `http_status` INTEGER, `batch_count` INTEGER NOT NULL DEFAULT 0, `created_at` TEXT NOT NULL, FOREIGN KEY(`profile_id`) REFERENCES `webhook_profiles`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )
-""")
-                db.execSQL("""
-CREATE TABLE IF NOT EXISTS ``webhook_cursors`` (`profile_id` TEXT NOT NULL, `data_type` TEXT NOT NULL, `last_success_at` TEXT, `last_range_end` TEXT, `updated_at` TEXT NOT NULL, PRIMARY KEY(`profile_id`, `data_type`), FOREIGN KEY(`profile_id`) REFERENCES `webhook_profiles`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )
-""")
-                db.execSQL("""
-CREATE TABLE IF NOT EXISTS ``webhook_delivered_transactions`` (`profile_id` TEXT NOT NULL, `transaction_id` INTEGER NOT NULL, PRIMARY KEY(`profile_id`, `transaction_id`), FOREIGN KEY(`profile_id`) REFERENCES `webhook_profiles`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )
-""")
-                db.execSQL("""
-CREATE TABLE IF NOT EXISTS ``goals`` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `uid` TEXT NOT NULL, `name` TEXT NOT NULL, `target_amount` TEXT NOT NULL, `currency` TEXT NOT NULL, `due_date` TEXT NOT NULL, `color` TEXT NOT NULL, `already_saved` TEXT NOT NULL, `is_archived` INTEGER NOT NULL, `created_at` TEXT NOT NULL, `updated_at` TEXT NOT NULL)
-""")
-                db.execSQL("""
-CREATE TABLE IF NOT EXISTS ``goal_contributions`` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `uid` TEXT NOT NULL, `goal_id` INTEGER NOT NULL, `amount` TEXT NOT NULL, `date` TEXT NOT NULL, `note` TEXT, `original_amount` TEXT, `original_currency` TEXT, `transaction_id` INTEGER, `created_at` TEXT NOT NULL, `updated_at` TEXT NOT NULL, FOREIGN KEY(`goal_id`) REFERENCES `goals`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE , FOREIGN KEY(`transaction_id`) REFERENCES `transactions`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )
-""")
-                db.execSQL("""
-CREATE TABLE IF NOT EXISTS ``loan_shares`` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `transaction_id` INTEGER NOT NULL, `loan_id` INTEGER NOT NULL, `amount` TEXT NOT NULL, `created_at` TEXT NOT NULL, FOREIGN KEY(`loan_id`) REFERENCES `loans`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE , FOREIGN KEY(`transaction_id`) REFERENCES `transactions`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )
-""")
-                // Columns added upstream after the fork point.
-                db.execSQL("ALTER TABLE `transactions` ADD COLUMN `from_bank_name` TEXT DEFAULT NULL")
-                db.execSQL("ALTER TABLE `transactions` ADD COLUMN `to_bank_name` TEXT DEFAULT NULL")
-                db.execSQL("ALTER TABLE `transactions` ADD COLUMN `lent_shares_total` TEXT DEFAULT NULL")
-                db.execSQL("ALTER TABLE `subscriptions` ADD COLUMN `account_last4` TEXT DEFAULT NULL")
-                db.execSQL("ALTER TABLE `categories` ADD COLUMN `icon` TEXT DEFAULT NULL")
-                db.execSQL("ALTER TABLE `categories` ADD COLUMN `parent_id` INTEGER DEFAULT NULL")
-                db.execSQL("ALTER TABLE `categories` ADD COLUMN `system_name` TEXT DEFAULT NULL")
-                db.execSQL("ALTER TABLE `categories` ADD COLUMN `is_hidden` INTEGER NOT NULL DEFAULT 0")
-                db.execSQL("ALTER TABLE `account_balances` ADD COLUMN `lowBalanceThreshold` TEXT DEFAULT NULL")
-                db.execSQL("ALTER TABLE `budgets` ADD COLUMN `weekday_anchor` INTEGER DEFAULT NULL")
-                db.execSQL("ALTER TABLE `budgets` ADD COLUMN `month_anchor` INTEGER DEFAULT NULL")
-                db.execSQL("ALTER TABLE `budget_categories` ADD COLUMN `match_type` TEXT DEFAULT NULL")
-                db.execSQL("ALTER TABLE `budget_category_month_snapshots` ADD COLUMN `match_type` TEXT DEFAULT NULL")
-            }
+            override fun migrate(db: SupportSQLiteDatabase) = consolidateToForkEra67(db)
         }
 
         val MIGRATION_51_67 = object : Migration(51, 67) {
-            override fun migrate(db: SupportSQLiteDatabase) {
-                // Fork-era install (51) -> consolidated upstream schema 67.
-                // Drop the firefly_* columns (state lives in the add-on sidecar DB now)
-                // by recreating the tables at the post-refactor shape.
-                db.execSQL("""
-CREATE TABLE IF NOT EXISTS ``transactions_new`` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `amount` TEXT NOT NULL, `merchant_name` TEXT NOT NULL, `category` TEXT NOT NULL, `transaction_type` TEXT NOT NULL, `date_time` TEXT NOT NULL, `description` TEXT, `sms_body` TEXT, `bank_name` TEXT, `sms_sender` TEXT, `account_number` TEXT, `balance_after` TEXT, `transaction_hash` TEXT NOT NULL DEFAULT '', `is_recurring` INTEGER NOT NULL, `is_deleted` INTEGER NOT NULL DEFAULT 0, `created_at` TEXT NOT NULL, `updated_at` TEXT NOT NULL, `currency` TEXT NOT NULL DEFAULT 'INR', `from_account` TEXT, `to_account` TEXT, `reference` TEXT, `loan_id` INTEGER DEFAULT NULL, `loan_contribution` TEXT DEFAULT NULL, `receipt_path` TEXT DEFAULT NULL, `budget_category` TEXT DEFAULT NULL, `budget_impact_type` TEXT DEFAULT NULL, `group_id` INTEGER DEFAULT NULL, `profile_id` INTEGER DEFAULT NULL, `excluded_from_analytics` INTEGER NOT NULL DEFAULT 0)
-""")
-                db.execSQL("""
-INSERT INTO `transactions_new` (`id`, `amount`, `merchant_name`, `category`, `transaction_type`, `date_time`, `description`, `sms_body`, `bank_name`, `sms_sender`, `account_number`, `balance_after`, `transaction_hash`, `is_recurring`, `is_deleted`, `created_at`, `updated_at`, `currency`, `from_account`, `to_account`, `reference`, `loan_id`, `loan_contribution`, `receipt_path`, `budget_category`, `budget_impact_type`, `group_id`, `profile_id`, `excluded_from_analytics`) SELECT `id`, `amount`, `merchant_name`, `category`, `transaction_type`, `date_time`, `description`, `sms_body`, `bank_name`, `sms_sender`, `account_number`, `balance_after`, `transaction_hash`, `is_recurring`, `is_deleted`, `created_at`, `updated_at`, `currency`, `from_account`, `to_account`, `reference`, `loan_id`, `loan_contribution`, `receipt_path`, `budget_category`, `budget_impact_type`, `group_id`, `profile_id`, `excluded_from_analytics` FROM `transactions`
-""")
-                db.execSQL("DROP TABLE `transactions`")
-                db.execSQL("ALTER TABLE `transactions_new` RENAME TO `transactions`")
-                db.execSQL("""
-CREATE UNIQUE INDEX IF NOT EXISTS `index_transactions_transaction_hash` ON ``transactions`` (`transaction_hash`)
-""")
-                db.execSQL("""
-CREATE TABLE IF NOT EXISTS ``budgets_new`` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `name` TEXT NOT NULL, `limit_amount` TEXT NOT NULL, `period_type` TEXT NOT NULL, `start_date` TEXT NOT NULL, `end_date` TEXT NOT NULL, `currency` TEXT NOT NULL DEFAULT 'INR', `is_active` INTEGER NOT NULL DEFAULT 1, `include_all_categories` INTEGER NOT NULL DEFAULT 0, `color` TEXT NOT NULL DEFAULT '#1565C0', `group_type` TEXT NOT NULL DEFAULT 'LIMIT', `display_order` INTEGER NOT NULL DEFAULT 0, `created_at` TEXT NOT NULL, `updated_at` TEXT NOT NULL)
-""")
-                db.execSQL("""
-INSERT INTO `budgets_new` (`id`, `name`, `limit_amount`, `period_type`, `start_date`, `end_date`, `currency`, `is_active`, `include_all_categories`, `color`, `group_type`, `display_order`, `created_at`, `updated_at`) SELECT `id`, `name`, `limit_amount`, `period_type`, `start_date`, `end_date`, `currency`, `is_active`, `include_all_categories`, `color`, `group_type`, `display_order`, `created_at`, `updated_at` FROM `budgets`
-""")
-                db.execSQL("DROP TABLE `budgets`")
-                db.execSQL("ALTER TABLE `budgets_new` RENAME TO `budgets`")
-                db.execSQL("""
-CREATE INDEX IF NOT EXISTS `index_budgets_name` ON ``budgets`` (`name`);
-CREATE INDEX IF NOT EXISTS `index_budgets_is_active` ON ``budgets`` (`is_active`)
-""")
-                db.execSQL("""
-CREATE TABLE IF NOT EXISTS ``subscriptions_new`` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `merchant_name` TEXT NOT NULL, `amount` TEXT NOT NULL, `next_payment_date` TEXT, `state` TEXT NOT NULL, `bank_name` TEXT, `umn` TEXT, `category` TEXT, `sms_body` TEXT, `created_at` TEXT NOT NULL, `updated_at` TEXT NOT NULL, `currency` TEXT NOT NULL DEFAULT 'INR', `direction` TEXT NOT NULL DEFAULT 'EXPENSE', `billing_cycle` TEXT NOT NULL DEFAULT 'Monthly', `last_paid_at` TEXT)
-""")
-                db.execSQL("""
-INSERT INTO `subscriptions_new` (`id`, `merchant_name`, `amount`, `next_payment_date`, `state`, `bank_name`, `umn`, `category`, `sms_body`, `created_at`, `updated_at`, `currency`, `direction`, `billing_cycle`, `last_paid_at`) SELECT `id`, `merchant_name`, `amount`, `next_payment_date`, `state`, `bank_name`, `umn`, `category`, `sms_body`, `created_at`, `updated_at`, `currency`, `direction`, `billing_cycle`, `last_paid_at` FROM `subscriptions`
-""")
-                db.execSQL("DROP TABLE `subscriptions`")
-                db.execSQL("ALTER TABLE `subscriptions_new` RENAME TO `subscriptions`")
-                // Tables added upstream after the fork point.
-                db.execSQL("""
-CREATE TABLE IF NOT EXISTS ``merchant_aliases`` (`merchant_name` TEXT NOT NULL, `alias` TEXT NOT NULL, `created_at` TEXT NOT NULL, `updated_at` TEXT NOT NULL, PRIMARY KEY(`merchant_name`))
-""")
-                db.execSQL("""
-CREATE TABLE IF NOT EXISTS ``tags`` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `name` TEXT NOT NULL, `created_at` TEXT NOT NULL)
-""")
-                db.execSQL("""
-CREATE TABLE IF NOT EXISTS ``transaction_tag_cross_ref`` (`transaction_id` INTEGER NOT NULL, `tag_id` INTEGER NOT NULL, PRIMARY KEY(`transaction_id`, `tag_id`), FOREIGN KEY(`transaction_id`) REFERENCES `transactions`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE , FOREIGN KEY(`tag_id`) REFERENCES `tags`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )
-""")
-                db.execSQL("""
-CREATE TABLE IF NOT EXISTS ``recurring_transactions`` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `uid` TEXT NOT NULL DEFAULT '', `merchant_name` TEXT NOT NULL, `amount` TEXT NOT NULL, `currency` TEXT NOT NULL DEFAULT 'INR', `category` TEXT NOT NULL DEFAULT 'Others', `transaction_type` TEXT NOT NULL DEFAULT 'EXPENSE', `frequency` TEXT NOT NULL DEFAULT 'MONTHLY', `day_of_month` INTEGER, `day_of_week` INTEGER, `next_due_date` TEXT NOT NULL, `is_active` INTEGER NOT NULL DEFAULT 1, `account_last4` TEXT, `bank_name` TEXT, `note` TEXT, `profile_id` INTEGER NOT NULL DEFAULT 1, `created_at` TEXT NOT NULL, `updated_at` TEXT NOT NULL)
-""")
-                db.execSQL("""
-CREATE TABLE IF NOT EXISTS ``webhook_profiles`` (`id` TEXT NOT NULL, `name` TEXT NOT NULL, `url` TEXT NOT NULL, `enabled` INTEGER NOT NULL DEFAULT 1, `range_preset` TEXT NOT NULL, `custom_start` TEXT, `custom_end` TEXT, `data_types` TEXT NOT NULL DEFAULT 'SUMMARY,TRANSACTIONS,BUDGETS,ACCOUNTS,SUBSCRIPTIONS', `headers_json` TEXT NOT NULL DEFAULT '[]', `currency` TEXT NOT NULL DEFAULT 'INR', `last_error` TEXT, `consecutive_failures` INTEGER NOT NULL DEFAULT 0, `last_synced_at` TEXT, `created_at` TEXT NOT NULL, `updated_at` TEXT NOT NULL, PRIMARY KEY(`id`))
-""")
-                db.execSQL("""
-CREATE TABLE IF NOT EXISTS ``webhook_logs`` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `profile_id` TEXT NOT NULL, `profile_name` TEXT NOT NULL, `sync_reason` TEXT NOT NULL, `status` TEXT NOT NULL, `message` TEXT NOT NULL, `http_status` INTEGER, `batch_count` INTEGER NOT NULL DEFAULT 0, `created_at` TEXT NOT NULL, FOREIGN KEY(`profile_id`) REFERENCES `webhook_profiles`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )
-""")
-                db.execSQL("""
-CREATE TABLE IF NOT EXISTS ``webhook_cursors`` (`profile_id` TEXT NOT NULL, `data_type` TEXT NOT NULL, `last_success_at` TEXT, `last_range_end` TEXT, `updated_at` TEXT NOT NULL, PRIMARY KEY(`profile_id`, `data_type`), FOREIGN KEY(`profile_id`) REFERENCES `webhook_profiles`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )
-""")
-                db.execSQL("""
-CREATE TABLE IF NOT EXISTS ``webhook_delivered_transactions`` (`profile_id` TEXT NOT NULL, `transaction_id` INTEGER NOT NULL, PRIMARY KEY(`profile_id`, `transaction_id`), FOREIGN KEY(`profile_id`) REFERENCES `webhook_profiles`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )
-""")
-                db.execSQL("""
-CREATE TABLE IF NOT EXISTS ``goals`` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `uid` TEXT NOT NULL, `name` TEXT NOT NULL, `target_amount` TEXT NOT NULL, `currency` TEXT NOT NULL, `due_date` TEXT NOT NULL, `color` TEXT NOT NULL, `already_saved` TEXT NOT NULL, `is_archived` INTEGER NOT NULL, `created_at` TEXT NOT NULL, `updated_at` TEXT NOT NULL)
-""")
-                db.execSQL("""
-CREATE TABLE IF NOT EXISTS ``goal_contributions`` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `uid` TEXT NOT NULL, `goal_id` INTEGER NOT NULL, `amount` TEXT NOT NULL, `date` TEXT NOT NULL, `note` TEXT, `original_amount` TEXT, `original_currency` TEXT, `transaction_id` INTEGER, `created_at` TEXT NOT NULL, `updated_at` TEXT NOT NULL, FOREIGN KEY(`goal_id`) REFERENCES `goals`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE , FOREIGN KEY(`transaction_id`) REFERENCES `transactions`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )
-""")
-                db.execSQL("""
-CREATE TABLE IF NOT EXISTS ``loan_shares`` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `transaction_id` INTEGER NOT NULL, `loan_id` INTEGER NOT NULL, `amount` TEXT NOT NULL, `created_at` TEXT NOT NULL, FOREIGN KEY(`loan_id`) REFERENCES `loans`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE , FOREIGN KEY(`transaction_id`) REFERENCES `transactions`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )
-""")
-                // Columns added upstream after the fork point.
-                db.execSQL("ALTER TABLE `transactions` ADD COLUMN `from_bank_name` TEXT DEFAULT NULL")
-                db.execSQL("ALTER TABLE `transactions` ADD COLUMN `to_bank_name` TEXT DEFAULT NULL")
-                db.execSQL("ALTER TABLE `transactions` ADD COLUMN `lent_shares_total` TEXT DEFAULT NULL")
-                db.execSQL("ALTER TABLE `subscriptions` ADD COLUMN `account_last4` TEXT DEFAULT NULL")
-                db.execSQL("ALTER TABLE `categories` ADD COLUMN `icon` TEXT DEFAULT NULL")
-                db.execSQL("ALTER TABLE `categories` ADD COLUMN `parent_id` INTEGER DEFAULT NULL")
-                db.execSQL("ALTER TABLE `categories` ADD COLUMN `system_name` TEXT DEFAULT NULL")
-                db.execSQL("ALTER TABLE `categories` ADD COLUMN `is_hidden` INTEGER NOT NULL DEFAULT 0")
-                db.execSQL("ALTER TABLE `account_balances` ADD COLUMN `lowBalanceThreshold` TEXT DEFAULT NULL")
-                db.execSQL("ALTER TABLE `budgets` ADD COLUMN `weekday_anchor` INTEGER DEFAULT NULL")
-                db.execSQL("ALTER TABLE `budgets` ADD COLUMN `month_anchor` INTEGER DEFAULT NULL")
-                db.execSQL("ALTER TABLE `budget_categories` ADD COLUMN `match_type` TEXT DEFAULT NULL")
-                db.execSQL("ALTER TABLE `budget_category_month_snapshots` ADD COLUMN `match_type` TEXT DEFAULT NULL")
-            }
+            override fun migrate(db: SupportSQLiteDatabase) = consolidateToForkEra67(db)
         }
 
         val MIGRATION_52_67 = object : Migration(52, 67) {
-            override fun migrate(db: SupportSQLiteDatabase) {
-                // Fork-era install (52) -> consolidated upstream schema 67.
-                // Drop the firefly_* columns (state lives in the add-on sidecar DB now)
-                // by recreating the tables at the post-refactor shape.
-                // Tables added upstream after the fork point.
-                db.execSQL("""
-CREATE TABLE IF NOT EXISTS ``merchant_aliases`` (`merchant_name` TEXT NOT NULL, `alias` TEXT NOT NULL, `created_at` TEXT NOT NULL, `updated_at` TEXT NOT NULL, PRIMARY KEY(`merchant_name`))
-""")
-                db.execSQL("""
-CREATE TABLE IF NOT EXISTS ``tags`` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `name` TEXT NOT NULL, `created_at` TEXT NOT NULL)
-""")
-                db.execSQL("""
-CREATE TABLE IF NOT EXISTS ``transaction_tag_cross_ref`` (`transaction_id` INTEGER NOT NULL, `tag_id` INTEGER NOT NULL, PRIMARY KEY(`transaction_id`, `tag_id`), FOREIGN KEY(`transaction_id`) REFERENCES `transactions`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE , FOREIGN KEY(`tag_id`) REFERENCES `tags`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )
-""")
-                db.execSQL("""
-CREATE TABLE IF NOT EXISTS ``recurring_transactions`` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `uid` TEXT NOT NULL DEFAULT '', `merchant_name` TEXT NOT NULL, `amount` TEXT NOT NULL, `currency` TEXT NOT NULL DEFAULT 'INR', `category` TEXT NOT NULL DEFAULT 'Others', `transaction_type` TEXT NOT NULL DEFAULT 'EXPENSE', `frequency` TEXT NOT NULL DEFAULT 'MONTHLY', `day_of_month` INTEGER, `day_of_week` INTEGER, `next_due_date` TEXT NOT NULL, `is_active` INTEGER NOT NULL DEFAULT 1, `account_last4` TEXT, `bank_name` TEXT, `note` TEXT, `profile_id` INTEGER NOT NULL DEFAULT 1, `created_at` TEXT NOT NULL, `updated_at` TEXT NOT NULL)
-""")
-                db.execSQL("""
-CREATE TABLE IF NOT EXISTS ``webhook_profiles`` (`id` TEXT NOT NULL, `name` TEXT NOT NULL, `url` TEXT NOT NULL, `enabled` INTEGER NOT NULL DEFAULT 1, `range_preset` TEXT NOT NULL, `custom_start` TEXT, `custom_end` TEXT, `data_types` TEXT NOT NULL DEFAULT 'SUMMARY,TRANSACTIONS,BUDGETS,ACCOUNTS,SUBSCRIPTIONS', `headers_json` TEXT NOT NULL DEFAULT '[]', `currency` TEXT NOT NULL DEFAULT 'INR', `last_error` TEXT, `consecutive_failures` INTEGER NOT NULL DEFAULT 0, `last_synced_at` TEXT, `created_at` TEXT NOT NULL, `updated_at` TEXT NOT NULL, PRIMARY KEY(`id`))
-""")
-                db.execSQL("""
-CREATE TABLE IF NOT EXISTS ``webhook_logs`` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `profile_id` TEXT NOT NULL, `profile_name` TEXT NOT NULL, `sync_reason` TEXT NOT NULL, `status` TEXT NOT NULL, `message` TEXT NOT NULL, `http_status` INTEGER, `batch_count` INTEGER NOT NULL DEFAULT 0, `created_at` TEXT NOT NULL, FOREIGN KEY(`profile_id`) REFERENCES `webhook_profiles`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )
-""")
-                db.execSQL("""
-CREATE TABLE IF NOT EXISTS ``webhook_cursors`` (`profile_id` TEXT NOT NULL, `data_type` TEXT NOT NULL, `last_success_at` TEXT, `last_range_end` TEXT, `updated_at` TEXT NOT NULL, PRIMARY KEY(`profile_id`, `data_type`), FOREIGN KEY(`profile_id`) REFERENCES `webhook_profiles`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )
-""")
-                db.execSQL("""
-CREATE TABLE IF NOT EXISTS ``webhook_delivered_transactions`` (`profile_id` TEXT NOT NULL, `transaction_id` INTEGER NOT NULL, PRIMARY KEY(`profile_id`, `transaction_id`), FOREIGN KEY(`profile_id`) REFERENCES `webhook_profiles`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )
-""")
-                db.execSQL("""
-CREATE TABLE IF NOT EXISTS ``goals`` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `uid` TEXT NOT NULL, `name` TEXT NOT NULL, `target_amount` TEXT NOT NULL, `currency` TEXT NOT NULL, `due_date` TEXT NOT NULL, `color` TEXT NOT NULL, `already_saved` TEXT NOT NULL, `is_archived` INTEGER NOT NULL, `created_at` TEXT NOT NULL, `updated_at` TEXT NOT NULL)
-""")
-                db.execSQL("""
-CREATE TABLE IF NOT EXISTS ``goal_contributions`` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `uid` TEXT NOT NULL, `goal_id` INTEGER NOT NULL, `amount` TEXT NOT NULL, `date` TEXT NOT NULL, `note` TEXT, `original_amount` TEXT, `original_currency` TEXT, `transaction_id` INTEGER, `created_at` TEXT NOT NULL, `updated_at` TEXT NOT NULL, FOREIGN KEY(`goal_id`) REFERENCES `goals`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE , FOREIGN KEY(`transaction_id`) REFERENCES `transactions`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )
-""")
-                db.execSQL("""
-CREATE TABLE IF NOT EXISTS ``loan_shares`` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `transaction_id` INTEGER NOT NULL, `loan_id` INTEGER NOT NULL, `amount` TEXT NOT NULL, `created_at` TEXT NOT NULL, FOREIGN KEY(`loan_id`) REFERENCES `loans`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE , FOREIGN KEY(`transaction_id`) REFERENCES `transactions`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )
-""")
-                // Columns added upstream after the fork point.
-                db.execSQL("ALTER TABLE `transactions` ADD COLUMN `from_bank_name` TEXT DEFAULT NULL")
-                db.execSQL("ALTER TABLE `transactions` ADD COLUMN `to_bank_name` TEXT DEFAULT NULL")
-                db.execSQL("ALTER TABLE `transactions` ADD COLUMN `lent_shares_total` TEXT DEFAULT NULL")
-                db.execSQL("ALTER TABLE `subscriptions` ADD COLUMN `account_last4` TEXT DEFAULT NULL")
-                db.execSQL("ALTER TABLE `categories` ADD COLUMN `icon` TEXT DEFAULT NULL")
-                db.execSQL("ALTER TABLE `categories` ADD COLUMN `parent_id` INTEGER DEFAULT NULL")
-                db.execSQL("ALTER TABLE `categories` ADD COLUMN `system_name` TEXT DEFAULT NULL")
-                db.execSQL("ALTER TABLE `categories` ADD COLUMN `is_hidden` INTEGER NOT NULL DEFAULT 0")
-                db.execSQL("ALTER TABLE `account_balances` ADD COLUMN `lowBalanceThreshold` TEXT DEFAULT NULL")
-                db.execSQL("ALTER TABLE `budgets` ADD COLUMN `weekday_anchor` INTEGER DEFAULT NULL")
-                db.execSQL("ALTER TABLE `budgets` ADD COLUMN `month_anchor` INTEGER DEFAULT NULL")
-                db.execSQL("ALTER TABLE `budget_categories` ADD COLUMN `match_type` TEXT DEFAULT NULL")
-                db.execSQL("ALTER TABLE `budget_category_month_snapshots` ADD COLUMN `match_type` TEXT DEFAULT NULL")
-            }
+            override fun migrate(db: SupportSQLiteDatabase) = consolidateToForkEra67(db)
         }
-
         /**
          * Single source of truth for the migration list. Both the Hilt-built
          * database (DatabaseModule.providePennyWiseDatabase) and the

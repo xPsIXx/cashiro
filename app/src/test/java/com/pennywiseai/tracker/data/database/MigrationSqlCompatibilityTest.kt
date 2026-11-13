@@ -1,5 +1,6 @@
 package com.pennywiseai.tracker.data.database
 
+import android.database.MatrixCursor
 import androidx.sqlite.db.SupportSQLiteDatabase
 import io.mockk.every
 import io.mockk.mockk
@@ -21,6 +22,9 @@ class MigrationSqlCompatibilityTest {
         val db = mockk<SupportSQLiteDatabase>(relaxed = true)
         every { db.execSQL(any()) } answers { statements += firstArg<String>() }
         every { db.execSQL(any(), any()) } answers { statements += firstArg<String>() }
+        // Schema-introspecting migrations (consolidateToForkEra67) call query("PRAGMA ...").
+        // An empty cursor means "table/column not present" — enough to keep them runnable here.
+        every { db.query(any<String>()) } answers { MatrixCursor(arrayOf("cid", "name", "type", "notnull", "dflt_value", "pk")) }
 
         PennyWiseDatabase.ALL_MIGRATIONS.forEach { it.migrate(db) }
 
