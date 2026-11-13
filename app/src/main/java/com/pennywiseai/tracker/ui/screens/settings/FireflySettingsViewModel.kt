@@ -63,6 +63,9 @@ class FireflySettingsViewModel @Inject constructor(
     val fireflyBaseUrl = fireflyPreferencesRepository.baseUrlFlow
     val fireflyDefaultAssetAccount = fireflyPreferencesRepository.defaultAssetAccountFlow
     val fireflyLastSyncError = fireflyPreferencesRepository.lastSyncErrorFlow
+    // S2: secure-storage failure (keystore) — surfaced so the user knows the
+    // token is session-only, not silently stored unencrypted.
+    val fireflyStorageError = fireflyPreferencesRepository.storageErrorFlow
     val fireflyAutoSyncInterval = fireflyPreferencesRepository.autoSyncIntervalFlow
     val fireflyMigrationRan = fireflyPreferencesRepository.migrationRanFlow
 

@@ -49,6 +49,7 @@ fun FireflySettingsScreen(
     val fireflyBaseUrl by viewModel.fireflyBaseUrl.collectAsStateWithLifecycle(initialValue = null)
     val fireflyDefaultAsset by viewModel.fireflyDefaultAssetAccount.collectAsStateWithLifecycle(initialValue = null)
     val fireflyLastError by viewModel.fireflyLastSyncError.collectAsStateWithLifecycle(initialValue = null)
+    val fireflyStorageError by viewModel.fireflyStorageError.collectAsStateWithLifecycle(initialValue = null)
     val fireflyFailedCount by viewModel.fireflyFailedSyncCount.collectAsStateWithLifecycle(initialValue = 0)
     val fireflyMappings by viewModel.fireflyAccountMappings.collectAsStateWithLifecycle(initialValue = emptyMap())
     val fireflyMappingAccounts by viewModel.fireflyMappingAccounts.collectAsStateWithLifecycle(initialValue = emptyList())
@@ -374,6 +375,30 @@ fun FireflySettingsScreen(
                         TextButton(onClick = onNavigateToFailedSyncs) {
                             Text("View & Retry")
                         }
+                    }
+                }
+            }
+
+            // S2: secure storage unavailable — token kept in memory for this
+            // session only; never written to disk unencrypted.
+            val storageError = fireflyStorageError
+            if (storageError != null) {
+                Card(
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.errorContainer
+                    )
+                ) {
+                    Column(modifier = Modifier.padding(12.dp)) {
+                        Text(
+                            "Secure token storage unavailable:",
+                            color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.labelMedium
+                        )
+                        Text(
+                            "Your device keystore could not open, so the Firefly token is kept in memory for this session only and is not persisted. Re-open settings after a reboot, or check device screen-lock/keystore health.",
+                            color = MaterialTheme.colorScheme.onErrorContainer,
+                            style = MaterialTheme.typography.bodySmall
+                        )
                     }
                 }
             }

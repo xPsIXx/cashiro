@@ -66,6 +66,15 @@ class FireflyPreferencesRepository @Inject constructor(
     /** Token lives in encrypted storage, not DataStore. */
     val accessTokenFlow: Flow<String?> = fireflyTokenManager.accessTokenFlow
 
+    /**
+     * S2: user-visible error state for the credential store, mirroring how
+     * `lastSyncErrorFlow` surfaces sync failures to the settings UI. Non-null
+     * while [FireflyTokenManager] could not open EncryptedSharedPreferences —
+     * in that state the token is session-in-memory only and is deliberately
+     * NOT persisted anywhere.
+     */
+    val storageErrorFlow: Flow<String?> = fireflyTokenManager.secureStorageErrorFlow
+
     val defaultAssetAccountFlow: Flow<String?> = fireflyDataStore.data
         .map { it[Keys.DEFAULT_ASSET_ACCOUNT] }
 
@@ -92,18 +101,43 @@ class FireflyPreferencesRepository @Inject constructor(
      * Idempotent and safe to call on every launch; keys the user never wrote
      * are simply absent. DataStore keeps stale keys on disk after they are
      * removed from code, so the raw-name copy always finds them.
+     *
+     * S1: once the token is verifiably in secure storage, the plaintext
+     * `firefly_access_token` key is **removed from the app DataStore** so the
+     * PAT no longer lingers cleartext-at-rest after the upgrade. Removal only
+     * ever happens when secure storage provably holds a token (freshly
+     * migrated or already present); the secure copy itself is never touched,
+     * and the plaintext key is kept if the secure copy failed (better to keep
+     * one working copy than to destroy the user's only one). If a previous
+     * launch crashed between "copied" and "removed", the already-migrated
+     * early-return path still performs the cleanup.
      */
     suspend fun ensureLegacyMigration() {
         val alreadyDone = fireflyDataStore.data.first()[Keys.LEGACY_MIGRATED] ?: false
-        if (alreadyDone) return
-
+        val legacyTokenKey = stringPreferencesKey("firefly_access_token")
         val appPrefs = context.dataStore.data.first()
+        val legacyToken = appPrefs[legacyTokenKey]
+
+        if (alreadyDone) {
+            // S1 cleanup pass: migration completed earlier, but the cleartext
+            // PAT must not outlive it. Only when secure storage is durably
+            // available — an in-memory-only session copy (S2) must not be
+            // allowed to destroy the user's only durable credential.
+            if (
+                !legacyToken.isNullOrBlank() &&
+                !fireflyTokenManager.getAccessToken().isNullOrBlank() &&
+                fireflyTokenManager.isSecureStorageAvailable()
+            ) {
+                context.dataStore.edit { it.remove(legacyTokenKey) }
+            }
+            return
+        }
+
         val legacy = legacyFireflyValues(appPrefs)
 
         // Token first (best effort): port a legacy plain-text DataStore token
         // into secure storage, mirroring the old
         // `UserPreferencesRepository.migrateTokenToSecureIfNeeded()`.
-        val legacyToken = appPrefs[stringPreferencesKey("firefly_access_token")]
         val legacyUrl = appPrefs[stringPreferencesKey("firefly_base_url")]
         if (fireflyTokenManager.getAccessToken().isNullOrBlank() && !legacyToken.isNullOrBlank()) {
             fireflyTokenManager.saveCredentials(legacyUrl, legacyToken)
@@ -121,6 +155,19 @@ class FireflyPreferencesRepository @Inject constructor(
             legacy.autoSyncInterval?.let { preferences[Keys.AUTO_SYNC_INTERVAL] = it }
             legacy.migrationRan?.let { preferences[Keys.MIGRATION_RAN] = it }
             preferences[Keys.LEGACY_MIGRATED] = true
+        }
+
+        // S1: delete the cleartext PAT from the app DataStore — but only after
+        // confirming secure storage actually holds a token DURABLY. If the
+        // secure store is unavailable (S2 in-memory fallback) the plaintext
+        // key is kept: the next launch retries the migration, and the user's
+        // credential is never destroyed.
+        if (
+            !legacyToken.isNullOrBlank() &&
+            !fireflyTokenManager.getAccessToken().isNullOrBlank() &&
+            fireflyTokenManager.isSecureStorageAvailable()
+        ) {
+            context.dataStore.edit { it.remove(legacyTokenKey) }
         }
     }
 

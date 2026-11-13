@@ -1207,6 +1207,19 @@ class FireflyClient @Inject constructor(
         /** Last-known sidecar sync state per local transaction id (from [FireflySyncEngine]). */
         stateByTx: Map<Long, FireflyTransactionStateEntity> = emptyMap()
     ): BatchSyncResult {
+        // M3: sidecar-persisted external ids win over any recomputed value.
+        // Engine calls already pin entity.transactionHash (computeExternalId then
+        // yields the persisted id); direct callers (e.g. settings "test sync")
+        // have no pinning, so resolve from the sidecar state here. Well-formed
+        // non-pennywise externalIds are third-party-owned (Firefly-side split
+        // parent) and intentionally bypassed by the engine lookup.
+        fun resolvedExternalId(tx: TransactionEntity): String {
+            val persisted = stateByTx[tx.id]?.externalId
+            return if (!persisted.isNullOrBlank() && persisted.startsWith("pennywise-")) persisted
+            else computeExternalId(tx)
+        }
+        val resolvedExtIds = syncables.associate { it.transaction.id to resolvedExternalId(it.transaction) }
+
         if (baseUrl.isBlank() || accessToken.isBlank()) {
             return BatchSyncResult(
                 total = syncables.size,
@@ -1214,7 +1227,7 @@ class FireflyClient @Inject constructor(
                 details = syncables.map {
                     ItemResult(
                         it.transaction.id,
-                        computeExternalId(it.transaction),
+                        resolvedExtIds[it.transaction.id] ?: computeExternalId(it.transaction),
                         ItemResult.ItemStatus.ERROR,
                         message = "Firefly not configured"
                     )
@@ -1232,7 +1245,7 @@ class FireflyClient @Inject constructor(
             // 1. Check each transaction against Firefly and decide create / update / pull.
             syncables.forEach { syncable ->
                 val tx = syncable.transaction
-                val extId = computeExternalId(tx)
+                val extId = resolvedExtIds[tx.id] ?: computeExternalId(tx)
                 val lookup = lookupRemoteTransactionByExternalId(baseUrl, accessToken, extId)
 
                 // H1: an inconclusive search (429/5xx/network) is NOT evidence of
@@ -1357,7 +1370,7 @@ class FireflyClient @Inject constructor(
             // 2. Push local changes to existing Firefly transactions.
             toUpdate.forEach { (syncable, remote) ->
                 val tx = syncable.transaction
-                val extId = computeExternalId(tx)
+                val extId = resolvedExtIds[tx.id] ?: computeExternalId(tx)
                 try {
                     val updated = updateTransaction(
                         fireflyId = remote.fireflyId,
@@ -1367,7 +1380,8 @@ class FireflyClient @Inject constructor(
                         defaultAssetAccount = defaultAssetAccount,
                         accountMappings = accountMappings,
                         categoryMappings = categoryMappings,
-                        includeRawSmsInNotes = includeRawSmsInNotes
+                        includeRawSmsInNotes = includeRawSmsInNotes,
+                        externalIdOverride = extId
                     )
                     if (updated != null) {
                         // Best-effort receipt upload: a user may have attached a new receipt
@@ -1446,7 +1460,7 @@ class FireflyClient @Inject constructor(
                 emptyList()
             } else {
                 sequentialFallback(
-                    toCreate = toCreate.map { it to null },
+                    toCreate = toCreate.map { it to resolvedExtIds[it.transaction.id] },
                     baseUrl = baseUrl,
                     accessToken = accessToken,
                     defaultAssetAccount = defaultAssetAccount,
@@ -1906,14 +1920,18 @@ class FireflyClient @Inject constructor(
         defaultAssetAccount: String?,
         accountMappings: Map<String, String>,
         categoryMappings: Map<String, String>,
-        includeRawSmsInNotes: Boolean
+        includeRawSmsInNotes: Boolean,
+        externalIdOverride: String? = null
     ): RemoteTransactionInfo? {
         if (fireflyId.isBlank()) return null
 
         return withContext(Dispatchers.IO) {
             try {
                 val normalizedUrl = normalizeBaseUrl(baseUrl)
-                val payload = buildTransactionPayload(syncable, defaultAssetAccount, accountMappings, categoryMappings, includeRawSmsInNotes)
+                val payload = buildTransactionPayload(
+                    syncable, defaultAssetAccount, accountMappings, categoryMappings, includeRawSmsInNotes,
+                    externalIdOverride = externalIdOverride
+                )
                 val response: HttpResponse = client.put("$normalizedUrl$API_PATH/transactions/$fireflyId") {
                     header("Authorization", "Bearer $accessToken")
                     header("Accept", "application/vnd.api+json")
@@ -1961,7 +1979,8 @@ class FireflyClient @Inject constructor(
         defaultAsset: String?,
         accountMappings: Map<String, String>,
         categoryMappings: Map<String, String>,
-        includeRawSmsInNotes: Boolean
+        includeRawSmsInNotes: Boolean,
+        externalIdOverride: String? = null
     ): FireflyTransactionRequest {
         val tx = syncable.transaction
         val type = mapTransactionType(tx.transactionType)
@@ -1992,7 +2011,9 @@ class FireflyClient @Inject constructor(
             appendLine("Synced from PennyWise • bank=${tx.bankName ?: "manual"}")
         }.trim().take(1000)
 
-        val externalId = computeExternalId(tx)
+        val externalId = externalIdOverride
+            ?: if (tx.transactionHash?.startsWith("pennywise-") == true) tx.transactionHash
+            else computeExternalId(tx)
 
         // If we have splits, create one Firefly split per PennyWise split.
         val tags = buildTags(tx)
@@ -2245,7 +2266,10 @@ class FireflyClient @Inject constructor(
             description = remote.description,
             dateTime = dateTime,
             transactionType = mapRemoteTypeToLocal(remote.type),
-            syncedAt = syncedAt
+            syncedAt = syncedAt,
+            remoteSourceName = remote.sourceName,
+            remoteDestinationName = remote.destinationName,
+            remoteUpdatedAt = remote.updatedAt?.let { instantToLocalDateTime(it) }
         )
 
         if (remote.splits.isNotEmpty()) {
@@ -2313,7 +2337,7 @@ class FireflyClient @Inject constructor(
         val semaphore = Semaphore(BATCH_CONCURRENCY)
 
         return withContext(Dispatchers.IO) {
-            toCreate.map { (syncable, _) ->
+            toCreate.map { (syncable, externalId) ->
                 async {
                     semaphore.acquire()
                     try {
@@ -2325,7 +2349,8 @@ class FireflyClient @Inject constructor(
                             accountMappings = accountMappings,
                             categoryMappings = categoryMappings,
                             includeRawSmsInNotes = includeRawSmsInNotes,
-                            uploadReceipt = uploadReceipts
+                            uploadReceipt = uploadReceipts,
+                            externalIdOverride = externalId
                         )
                     } finally {
                         semaphore.release()
@@ -2343,13 +2368,21 @@ class FireflyClient @Inject constructor(
         accountMappings: Map<String, String>,
         categoryMappings: Map<String, String>,
         includeRawSmsInNotes: Boolean,
-        uploadReceipt: Boolean
+        uploadReceipt: Boolean,
+        externalIdOverride: String? = null
     ): ItemResult {
         val tx = syncable.transaction
+        // M3: report/log the id actually used (persisted sidecar id when known).
+        val effectiveExternalId = externalIdOverride
+            ?: if (tx.transactionHash?.startsWith("pennywise-") == true) tx.transactionHash
+            else computeExternalId(tx)
         return withContext(Dispatchers.IO) {
             try {
                 val normalizedUrl = normalizeBaseUrl(baseUrl)
-                val payload = buildTransactionPayload(syncable, defaultAssetAccount, accountMappings, categoryMappings, includeRawSmsInNotes)
+                val payload = buildTransactionPayload(
+                    syncable, defaultAssetAccount, accountMappings, categoryMappings, includeRawSmsInNotes,
+                    externalIdOverride = externalIdOverride
+                )
 
                 val response: HttpResponse = client.post("$normalizedUrl$API_PATH/transactions") {
                     header("Authorization", "Bearer $accessToken")
@@ -2383,7 +2416,7 @@ class FireflyClient @Inject constructor(
 
                         ItemResult(
                             transactionId = tx.id,
-                            externalId = computeExternalId(tx),
+                            externalId = effectiveExternalId,
                             status = ItemResult.ItemStatus.SUCCESS,
                             fireflyId = createdId,
                             journalIds = journalIds,
@@ -2393,7 +2426,7 @@ class FireflyClient @Inject constructor(
                     response.status == HttpStatusCode.Unauthorized -> {
                         ItemResult(
                             transactionId = tx.id,
-                            externalId = computeExternalId(tx),
+                            externalId = effectiveExternalId,
                             status = ItemResult.ItemStatus.ERROR,
                             message = "Authentication failed - check your Personal Access Token"
                         )
@@ -2401,7 +2434,7 @@ class FireflyClient @Inject constructor(
                     response.status == HttpStatusCode.UnprocessableEntity -> {
                         ItemResult(
                             transactionId = tx.id,
-                            externalId = computeExternalId(tx),
+                            externalId = effectiveExternalId,
                             status = ItemResult.ItemStatus.ERROR,
                             message = "Validation error: ${responseBody.take(300)}"
                         )
@@ -2409,7 +2442,7 @@ class FireflyClient @Inject constructor(
                     else -> {
                         ItemResult(
                             transactionId = tx.id,
-                            externalId = computeExternalId(tx),
+                            externalId = effectiveExternalId,
                             status = ItemResult.ItemStatus.ERROR,
                             message = "HTTP ${response.status.value}: ${responseBody.take(300)}"
                         )
@@ -2419,7 +2452,7 @@ class FireflyClient @Inject constructor(
                 diagnosticLogger.e(TAG, "Failed to sync transaction ${tx.id} to Firefly", e)
                 ItemResult(
                     transactionId = tx.id,
-                    externalId = computeExternalId(tx),
+                    externalId = effectiveExternalId,
                     status = ItemResult.ItemStatus.ERROR,
                     message = "Network error: ${e.message ?: e.javaClass.simpleName}"
                 )

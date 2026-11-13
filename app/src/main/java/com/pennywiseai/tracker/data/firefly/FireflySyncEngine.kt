@@ -11,6 +11,7 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import java.time.LocalDateTime
+import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -161,6 +162,11 @@ class FireflySyncEngine @Inject constructor(
      * Hook invoked when a transaction is created/edited locally (SMS parse,
      * manual add). No-op unless the user enabled Firefly sync.
      *
+     * M1: splits are re-loaded locally via [buildSyncable] — the same builder
+     * [resyncAll] uses — even when the caller passes none (which both save
+     * paths do), so a split transaction is pushed as a real Firefly group
+     * instead of one flat journal.
+     *
      * Guarded by [inFlightTxIds]: if a worker is already syncing this exact
      * transaction, the attempt returns a SKIPPED result without touching
      * Firefly (see [runBatch]).
@@ -173,7 +179,9 @@ class FireflySyncEngine @Inject constructor(
     /**
      * Manual "Sync now" / retry entry from the transaction detail screen.
      * Returns the per-item result for the UI. A row that another path is
-     * already syncing reports [FireflyClient.SyncResult.Skipped].
+     * already syncing reports [FireflyClient.SyncResult.Skipped]. Passed-in
+     * [splits] are only a fallback: the locally stored splits win (M1, see
+     * [buildSyncable]).
      */
     suspend fun syncTransaction(
         tx: TransactionEntity,
@@ -332,15 +340,39 @@ class FireflySyncEngine @Inject constructor(
         config: FireflyConfig,
         direction: String
     ): List<FireflyClient.ItemResult> {
-        val syncables = items.map { (tx, splits) -> FireflyClient.SyncableTransaction(tx, splits) }
+        // M1: the hook path builds its SyncableTransactions through the exact
+        // same builder the resync/retry batches use — one shared group shape,
+        // so a split transaction can never be pushed as a flat single journal.
+        val syncables = items.map { (tx, splits) -> buildSyncable(tx, splits) }
         return runBatch(syncables, config, direction = direction).details
     }
 
+    /**
+     * THE group builder of the engine (M1). Every path that sends a
+     * transaction to Firefly funnels through here, so hook pushes and
+     * resync/retry pushes produce identical transaction groups:
+     *
+     *  - splits are re-loaded from the local database for **every** item,
+     *    including the `onTransactionSaved` hook, whose callers
+     *    (`AddTransactionUseCase`, `SmsTransactionProcessor`) pass no splits
+     *    at all. Before this, the hook pushed the total as one flat journal
+     *    and the row was then marked synced, so the split structure was never
+     *    corrected on Firefly.
+     *  - caller-provided splits are only a fallback for the case where the
+     *    database has none (e.g. a read failure); the stored rows win.
+     */
+    private suspend fun buildSyncable(
+        tx: TransactionEntity,
+        providedSplits: List<TransactionSplitEntity> = emptyList()
+    ): FireflyClient.SyncableTransaction {
+        val storedSplits = runCatching {
+            transactionRepository.getTransactionWithSplitsSync(tx.id)?.splits
+        }.getOrNull().orEmpty()
+        return FireflyClient.SyncableTransaction(tx, storedSplits.ifEmpty { providedSplits })
+    }
+
     private suspend fun syncablesWithSplits(transactions: List<TransactionEntity>): List<FireflyClient.SyncableTransaction> {
-        return transactions.map { tx ->
-            val splits = transactionRepository.getTransactionWithSplitsSync(tx.id)?.splits ?: emptyList()
-            FireflyClient.SyncableTransaction(tx, splits)
-        }
+        return transactions.map { buildSyncable(it) }
     }
 
     private suspend fun runBatch(
@@ -354,6 +386,16 @@ class FireflySyncEngine @Inject constructor(
         // See [inFlightTxIds]. The hook path (onTransactionSaved /
         // syncTransaction) and the worker paths (resyncAll / retryFailedTxs)
         // all end up here, so one guard covers every concurrent combination.
+        // M3: sidecar state is loaded up-front — the single-flight guard's
+        // skip results and the external-id stabilization below both read it.
+        val allIds = ArrayList<Long>(syncables.size)
+        for (item in syncables) allIds += item.transaction.id
+        val states: Map<Long, FireflyTransactionStateEntity> = when {
+            stateOverrides.isNotEmpty() -> stateOverrides
+            allIds.isEmpty() -> emptyMap()
+            else -> fireflySyncDao.statesFor(allIds).associateBy { it.localTransactionId }
+        }
+
         val claimed = ArrayList<FireflyClient.SyncableTransaction>(syncables.size)
         val busy = ArrayList<FireflyClient.SyncableTransaction>()
         for (item in syncables) {
@@ -362,7 +404,10 @@ class FireflySyncEngine @Inject constructor(
         val busySkipped = busy.map { item ->
             FireflyClient.ItemResult(
                 transactionId = item.transaction.id,
-                externalId = fireflyClient.computeExternalId(item.transaction),
+                // M3 precedence: report the SAME id the sync would use —
+                // the persisted sidecar id wins over a freshly derived one.
+                externalId = states[item.transaction.id]?.externalId?.takeIf { it.isNotBlank() }
+                    ?: fireflyClient.computeExternalId(item.transaction),
                 status = FireflyClient.ItemResult.ItemStatus.SKIPPED
             )
         }
@@ -386,14 +431,16 @@ class FireflySyncEngine @Inject constructor(
 
         val now = LocalDateTime.now()
         try {
-            val states = if (stateOverrides.isNotEmpty()) stateOverrides else {
-                fireflySyncDao.statesFor(claimedIds).associateBy { it.localTransactionId }
-            }
-
             diagnosticLoggerMessage?.let { diagnosticLogger.i(TAG, it()) }
 
+            // M3: every claimed row gets its external id resolved through the
+            // sidecar-first precedence chain (see [ensureStableExternalIds])
+            // BEFORE any HTTP happens, so search, payload and persisted state
+            // all use the same id.
+            val stabilized = ensureStableExternalIds(claimed, states)
+
             val result = fireflyClient.syncTransactionsBatch(
-                syncables = claimed,
+                syncables = stabilized,
                 baseUrl = config.url,
                 accessToken = config.token,
                 defaultAssetAccount = config.defaultAssetAccount,
@@ -424,6 +471,82 @@ class FireflySyncEngine @Inject constructor(
             // Release the claims even if the client or the DAO throws, so a
             // failed attempt can be retried by the next pass.
             inFlightTxIds.removeAll(claimedIds)
+        }
+    }
+
+    /**
+     * M3: resolve one stable external id per claimed transaction and pin it so
+     * every Firefly interaction (search lookup, create/update payload, sidecar
+     * bookkeeping) uses the SAME id.
+     *
+     * Precedence chain (first match wins):
+     *  1. persisted sidecar id — `FireflyTransactionStateEntity.externalId`
+     *     wins over ANY recomputed value, so hash-changing edits, restores or
+     *     hash recalculation can never orphan the remote row;
+     *  2. a non-blank `transactionHash` → `pennywise-<hash>` (SMS/autopay rows
+     *     already have a content-stable hash);
+     *  3. hash-less transactions (manual adds whose hash was cleared or never
+     *     set) → a fresh UUID `pennywise-ff-<uuid>` that is **persisted into
+     *     the sidecar row at first push**, so from that point on rule 1 makes
+     *     it stable forever. The id is persisted BEFORE the HTTP push: if the
+     *     create actually committed server-side but the response was lost, the
+     *     next run searches the same id and updates instead of re-creating.
+     *
+     * Pinning mechanism: [FireflyClient.computeExternalId] derives the id it
+     * uses everywhere from the entity's `transactionHash` (or PK fallback).
+     * The client's external-id resolution is out of this task's ownership, so
+     * the engine carries the winning id in the hash field of the
+     * [FireflyClient.SyncableTransaction]'s entity copy — the client then
+     * computes exactly the sidecar id for search, payload and markSynced. Only
+     * the in-memory copy sent to the client is rewritten; the local database
+     * row's `transactionHash` is never touched.
+     *
+     * Ids that do not start with the `pennywise-` prefix cannot be expressed
+     * through the hash pinning and are left to the client's own derivation.
+     */
+    private suspend fun ensureStableExternalIds(
+        items: List<FireflyClient.SyncableTransaction>,
+        states: Map<Long, FireflyTransactionStateEntity>
+    ): List<FireflyClient.SyncableTransaction> {
+        return items.map { item ->
+            val tx = item.transaction
+            val persisted = states[tx.id]?.externalId?.takeIf { it.isNotBlank() }
+            val externalId: String = persisted
+                ?: tx.transactionHash?.takeIf { it.isNotBlank() }?.let { "pennywise-$it" }
+                ?: "pennywise-ff-${UUID.randomUUID()}"
+
+            if (persisted == null) {
+                val existingState = states[tx.id]
+                runCatching {
+                    if (existingState == null) {
+                        fireflySyncDao.upsertTransactionState(
+                            FireflyTransactionStateEntity(
+                                localTransactionId = tx.id,
+                                externalId = externalId
+                            )
+                        )
+                    } else {
+                        fireflySyncDao.updateExternalId(tx.id, externalId)
+                    }
+                }.onFailure {
+                    diagnosticLogger.w(
+                        TAG,
+                        "Could not pre-persist external id for tx ${tx.id} — this run uses it in-memory only",
+                        it
+                    )
+                }
+            }
+
+            if (externalId.startsWith("pennywise-")) {
+                val pinnedHash = externalId.removePrefix("pennywise-")
+                if (tx.transactionHash != pinnedHash) {
+                    item.copy(transaction = tx.copy(transactionHash = pinnedHash))
+                } else {
+                    item
+                }
+            } else {
+                item
+            }
         }
     }
 

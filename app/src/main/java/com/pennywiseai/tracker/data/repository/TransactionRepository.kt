@@ -47,6 +47,27 @@ open class TransactionRepository @Inject constructor(
     open suspend fun getTransactionById(id: Long): TransactionEntity? = 
         transactionDao.getTransactionById(id)
 
+    /**
+     * PULL-side local row update (Firefly → phone). M2 rules:
+     *
+     *  - **Time-of-day is preserved.** Firefly stores date-only, and the pull
+     *    path hands us `remote.date.atStartOfDay()`. The remote DATE wins, but
+     *    the local row's TIME-of-day is re-attached to it; midnight is only
+     *    used when the local row cannot be read (time unknown).
+     *  - **No lossless-type downgrades.** `mapRemoteTypeToLocal` collapses
+     *    Firefly `withdrawal` to `EXPENSE`, which would silently downgrade a
+     *    local `CREDIT`/`INVESTMENT` row even though all three are pushed as
+     *    withdrawals (direction identical). The local type is kept whenever
+     *    direction is semantically equivalent and only replaced when the
+     *    remote direction genuinely differs (`deposit` → INCOME, `transfer` →
+     *    TRANSFER). When the caller supplies the remote source/destination
+     *    account names, direction is verified from them.
+     *  - **`updatedAt` is not the sync timestamp.** The row keeps its own
+     *    `updatedAt` (it records *local* edits, and overwriting it with
+     *    `syncedAt` makes every pulled row look locally-modified on the next
+     *    run). If the caller supplies the remote `updated_at`, that wins;
+     *    `syncedAt` is only a fallback for when the row can't be read.
+     */
     suspend fun updateTransactionFromFirefly(
         transactionId: Long,
         amount: BigDecimal,
@@ -55,17 +76,75 @@ open class TransactionRepository @Inject constructor(
         description: String?,
         dateTime: LocalDateTime,
         transactionType: com.pennywiseai.tracker.data.database.entity.TransactionType,
-        syncedAt: LocalDateTime
-    ) = transactionDao.updateTransactionFromFirefly(
-        transactionId = transactionId,
-        amount = amount,
-        merchantName = merchantName,
-        category = category,
-        description = description,
-        dateTime = dateTime,
-        transactionType = transactionType.name,
-        updatedAt = syncedAt
-    )
+        syncedAt: LocalDateTime,
+        remoteSourceName: String? = null,
+        remoteDestinationName: String? = null,
+        remoteUpdatedAt: LocalDateTime? = null
+    ) {
+        val existing = transactionDao.getTransactionById(transactionId)
+
+        // Remote date + local time-of-day (midnight only when the local row
+        // is gone, i.e. the local time is genuinely unknown).
+        val localTime = existing?.dateTime?.toLocalTime() ?: LocalTime.MIDNIGHT
+        val mergedDateTime = dateTime.toLocalDate().atTime(localTime)
+
+        val effectiveType = resolvePulledType(
+            existing = existing,
+            remoteMappedType = transactionType,
+            remoteSourceName = remoteSourceName,
+            remoteDestinationName = remoteDestinationName
+        )
+
+        // updatedAt semantics: remote edit time if known, else keep the row's
+        // own edit time; the sync wall-clock is the last-resort fallback.
+        val effectiveUpdatedAt = remoteUpdatedAt ?: existing?.updatedAt ?: syncedAt
+
+        transactionDao.updateTransactionFromFirefly(
+            transactionId = transactionId,
+            amount = amount,
+            merchantName = merchantName,
+            category = category,
+            description = description,
+            dateTime = mergedDateTime,
+            transactionType = effectiveType.name,
+            updatedAt = effectiveUpdatedAt
+        )
+    }
+
+    /**
+     * M2 helper: decide which `transactionType` a pulled row ends up with.
+     *
+     * Firefly only tells us one of `withdrawal`/`deposit`/`transfer`
+     * (`mapRemoteTypeToLocal` maps the withdrawal family to `EXPENSE`). The
+     * app's `EXPENSE`, `CREDIT` and `INVESTMENT` all push as Firefly
+     * withdrawals (`mapTransactionType` in `FireflyClient`), so a `withdrawal`
+     * back-map is direction-equivalent for all three and must not downgrade
+     * `CREDIT`/`INVESTMENT` to `EXPENSE`. Other mappings (`INCOME`, `TRANSFER`)
+     * genuinely change direction and win.
+     */
+    private fun resolvePulledType(
+        existing: TransactionEntity?,
+        remoteMappedType: com.pennywiseai.tracker.data.database.entity.TransactionType,
+        remoteSourceName: String?,
+        remoteDestinationName: String?
+    ): TransactionType {
+        val localType = existing?.transactionType ?: return remoteMappedType
+        if (remoteMappedType == localType) return localType
+        if (
+            remoteMappedType == TransactionType.EXPENSE &&
+            (localType == TransactionType.CREDIT || localType == TransactionType.INVESTMENT)
+        ) {
+            // The remote type came from a `withdrawal` ⇒ outflow by definition.
+            // When the caller hands us the remote legs, double-check direction
+            // against them: withdrawal = source account set, destination unset.
+            val evidence = !remoteSourceName.isNullOrBlank() || !remoteDestinationName.isNullOrBlank()
+            if (!evidence) return localType
+            val outbound = !remoteSourceName.isNullOrBlank() && remoteDestinationName.isNullOrBlank()
+            return if (outbound) localType else remoteMappedType
+        }
+        // INCOME (deposit) / TRANSFER genuinely differ from the local type.
+        return remoteMappedType
+    }
 
     fun getTransactionsBetweenDates(
         startDate: LocalDateTime,
