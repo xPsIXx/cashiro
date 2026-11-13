@@ -151,7 +151,14 @@ class FireflyClient @Inject constructor(
         val name: String,
         val active: Boolean = true,
         val createdAt: Instant? = null,
-        val updatedAt: Instant? = null
+        val updatedAt: Instant? = null,
+        /**
+         * L4: the budget's declared auto-budget cadence from Firefly
+         * (`weekly`/`monthly`/`quarterly`/…), when the user configured one.
+         * The single trustworthy period signal — used by [inferPeriodType]
+         * instead of guessing from the limit's date span alone.
+         */
+        val autoBudgetPeriod: String? = null
     )
 
     /**
@@ -167,7 +174,9 @@ class FireflyClient @Inject constructor(
         val amount: java.math.BigDecimal,
         val currencyCode: String,
         val budgetUpdatedAt: Instant? = null,
-        val limitUpdatedAt: Instant? = null
+        val limitUpdatedAt: Instant? = null,
+        /** L4: budget-level declared cadence (see [FireflyBudgetInfo.autoBudgetPeriod]). */
+        val autoBudgetPeriod: String? = null
     )
 
     /**
@@ -245,7 +254,9 @@ class FireflyClient @Inject constructor(
         val name: String,
         val active: Boolean = true,
         val created_at: String? = null,
-        val updated_at: String? = null
+        val updated_at: String? = null,
+        /** v6 BudgetProperties: auto-budget cadence (daily..yearly), nullable. */
+        val auto_budget_period: String? = null
     )
 
     @Serializable
@@ -693,7 +704,8 @@ class FireflyClient @Inject constructor(
                                 name = it.attributes.name,
                                 active = it.attributes.active,
                                 createdAt = parseInstant(it.attributes.created_at),
-                                updatedAt = parseInstant(it.attributes.updated_at)
+                                updatedAt = parseInstant(it.attributes.updated_at),
+                                autoBudgetPeriod = it.attributes.auto_budget_period
                             )
                         }.getOrNull()
                     }
@@ -1081,7 +1093,7 @@ class FireflyClient @Inject constructor(
                                     startDate = remote.startDate,
                                     endDate = remote.endDate,
                                     currency = remote.currencyCode,
-                                    periodType = inferPeriodType(remote.startDate, remote.endDate),
+                                    periodType = inferPeriodType(remote.autoBudgetPeriod, remote.startDate, remote.endDate),
                                     isActive = remote.active
                                 )
                                 fireflySyncDao.updateBudgetSyncInfo(
@@ -1106,7 +1118,16 @@ class FireflyClient @Inject constructor(
                         val localId = budgetRepository.createBudget(
                             name = remote.budgetName,
                             limitAmount = remote.amount,
-                            periodType = inferPeriodType(remote.startDate, remote.endDate),
+                            // L4 (verified against the official v6 OpenAPI in
+                            // swagger_input/firefly-iii.yaml): BudgetProperties
+                            // carries NO category fields — Firefly budgets are
+                            // category-agnostic, and budget↔category links live
+                            // only on journals (which Cashiro syncs via
+                            // journal category links). So `includeAllCategories
+                            // = true` is the FAITHFUL translation of a remote
+                            // budget, not a lossy default: there is no remote
+                            // category whitelist to preserve.
+                            periodType = inferPeriodType(remote.autoBudgetPeriod, remote.startDate, remote.endDate),
                             startDate = remote.startDate,
                             endDate = remote.endDate,
                             currency = remote.currencyCode,
@@ -2312,11 +2333,36 @@ class FireflyClient @Inject constructor(
         }
     }
 
-    private fun parseDate(value: String?): LocalDate? {
+    /**
+     * Tolerant date parser for Firefly READ payloads.
+     *
+     * The v6 OpenAPI is inconsistent about date fields across instances and
+     * schema blocks: `RecurrenceProperties.first_date` is `format: date`
+     * ("2026-03-31") while `BudgetLimitProperties.start/end` are
+     * `format: date-time` ("2026-03-01T00:00:00+00:00") — and real instances
+     * have historically emitted journal dates as date-time regardless of the
+     * declared format. A strict `LocalDate.parse` silently drops every row
+     * whose field arrives in the other shape (budget limits and recurrences
+     * vanish without any error). Accept all three shapes: date, offset
+     * date-time, and instant.
+     *
+     * Internal (not private) so JVM tests can pin the tolerance directly.
+     */
+    internal fun parseDate(value: String?): LocalDate? {
+        val text = value?.trim() ?: return null
+        if (text.isEmpty()) return null
         return try {
-            value?.let { LocalDate.parse(it) }
+            LocalDate.parse(text)
         } catch (_: Exception) {
-            null
+            try {
+                java.time.OffsetDateTime.parse(text).toLocalDate()
+            } catch (_: Exception) {
+                try {
+                    java.time.Instant.parse(text).atZone(java.time.ZoneId.systemDefault()).toLocalDate()
+                } catch (_: Exception) {
+                    null
+                }
+            }
         }
     }
 
@@ -2374,9 +2420,30 @@ class FireflyClient @Inject constructor(
         }
     }
 
-    private fun inferPeriodType(start: LocalDate, end: LocalDate): com.pennywiseai.tracker.data.database.entity.BudgetPeriodType {
+    /**
+     * L4: map a Firefly budget limit onto the local [BudgetPeriodType] enum
+     * (which has only WEEKLY / MONTHLY / CUSTOM — quarterly or annual limits
+     * are honestly CUSTOM spans locally, not silent mislabels).
+     *
+     * Priority: the budget's DECLARED auto-budget cadence wins, but only when
+     * the observed limit span agrees with it — a "monthly" budget sitting on a
+     * 91-day limit is a CUSTOM span. When no cadence is declared (or it
+     * disagrees), fall back to the day-span heuristic. The monthly band is 27..32
+     * so fiscal months (e.g. Feb 2 – Feb 28 = 27 days) declared "monthly" are
+     * no longer demoted to CUSTOM.
+     *
+     * Internal (not private) so JVM tests can pin the mapping directly.
+     */
+    internal fun inferPeriodType(
+        autoBudgetPeriod: String?,
+        start: LocalDate,
+        end: LocalDate
+    ): com.pennywiseai.tracker.data.database.entity.BudgetPeriodType {
         val days = java.time.temporal.ChronoUnit.DAYS.between(start, end) + 1
+        val declared = autoBudgetPeriod?.lowercase()?.trim()
         return when {
+            declared == "weekly" && days in 5..9 -> com.pennywiseai.tracker.data.database.entity.BudgetPeriodType.WEEKLY
+            declared == "monthly" && days in 27..32 -> com.pennywiseai.tracker.data.database.entity.BudgetPeriodType.MONTHLY
             days in 6..8 -> com.pennywiseai.tracker.data.database.entity.BudgetPeriodType.WEEKLY
             days in 28..31 -> com.pennywiseai.tracker.data.database.entity.BudgetPeriodType.MONTHLY
             else -> com.pennywiseai.tracker.data.database.entity.BudgetPeriodType.CUSTOM
@@ -2409,7 +2476,8 @@ class FireflyClient @Inject constructor(
                 amount = current.amount,
                 currencyCode = current.currencyCode,
                 budgetUpdatedAt = budget.updatedAt,
-                limitUpdatedAt = current.updatedAt
+                limitUpdatedAt = current.updatedAt,
+                autoBudgetPeriod = budget.autoBudgetPeriod
             )
         }
     }
@@ -2709,26 +2777,33 @@ class FireflyClient @Inject constructor(
         }
     }
 
-    private suspend fun getPiggyBanks(baseUrl: String, accessToken: String): List<FireflyPiggyBankInfo> {
+    // internal (not private): JVM pagination tests drive these directly.
+    internal suspend fun getPiggyBanks(baseUrl: String, accessToken: String): List<FireflyPiggyBankInfo> {
         return withContext(Dispatchers.IO) {
             try {
                 val normalizedUrl = normalizeBaseUrl(baseUrl)
-                val response: HttpResponse = client.get("$normalizedUrl$API_PATH/piggy-banks?limit=1000") {
-                    header("Authorization", "Bearer $accessToken")
-                    header("Accept", "application/vnd.api+json")
-                }
-                if (!response.status.isSuccess()) return@withContext emptyList()
-
-                val body = response.bodyAsText()
-                val parsed = json.decodeFromString<FireflyPiggyBanksResponse>(body)
-                parsed.data.map {
-                    FireflyPiggyBankInfo(
-                        id = it.id ?: "0",
-                        name = it.attributes.name,
-                        targetAmount = it.attributes.target_amount?.toBigDecimalOrNull() ?: java.math.BigDecimal.ZERO,
-                        currentAmount = it.attributes.current_amount?.toBigDecimalOrNull() ?: java.math.BigDecimal.ZERO,
-                        active = it.attributes.active
-                    )
+                // M5 follow-up: piggy-banks was an unpaginated floor — Firefly
+                // clamps limit to 100/page, so a single limit=1000 call made
+                // every piggy bank past page 1 invisible.
+                val items = paginate(
+                    normalizedUrl = normalizedUrl,
+                    path = "/piggy-banks",
+                    accessToken = accessToken,
+                    parsePage = { outcome ->
+                        if (outcome is FireflyPageOutcome.Page) outcome.objects else emptyList()
+                    }
+                )
+                items.mapNotNull { wrapperEl ->
+                    runCatching {
+                        val it = json.decodeFromJsonElement(serializer<FireflyPiggyBankWrapper>(), wrapperEl)
+                        FireflyPiggyBankInfo(
+                            id = it.id ?: "0",
+                            name = it.attributes.name,
+                            targetAmount = it.attributes.target_amount?.toBigDecimalOrNull() ?: java.math.BigDecimal.ZERO,
+                            currentAmount = it.attributes.current_amount?.toBigDecimalOrNull() ?: java.math.BigDecimal.ZERO,
+                            active = it.attributes.active
+                        )
+                    }.getOrNull()
                 }
             } catch (e: Exception) {
                 diagnosticLogger.e(TAG, "Failed to fetch Firefly piggy banks", e)
@@ -2804,7 +2879,8 @@ class FireflyClient @Inject constructor(
         }
     }
 
-    private data class FireflyPiggyBankInfo(
+    // internal: returned by the internal paginated fetchers (tests read them).
+    internal data class FireflyPiggyBankInfo(
         val id: String,
         val name: String,
         val targetAmount: java.math.BigDecimal,
@@ -2995,22 +3071,29 @@ class FireflyClient @Inject constructor(
         }
     }
 
-    private suspend fun getRecurringTransactions(
+    // internal (not private): JVM pagination tests drive these directly.
+    internal suspend fun getRecurringTransactions(
         baseUrl: String,
         accessToken: String
     ): List<FireflyRecurringInfo> {
         return withContext(Dispatchers.IO) {
             try {
                 val normalizedUrl = normalizeBaseUrl(baseUrl)
-                val response: HttpResponse = client.get("$normalizedUrl$API_PATH/recurrences?limit=1000") {
-                    header("Authorization", "Bearer $accessToken")
-                    header("Accept", "application/vnd.api+json")
-                }
-                if (!response.status.isSuccess()) return@withContext emptyList()
-
-                val body = response.bodyAsText()
-                val parsed = json.decodeFromString<FireflyRecurringResponse>(body)
-                parsed.data.mapNotNull { wrapper ->
+                // M5 follow-up: recurrences was an unpaginated floor — Firefly
+                // clamps limit to 100/page, so a single limit=1000 call made
+                // every recurrence past page 1 invisible.
+                val items = paginate(
+                    normalizedUrl = normalizedUrl,
+                    path = "/recurrences",
+                    accessToken = accessToken,
+                    parsePage = { outcome ->
+                        if (outcome is FireflyPageOutcome.Page) outcome.objects else emptyList()
+                    }
+                )
+                items.mapNotNull { wrapperEl ->
+                    val wrapper = runCatching {
+                        json.decodeFromJsonElement(serializer<FireflyRecurringWrapper>(), wrapperEl)
+                    }.getOrNull() ?: return@mapNotNull null
                     val attrs = wrapper.attributes
                     val id = wrapper.id ?: return@mapNotNull null
                     // Cadence comes from the first repetition; the amount and
@@ -3215,7 +3298,8 @@ class FireflyClient @Inject constructor(
         }
     }
 
-    private data class FireflyRecurringInfo(
+    // internal: returned by the internal paginated fetchers (tests read them).
+    internal data class FireflyRecurringInfo(
         val id: String,
         val type: String,
         val title: String,
