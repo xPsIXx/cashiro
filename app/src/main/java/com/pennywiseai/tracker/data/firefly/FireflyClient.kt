@@ -49,7 +49,7 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
-import kotlinx.serialization.decodeFromJsonElement
+import kotlinx.serialization.serializer
 import java.io.File
 import java.time.Instant
 import java.time.LocalDate
@@ -489,7 +489,7 @@ class FireflyClient @Inject constructor(
                 items
                     .mapNotNull { wrapperEl ->
                         runCatching {
-                            val item = json.decodeFromJsonElement<FireflyAccountWrapper>(wrapperEl)
+                            val item = json.decodeFromJsonElement(serializer<FireflyAccountWrapper>(), wrapperEl)
                             FireflyAccountInfo(
                                 id = item.id ?: "0",
                                 name = item.attributes.name,
@@ -524,7 +524,7 @@ class FireflyClient @Inject constructor(
                 items
                     .mapNotNull { wrapperEl ->
                         runCatching {
-                            json.decodeFromJsonElement<FireflyCategoryWrapper>(wrapperEl).attributes.name
+                            json.decodeFromJsonElement(serializer<FireflyCategoryWrapper>(), wrapperEl).attributes.name
                         }.getOrNull()
                     }
                     .distinct()
@@ -659,7 +659,7 @@ class FireflyClient @Inject constructor(
                 items
                     .mapNotNull { wrapperEl ->
                         runCatching {
-                            val it = json.decodeFromJsonElement<FireflyBudgetWrapper>(wrapperEl)
+                            val it = json.decodeFromJsonElement(serializer<FireflyBudgetWrapper>(), wrapperEl)
                             FireflyBudgetInfo(
                                 id = it.id ?: "0",
                                 name = it.attributes.name,
@@ -708,7 +708,7 @@ class FireflyClient @Inject constructor(
                 )
                 items.mapNotNull { wrapperEl ->
                     val wrapper = runCatching {
-                        json.decodeFromJsonElement<FireflyBudgetLimitWrapper>(wrapperEl)
+                        json.decodeFromJsonElement(serializer<FireflyBudgetLimitWrapper>(), wrapperEl)
                     }.getOrNull() ?: return@mapNotNull null
                     val attrs = wrapper.attributes
                     val id = wrapper.id ?: return@mapNotNull null

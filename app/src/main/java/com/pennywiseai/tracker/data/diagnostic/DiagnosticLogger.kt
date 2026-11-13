@@ -67,7 +67,7 @@ class DiagnosticLogger @Inject constructor(
     private val mutex = Mutex()
 
     /** FIFO queue; UNLIMITED so an offer can never block or drop. */
-    private val queue = Channel<DiagnosticEntry>(Channel.UNLIMITED)
+    private val queue = Channel<Any>(Channel.UNLIMITED)
 
     /** Entries enqueued but not yet written by the consumer. */
     private val pending = AtomicLong(0)

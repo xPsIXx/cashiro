@@ -773,7 +773,12 @@ abstract class PennyWiseDatabase : RoomDatabase() {
         private fun columnsOf(db: SupportSQLiteDatabase, table: String): List<String> {
             val cursor = db.query("PRAGMA table_info(`$table`)")
             try {
-                return cursor.generateSequence().mapNotNull { it.getColumnIndex("name").takeIf { i -> i != -1 }?.let(cursor::getString) }
+                val names = ArrayList<String>()
+                val nameIdx = cursor.getColumnIndex("name")
+                while (cursor.moveToNext()) {
+                    if (nameIdx != -1) names += cursor.getString(nameIdx)
+                }
+                return names
             } finally {
                 cursor.close()
             }
