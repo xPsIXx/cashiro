@@ -10,12 +10,14 @@ import com.pennywiseai.tracker.data.repository.TransactionRepository
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.respond
+import io.ktor.client.engine.mock.toByteArray
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.client.request.HttpRequestData
 import io.ktor.http.Headers
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpMethod
 import io.ktor.http.HttpStatusCode
+import io.ktor.http.content.OutgoingContent
 import io.ktor.serialization.kotlinx.json.json
 import io.mockk.mockk
 import kotlinx.coroutines.runBlocking
@@ -28,6 +30,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
+import org.junit.Ignore
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -64,9 +67,10 @@ class FireflyClientPushPayloadRulesTest {
     }
 
     private fun stub(engine: MockEngine) {
-        client.httpClientForTests = HttpClient(engine) {
-            install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
-        }
+        // Uses the REAL production client config (defaultJson serialization
+        // contract + H1 retry policy) with MockEngine swapped in — the harness
+        // must not approximate the settings it is testing.
+        client.httpClientForTests = FireflyClient.buildHttpClientForTest(engine)
     }
 
     private fun jsonHeaders() = Headers.build { append(HttpHeaders.ContentType, "application/vnd.api+json") }
@@ -81,8 +85,12 @@ class FireflyClientPushPayloadRulesTest {
         transactionHash = "hash-l1"
     )
 
-    private fun bodyOf(request: HttpRequestData): JsonObject =
-        json.parseToJsonElement(String(request.body.toByteArray(), Charsets.UTF_8)) as JsonObject
+    private suspend fun bodyOf(request: HttpRequestData): JsonObject =
+        json.parseToJsonElement(String(bodyBytes(request.body), Charsets.UTF_8)) as JsonObject
+
+    /** Body of a captured request; `OutgoingContent.toByteArray()` is suspend, so
+     *  this runs inside the MockEngine handler where the request was captured. */
+    private suspend fun bodyBytes(content: OutgoingContent): ByteArray = content.toByteArray()
 
     private fun flag(root: JsonObject, name: String): Boolean? = root[name]?.jsonPrimitive?.booleanOrNull
 
@@ -178,14 +186,11 @@ class FireflyClientPushPayloadRulesTest {
 
     private companion object {
         const val BASE_URL = "https://firefly.test"
-        const val CREATED_TX = """{"data":{"id":"9001","attributes":{"updated_at":"2026-01-15T00:00:00Z",""" +
-            """"transaction_type":"withdrawal","external_id":"pennywise-hash-l1",""" +
-            """"transactions":[{"transaction_journal_id":"5001"}]}}}"""
-        const val REMOTE_OURS = """{"data":[{"id":"9001","attributes":{"updated_at":"2026-02-01T00:00:00Z",""" +
-            """"transactions":[{"type":"withdrawal","amount":"12.34","date":"2026-01-15",""" +
-            """"description":"Test Shop","external_id":"pennywise-hash-l1"}]}}]}"""
-        const val REMOTE_OURS_UPDATED = """{"data":{"id":"9001","attributes":{"updated_at":"2026-03-02T00:00:00Z",""" +
-            """"transactions":[{"type":"withdrawal","amount":"12.34","date":"2026-01-15",""" +
-            """"description":"Test Shop","external_id":"pennywise-hash-l1"}]}}}"""
+        const val CREATED_TX =
+            """{"data":{"id":"9001","attributes":{"updated_at":"2026-01-15T00:00:00Z","transaction_type":"withdrawal","external_id":"pennywise-hash-l1","transactions":[{"transaction_journal_id":"5001"}]}}}"""
+        const val REMOTE_OURS =
+            """{"data":[{"id":"9001","attributes":{"updated_at":"2026-02-01T00:00:00Z","transactions":[{"type":"withdrawal","amount":"12.34","date":"2026-01-15","description":"Test Shop","external_id":"pennywise-hash-l1"}]}}]}"""
+        const val REMOTE_OURS_UPDATED =
+            """{"data":{"id":"9001","attributes":{"updated_at":"2026-03-02T00:00:00Z","transactions":[{"type":"withdrawal","amount":"12.34","date":"2026-01-15","description":"Test Shop","external_id":"pennywise-hash-l1"}]}}}"""
     }
 }

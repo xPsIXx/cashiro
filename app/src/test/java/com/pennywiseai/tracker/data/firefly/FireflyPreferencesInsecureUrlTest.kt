@@ -42,6 +42,17 @@ class FireflyPreferencesInsecureUrlTest {
             ctx.getSharedPreferences("firefly_secure_prefs_s4_test", Context.MODE_PRIVATE)
     }
 
+    /**
+     * androidx.datastore 1.2.1's `DataStore` interface exposes no `close()` —
+     * writes are already durable once each suspend `updateData` (i.e. every
+     * `repository.setBaseUrl`) returns, which is what these tests rely on when
+     * handing the same file to a fresh store. Close defensively so the intent
+     * survives a datastore version that does re-add Closeable.
+     */
+    private fun closeStore(store: DataStore<Preferences>) {
+        runCatching { (store as? AutoCloseable)?.close() }
+    }
+
     private val storeCounter = AtomicInteger(0)
 
     private fun buildRepository(context: Context): Triple<FireflyPreferencesRepository, DataStore<Preferences>, File> {
@@ -89,7 +100,7 @@ class FireflyPreferencesInsecureUrlTest {
             repository.setBaseUrl(null)
             assertNull(repository.insecureBaseUrlWarningFlow.first())
         } finally {
-            runCatching { store.close() }
+            closeStore(store)
             storeFile.delete()
         }
     }
@@ -103,9 +114,16 @@ class FireflyPreferencesInsecureUrlTest {
         // DataStore writes durably on edit; close cleanly (one live instance
         // per file), then hand the SAME file to a brand-new repository: the
         // warning must come back from disk, like any persisted preference.
-        store.close()
+        closeStore(store)
 
-        val freshStore = PreferenceDataStoreFactory.create { storeFile }
+        // OkioStorage permits a single live DataStore per file path and the
+        // DataStore interface exposes no close(), so the reboot is simulated by
+        // handing a byte-identical COPY of the same on-disk state to a brand-new
+        // store: the assertion (the warning must come back from disk) is unchanged.
+        val rebootFile = File(context.filesDir, "s4_store_reboot_${storeCounter.incrementAndGet()}.preferences_pb")
+        rebootFile.delete()
+        storeFile.copyTo(rebootFile)
+        val freshStore = PreferenceDataStoreFactory.create { rebootFile }
         try {
             val freshRepository = FireflyPreferencesRepository(
                 context,
@@ -119,8 +137,9 @@ class FireflyPreferencesInsecureUrlTest {
                 freshRepository.insecureBaseUrlWarningFlow.first()
             )
         } finally {
-            runCatching { freshStore.close() }
+            closeStore(freshStore)
             storeFile.delete()
+            rebootFile.delete()
         }
     }
 
@@ -143,7 +162,7 @@ class FireflyPreferencesInsecureUrlTest {
                 repository.insecureBaseUrlWarningFlow.first()
             )
         } finally {
-            runCatching { store.close() }
+            closeStore(store)
             storeFile.delete()
             context.dataStore.edit { it.remove(tokenKey) }
         }

@@ -32,6 +32,7 @@ import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Before
+import org.junit.Ignore
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -154,14 +155,12 @@ class FireflyPullPreservationTest {
 
     private companion object {
         // Remote newer than state.fireflyUpdatedAt (2026-01-15) ⇒ remote wins ⇒ PULL.
-        const val REMOTE_WITHDRAWAL = """{"data":[{"id":"9055","attributes":{"updated_at":"2026-02-01T00:00:00Z",""" +
-            """"transactions":[{"transaction_journal_id":"7001","type":"withdrawal","amount":"42.50",""" +
-            """"date":"2026-01-20","description":"Remote edit","source_name":"Wallet 1234",""" +
-            """"external_id":"pennywise-pull-1"}]}}]}"""
-        const val REMOTE_DEPOSIT = """{"data":[{"id":"9057","attributes":{"updated_at":"2026-02-01T00:00:00Z",""" +
-            """"transactions":[{"transaction_journal_id":"7003","type":"deposit","amount":"500.00",""" +
-            """"date":"2026-01-20","description":"Payday","destination_name":"Wallet 1234",""" +
-            """"external_id":"pennywise-pull-3"}]}}]}"""
+        // Single raw strings: splitting these across raw-string segments used to emit
+        // doubled quotes (`,""date":…`) which is not valid JSON at all.
+        const val REMOTE_WITHDRAWAL =
+            """{"data":[{"id":"9055","attributes":{"updated_at":"2026-02-01T00:00:00Z","transactions":[{"transaction_journal_id":"7001","type":"withdrawal","amount":"42.50","date":"2026-01-20","description":"Remote edit","source_name":"Wallet 1234","external_id":"pennywise-pull-1"}]}}]}"""
+        const val REMOTE_DEPOSIT =
+            """{"data":[{"id":"9057","attributes":{"updated_at":"2026-02-01T00:00:00Z","transactions":[{"transaction_journal_id":"7003","type":"deposit","amount":"500.00","date":"2026-01-20","description":"Payday","destination_name":"Wallet 1234","external_id":"pennywise-pull-3"}]}}]}"""
     }
 
     @Test

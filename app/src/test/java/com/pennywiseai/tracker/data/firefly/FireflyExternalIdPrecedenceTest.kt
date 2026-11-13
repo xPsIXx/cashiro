@@ -11,11 +11,13 @@ import com.pennywiseai.tracker.data.repository.TransactionRepository
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.respond
+import io.ktor.client.engine.mock.toByteArray
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.http.Headers
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpMethod
 import io.ktor.http.HttpStatusCode
+import io.ktor.http.content.OutgoingContent
 import io.ktor.serialization.kotlinx.json.json
 import io.mockk.every
 import io.mockk.mockk
@@ -30,6 +32,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
+import org.junit.Ignore
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -126,24 +129,21 @@ class FireflyExternalIdPrecedenceTest {
 
     private fun jsonHeaders() = Headers.build { append(HttpHeaders.ContentType, "application/vnd.api+json") }
 
-    private fun parseBody(request: io.ktor.client.request.HttpRequestData): JsonObject =
-        json.parseToJsonElement(String(request.body.toByteArray(), Charsets.UTF_8)) as JsonObject
+    private suspend fun parseBody(request: io.ktor.client.request.HttpRequestData): JsonObject =
+        json.parseToJsonElement(String(bodyBytes(request.body), Charsets.UTF_8)) as JsonObject
+
+    /** Body of a captured request; `OutgoingContent.toByteArray()` is suspend, so
+     *  this runs inside the MockEngine handler where the request was captured. */
+    private suspend fun bodyBytes(content: OutgoingContent): ByteArray = content.toByteArray()
 
     private fun foundJson(groupId: String, externalId: String) =
-        """{"data":[{"id":"$groupId","attributes":{"updated_at":"2026-02-01T00:00:00Z",""" +
-            """"transactions":[{"transaction_journal_id":"7100","type":"withdrawal","amount":"300.00",""" +
-            """"date":"2026-02-01","description":"Cashiro external-id test","source_name":"Test Asset",""" +
-            """"external_id":"$externalId"}]}}]}"""
+        """{"data":[{"id":"$groupId","attributes":{"updated_at":"2026-02-01T00:00:00Z","transactions":[{"transaction_journal_id":"7100","type":"withdrawal","amount":"300.00","date":"2026-02-01","description":"Cashiro external-id test","source_name":"Test Asset","external_id":"$externalId"}]}}]}"""
 
     private fun updatedJson(groupId: String, externalId: String) =
-        """{"data":{"id":"$groupId","attributes":{"updated_at":"2026-02-05T00:00:00Z",""" +
-            """"transactions":[{"transaction_journal_id":"7100","type":"withdrawal","amount":"300.00",""" +
-            """"date":"2026-02-01","description":"Cashiro external-id test","source_name":"Test Asset",""" +
-            """"external_id":"$externalId"}]}}}"""
+        """{"data":{"id":"$groupId","attributes":{"updated_at":"2026-02-05T00:00:00Z","transactions":[{"transaction_journal_id":"7100","type":"withdrawal","amount":"300.00","date":"2026-02-01","description":"Cashiro external-id test","source_name":"Test Asset","external_id":"$externalId"}]}}}"""
 
     private fun createdJson(groupId: String) =
-        """{"data":{"id":"$groupId","attributes":{"updated_at":"2026-02-01T00:00:00Z",""" +
-            """"transaction_type":"withdrawal","transactions":[{"transaction_journal_id":"7100"}]}}}"""
+        """{"data":{"id":"$groupId","attributes":{"updated_at":"2026-02-01T00:00:00Z","transaction_type":"withdrawal","transactions":[{"transaction_journal_id":"7100"}]}}}"""
 
     /**
      * First search of a test run answers "not on Firefly" (⇒ create); every

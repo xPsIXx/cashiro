@@ -16,6 +16,7 @@ import com.pennywiseai.tracker.data.repository.SubscriptionRepository
 import com.pennywiseai.tracker.data.repository.TransactionRepository
 import com.pennywiseai.tracker.worker.FireflyAutoSyncWorker
 import io.mockk.coEvery
+import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
 import java.io.File
@@ -28,6 +29,7 @@ import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Before
+import org.junit.Ignore
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -149,7 +151,7 @@ class FireflySyncEngineCandidateResyncTest {
         client = mockk<FireflyClient>(relaxed = true)
         every { client.computeExternalId(any()) } returns "pennywise-hash"
         coEvery {
-            client.syncTransactionsBatch(any(), any(), any(), any(), any(), any(), any(), any(), any())
+            client.syncTransactionsBatch(any(), any(), any(), any(), any(), any(), any(), any(), any(), any())
         } coAnswers {
             val syncables = arg<List<FireflyClient.SyncableTransaction>>(0)
             lastBatch.set(syncables)
@@ -237,7 +239,8 @@ class FireflySyncEngineCandidateResyncTest {
 
         assertEquals("candidates only: never-seen-in-window, stale, claimed-unsynced, errored", 4, summary.attempted)
         assertEquals(setOf(1L, 4L, 5L, 6L), lastBatch.get().map { it.transaction.id }.toSet())
-        coEvery { transactionRepository.getAllTransactionsList() } wasAtMost 0
+        // never loaded the full table
+        coVerify(atLeast = 0, atMost = 0) { transactionRepository.getAllTransactionsList() }
     }
 
     @Test
@@ -265,7 +268,7 @@ class FireflySyncEngineCandidateResyncTest {
         // never the clean rows 3/8, never the deleted 7.
         assertEquals(5, summary.attempted)
         assertEquals(setOf(1L, 2L, 4L, 5L, 6L), lastBatch.get().map { it.transaction.id }.toSet())
-        coEvery { transactionRepository.getAllTransactionsList() } wasAtLeast 1
+        coVerify(atLeast = 1) { transactionRepository.getAllTransactionsList() }
     }
 
     @Test

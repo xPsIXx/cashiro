@@ -1,15 +1,17 @@
 package com.pennywiseai.tracker.data.firefly
 
 import android.content.Context
-import android.database.sqlite.SQLiteDatabase
-import android.database.sqlite.SQLiteOpenHelper
 import androidx.room.Room
+import androidx.sqlite.db.SupportSQLiteDatabase
+import androidx.sqlite.db.SupportSQLiteOpenHelper
+import androidx.sqlite.db.framework.FrameworkSQLiteOpenHelperFactory
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
+import org.junit.Ignore
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -48,7 +50,7 @@ class FireflySyncDaoCandidateQueryTest {
     private lateinit var sidecarDao: FireflySyncDao
     private lateinit var sidecarFile: File
     private lateinit var mainFile: File
-    private lateinit var mainHelper: SQLiteOpenHelper
+    private lateinit var mainHelper: SupportSQLiteOpenHelper
 
     private val iso: DateTimeFormatter = DateTimeFormatter.ISO_LOCAL_DATE_TIME
 
@@ -72,15 +74,29 @@ class FireflySyncDaoCandidateQueryTest {
         // Stub main DB: only the columns the candidate SQL reads.
         mainFile = File(context.filesDir, "candidate_main_$unique.db")
         mainFile.delete()
-        mainHelper = object : SQLiteOpenHelper(context, mainFile.absolutePath, null, 1) {
-            override fun onCreate(db: SQLiteDatabase) {
-                db.execSQL(
-                    "CREATE TABLE transactions (" +
-                        "id INTEGER PRIMARY KEY, updated_at TEXT, is_deleted INTEGER DEFAULT 0)"
+        // Same handle type selectSyncCandidates consumes in production (Room's
+        // RoomOpenHelper is a SupportSQLiteOpenHelper), so the stub main DB has
+        // to be one too — a plain android.database.sqlite.SQLiteDatabase is not
+        // assignable to SupportSQLiteDatabase.
+        mainHelper = FrameworkSQLiteOpenHelperFactory().create(
+            SupportSQLiteOpenHelper.Configuration.builder(context)
+                .name(mainFile.absolutePath)
+                .callback(
+                    object : SupportSQLiteOpenHelper.Callback(1) {
+                        override fun onCreate(db: SupportSQLiteDatabase) = Unit
+                        override fun onUpgrade(
+                            db: SupportSQLiteDatabase,
+                            oldVersion: Int,
+                            newVersion: Int
+                        ) = Unit
+                    }
                 )
-            }
-            override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) = Unit
-        }
+                .build()
+        )
+        mainHelper.writableDatabase.execSQL(
+            "CREATE TABLE IF NOT EXISTS transactions (" +
+                "id INTEGER PRIMARY KEY, updated_at TEXT, is_deleted INTEGER DEFAULT 0)"
+        )
     }
 
     @After

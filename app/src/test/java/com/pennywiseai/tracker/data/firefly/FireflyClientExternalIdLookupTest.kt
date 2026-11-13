@@ -20,6 +20,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
+import org.junit.Ignore
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -110,7 +111,7 @@ class FireflyClientExternalIdLookupTest {
             headers = Headers.build { append(HttpHeaders.RetryAfter, "30") }
         )
         val result = lookup()
-        assertTrue("429 must be Transient, got $result")
+        assertTrue("429 must be Transient, got $result", result is FireflyClient.ExternalIdLookup.Transient)
         val reason = (result as FireflyClient.ExternalIdLookup.Transient).reason
         assertTrue("reason must name the status: $reason", reason.contains("429"))
         assertTrue("reason must surface Retry-After: $reason", reason.contains("30"))
@@ -120,7 +121,7 @@ class FireflyClientExternalIdLookupTest {
     fun http503IsTransient() {
         stubEngine(status = HttpStatusCode.ServiceUnavailable, body = "unavailable")
         val result = lookup()
-        assertTrue("5xx must be Transient, got $result")
+        assertTrue("5xx must be Transient, got $result", result is FireflyClient.ExternalIdLookup.Transient)
         assertTrue((result as FireflyClient.ExternalIdLookup.Transient).reason.contains("503"))
     }
 
@@ -136,7 +137,7 @@ class FireflyClientExternalIdLookupTest {
     fun networkFailureIsTransient() {
         stubEngine(failWith = SocketTimeoutException("Read timed out"))
         val result = lookup()
-        assertTrue("network failure must be Transient, got $result")
+        assertTrue("network failure must be Transient, got $result", result is FireflyClient.ExternalIdLookup.Transient)
         assertTrue((result as FireflyClient.ExternalIdLookup.Transient).reason.startsWith("network:"))
     }
 
@@ -144,7 +145,7 @@ class FireflyClientExternalIdLookupTest {
     fun malformedSearchBodyIsTransient() {
         stubEngine(body = """{"nonsense":true}""")
         val result = lookup()
-        assertTrue("unparseable 200 body must be Transient, got $result")
+        assertTrue("unparseable 200 body must be Transient, got $result", result is FireflyClient.ExternalIdLookup.Transient)
         assertTrue(
             (result as FireflyClient.ExternalIdLookup.Transient).reason.contains("malformed")
         )
@@ -162,7 +163,7 @@ class FireflyClientExternalIdLookupTest {
                     "source_name":"Sign 6671","transaction_journal_id":"5001"}]}}]}"""
         )
         val result = lookup()
-        assertTrue("matching row must be Found, got $result")
+        assertTrue("matching row must be Found, got $result", result is FireflyClient.ExternalIdLookup.Found)
         val remote = (result as FireflyClient.ExternalIdLookup.Found).remote
         assertEquals("9001", remote.fireflyId)
         assertEquals("pennywise-abc", remote.externalId)

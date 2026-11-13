@@ -1,9 +1,10 @@
 package com.pennywiseai.tracker.data.database
 
 import android.content.Context
-import androidx.room.RoomDatabase
+import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
-import androidx.sqlite.db.framework.FrameworkSQLiteDatabase
+import androidx.sqlite.db.SupportSQLiteOpenHelper
+import androidx.sqlite.db.framework.FrameworkSQLiteOpenHelperFactory
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -38,23 +39,47 @@ import java.io.File
 class ForkEraMigrationEdgesTest {
 
     private lateinit var context: Context
+    private lateinit var dbFile: File
 
     @Before
     fun setUp() {
         context = RuntimeEnvironment.getApplication()
+        // Unique file per test: Robolectric reuses the app data dir across test
+        // methods, and these tests seed raw DDL into the same database name.
+        dbFile = File(context.noBackupFilesDir, "migration_edge_test_${System.nanoTime()}.db")
+        dbFile.delete()
     }
 
     @After
     fun tearDown() {
+        dbFile.delete()
         context.deleteDatabase(DB_NAME)
     }
 
+    /**
+     * A real `SupportSQLiteDatabase` on an empty file, via the public
+     * `FrameworkSQLiteOpenHelperFactory` — the same handle type Room hands a
+     * `Migration.migrate()` call in production.
+     *
+     * (Room 2.8.4's `room-testing` exposes no `MigrationTestEngine`; its
+     * `MigrationTestHelper` needs an `Instrumentation` plus the Room schema
+     * JSONs on the *assets* path, and `app/schemas` is wired only into the
+     * androidTest source set. The public helper factory keeps every assertion
+     * in this file intact: what is under test is the migration SQL executed
+     * against a reconstructed fork-era schema, not Room's own validation.)
+     */
     private fun openDb(): SupportSQLiteDatabase =
-        FrameworkSQLiteDatabase(
-            RoomDatabase.Builder.createOpenHelper(
-                context, File(context.noBackupFilesDir, DB_NAME), null, true,
-            ).getOrOpenWritableDatabase()
-        )
+        FrameworkSQLiteOpenHelperFactory().create(
+            SupportSQLiteOpenHelper.Configuration.builder(context)
+                .name(dbFile.absolutePath)
+                .callback(
+                    object : SupportSQLiteOpenHelper.Callback(1) {
+                        override fun onCreate(db: SupportSQLiteDatabase) = Unit
+                        override fun onUpgrade(db: SupportSQLiteDatabase, oldVersion: Int, newVersion: Int) = Unit
+                    }
+                )
+                .build()
+        ).writableDatabase
 
     private fun SupportSQLiteDatabase.columns(table: String): Set<String> {
         val cursor = query("PRAGMA table_info(`$table`)")
@@ -112,7 +137,7 @@ class ForkEraMigrationEdgesTest {
         )
     }
 
-    private fun runEdge(edge: RoomDatabase.Migration, con: SupportSQLiteDatabase) {
+    private fun runEdge(edge: Migration, con: SupportSQLiteDatabase) {
         edge.migrate(con)
         edge.migrate(con) // idempotency: a half-completed or repeated run must not crash
     }

@@ -8,12 +8,14 @@ import com.pennywiseai.tracker.data.repository.TransactionRepository
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.respond
+import io.ktor.client.engine.mock.toByteArray
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.client.request.HttpRequestData
 import io.ktor.http.Headers
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpMethod
 import io.ktor.http.HttpStatusCode
+import io.ktor.http.content.OutgoingContent
 import io.ktor.serialization.kotlinx.json.json
 import io.mockk.mockk
 import kotlinx.coroutines.runBlocking
@@ -53,19 +55,22 @@ class FireflyClientAttachmentUploadTest {
     private lateinit var receiptFile: File
 
     private fun stub(
-        createStatus: HttpStatusCode = HttpStatusCode.CREATED,
+        createStatus: HttpStatusCode = HttpStatusCode.Created,
         createBody: String = ATTACHMENT_CREATED,
         uploadStatus: HttpStatusCode = HttpStatusCode.OK
     ) {
         client.httpClientForTests = HttpClient(MockEngine { request ->
             requests += request
             bodies[request.url.encodedPath] = request.body.toByteArray()
-            when (request.url.encodedPath) {
-                "/api/v1/attachments" -> respond(
+            when {
+                request.url.encodedPath == "/api/v1/attachments" -> respond(
                     createBody, createStatus,
                     Headers.build { append(HttpHeaders.ContentType, "application/vnd.api+json") }
                 )
-                UPLOAD_PATH -> respond("", uploadStatus)
+                // Step 2 must answer whichever target the create response points
+                // at: the absolute UPLOAD_PATH or a relative upload_url resolved
+                // against the instance (the stub used to 404 every relative one).
+                request.url.encodedPath.startsWith("/api/v1/attachments/55/") -> respond("", uploadStatus)
                 else -> respond("Not Found", HttpStatusCode.NotFound)
             }
         }) {
@@ -94,11 +99,15 @@ class FireflyClientAttachmentUploadTest {
         }
     }
 
-    private fun createBodyJson(): JsonObject {
+    private suspend fun createBodyJson(): JsonObject {
         val createReq = requests.first { it.url.encodedPath == "/api/v1/attachments" }
         return Json { ignoreUnknownKeys = true }
-            .parseToJsonElement(String(createReq.body.toByteArray(), Charsets.UTF_8)) as JsonObject
+            .parseToJsonElement(String(bodyBytes(createReq.body), Charsets.UTF_8)) as JsonObject
     }
+
+    /** Body of a captured request; `OutgoingContent.toByteArray()` is suspend, so
+     *  this runs inside the MockEngine handler where the request was captured. */
+    private suspend fun bodyBytes(content: OutgoingContent): ByteArray = content.toByteArray()
 
     // ── happy path: two-step flow, correct body, upload_url targeted ────────
 
@@ -114,7 +123,7 @@ class FireflyClientAttachmentUploadTest {
         assertEquals("/api/v1/attachments", createReq.url.encodedPath)
         assertEquals(HttpMethod.Post, createReq.method)
 
-        val body = createBodyJson()
+        val body = runBlocking { createBodyJson() }
         assertEquals("transaction_journal", body["attachable_type"]?.jsonPrimitive?.content)
         assertEquals(JOURNAL_ID, body["attachable_id"]?.jsonPrimitive?.content)
         assertEquals("Shop receipt", body["title"]?.jsonPrimitive?.content)
@@ -122,9 +131,14 @@ class FireflyClientAttachmentUploadTest {
         // Step 2 goes to the upload_url from the create response, raw bytes.
         assertEquals(UPLOAD_PATH, uploadReq.url.encodedPath)
         assertEquals(HttpMethod.Post, uploadReq.method)
+        // Ktor carries a request body's content type on OutgoingContent, not in
+        // HttpRequestData.headers — the MockEngine capture shows the upload body as
+        // application/octet-stream while its headers map has no Content-Type (same
+        // for the JSON create). Real engines render exactly this as the wire
+        // Content-Type header, so pin the contract where Ktor actually models it.
         assertEquals(
             "application/octet-stream",
-            uploadReq.headers[HttpHeaders.ContentType]?.first()
+            uploadReq.body.contentType?.toString()
         )
         assertEquals("Bearer pat", uploadReq.headers[HttpHeaders.Authorization])
         assertEquals(RECEIPT_BYTES.size, bodies.getValue(UPLOAD_PATH).size)
@@ -194,7 +208,8 @@ class FireflyClientAttachmentUploadTest {
         const val BASE_URL = "https://firefly.test"
         const val JOURNAL_ID = "777"
         const val UPLOAD_PATH = "/api/v1/attachments/55/upload-target"
-        val RECEIPT_BYTES = byteArrayOf(0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A)
+        // PNG magic: 0x89 is > Byte.MAX_VALUE, so it needs an explicit narrowing.
+        val RECEIPT_BYTES = byteArrayOf(0x89.toByte(), 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A)
         const val ATTACHMENT_CREATED =
             """{"data":{"id":"55","attributes":{"title":"Shop receipt",""" +
                 """"upload_url":"https://firefly.test/api/v1/attachments/55/upload-target",""" +

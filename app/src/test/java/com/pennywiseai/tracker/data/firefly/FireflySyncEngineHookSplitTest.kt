@@ -13,6 +13,7 @@ import com.pennywiseai.tracker.data.repository.TransactionRepository
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.respond
+import io.ktor.client.engine.mock.toByteArray
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.http.Headers
 import io.ktor.http.HttpHeaders
@@ -130,9 +131,8 @@ class FireflySyncEngineHookSplitTest {
     private fun jsonHeaders() = Headers.build { append(HttpHeaders.ContentType, "application/vnd.api+json") }
 
     private companion object {
-        const val CREATED_GROUP = """{"data":{"id":"9301","attributes":{"updated_at":"2026-01-15T00:00:00Z",""" +
-            """"transaction_type":"withdrawal","external_id":"pennywise-hook",""" +
-            """"transactions":[{"transaction_journal_id":"5301"},{"transaction_journal_id":"5302"}]}}}"""
+        const val CREATED_GROUP =
+            """{"data":{"id":"9301","attributes":{"updated_at":"2026-01-15T00:00:00Z","transaction_type":"withdrawal","external_id":"pennywise-hook","transactions":[{"transaction_journal_id":"5301"},{"transaction_journal_id":"5302"}]}}}"""
     }
 
     /** MockEngine stub for the engine's own client: search "not found" → captured create. */

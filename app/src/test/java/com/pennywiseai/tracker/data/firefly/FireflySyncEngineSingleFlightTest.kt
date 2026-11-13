@@ -75,8 +75,12 @@ class FireflySyncEngineSingleFlightTest {
 
         client = mockk<FireflyClient>(relaxed = true)
         every { client.computeExternalId(any()) } returns "pennywise-hash"
+        // Production takes 10 parameters (stateByTx is the 10th). Stubbing with
+        // 9 matchers pins stateByTx to its default emptyMap(), so the engine's
+        // real call (stateByTx = the claimed states) silently fell through to
+        // the relaxed default answer instead of these coAnswers.
         coEvery {
-            client.syncTransactionsBatch(any(), any(), any(), any(), any(), any(), any(), any(), any())
+            client.syncTransactionsBatch(any(), any(), any(), any(), any(), any(), any(), any(), any(), any())
         } coAnswers {
             clientCalls.incrementAndGet()
             entered.complete(Unit)
@@ -212,7 +216,7 @@ class FireflySyncEngineSingleFlightTest {
     fun claimsAreReleasedEvenWhenTheClientThrows() = runBlocking {
         val failingTx = tx(9L)
         coEvery {
-            client.syncTransactionsBatch(any(), any(), any(), any(), any(), any(), any(), any(), any())
+            client.syncTransactionsBatch(any(), any(), any(), any(), any(), any(), any(), any(), any(), any())
         } coAnswers {
             clientCalls.incrementAndGet()
             if (clientCalls.get() == 1) {

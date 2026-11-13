@@ -113,7 +113,7 @@ class FireflyClientConfigGuardAuthStatusTest {
         assertTrue("message must be actionable: $msg", msg.contains("No Firefly account configured"))
         assertTrue("message must name the mapping key: $msg", msg.contains("map '"))
         assertTrue("guard must short-circuit before any HTTP, saw ${requests.size} requests", requests.isEmpty())
-        coVerify { dao.markError(77L, io.mockk.match { it.contains("No Firefly account configured") }) }
+        coVerify { dao.markError(77L, match { it.contains("No Firefly account configured") }) }
     }
 
     @Test

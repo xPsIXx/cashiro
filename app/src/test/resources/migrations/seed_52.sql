@@ -18,3 +18,5 @@ CREATE TABLE "bank_notifications" ("id" INTEGER NOT NULL, "package_name" TEXT NO
 CREATE TABLE "loans" ("id" INTEGER NOT NULL, "person_name" TEXT NOT NULL, "direction" TEXT NOT NULL, "original_amount" TEXT NOT NULL, "remaining_amount" TEXT NOT NULL, "currency" TEXT NOT NULL DEFAULT 'INR', "status" TEXT NOT NULL DEFAULT 'ACTIVE', "note" TEXT, "created_at" TEXT NOT NULL, "updated_at" TEXT NOT NULL, "settled_at" TEXT);
 CREATE TABLE "transaction_groups" ("id" INTEGER NOT NULL, "name" TEXT NOT NULL, "note" TEXT DEFAULT NULL, "created_at" TEXT NOT NULL, "updated_at" TEXT NOT NULL);
 CREATE TABLE "profiles" ("id" INTEGER NOT NULL, "name" TEXT NOT NULL, "color_hex" TEXT NOT NULL, "sort_order" INTEGER NOT NULL);
+CREATE UNIQUE INDEX IF NOT EXISTS "index_transactions_transaction_hash" ON "transactions" ("transaction_hash");
+CREATE INDEX IF NOT EXISTS "index_transaction_splits_transaction_id" ON "transaction_splits" ("transaction_id");

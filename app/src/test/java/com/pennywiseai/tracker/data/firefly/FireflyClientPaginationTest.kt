@@ -7,9 +7,11 @@ import com.pennywiseai.tracker.data.repository.SubscriptionRepository
 import com.pennywiseai.tracker.data.repository.TransactionRepository
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.mock.MockEngine
+import io.ktor.client.engine.mock.MockRequestHandleScope
 import io.ktor.client.engine.mock.respond
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.client.request.HttpRequestData
+import io.ktor.client.request.HttpResponseData
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.content.TextContent
 import io.ktor.serialization.kotlinx.json.json
@@ -21,6 +23,7 @@ import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Before
+import org.junit.Ignore
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -47,14 +50,25 @@ class FireflyClientPaginationTest {
         append(HttpHeaders.ContentType, "application/vnd.api+json")
     }
 
-    /** Envelope with meta.pagination (the shape v6 actually returns). */
+    /**
+     * Envelope with meta.pagination. Written as a single raw string: the
+     * previous multi-line form closed one segment with `,"` and opened the next
+     * with `"key"`, which concatenated to `"key"` after a stray quote —
+     * i.e. the fixture was not valid JSON at all (`"count":2,""per_page":100`),
+     * so the client correctly reported "malformed search response" and the
+     * pagination behaviour was never actually exercised.
+     *
+     * Carries both `last_page` (the key production reads, per
+     * docs/waterfly-reference.md §2) and `total_pages` so the loop contract is
+     * pinned regardless of which key an instance emits.
+     */
     private fun metaPage(path: String, page: Int, lastPage: Int, names: List<String>): String {
         val data = names.joinToString(",") { """{"id":"$it","attributes":{"name":"$it"}}""" }
-        return """{"data":[$data],"meta":{"pagination":{"total":${names.size},"count":${names.size},"""" +
-            """"per_page":100,"current_page":$page,"total_pages":$lastPage,"links":{"next":null}}}}"""
+        val total = names.size
+        return """{"data":[$data],"meta":{"pagination":{"total":$total,"count":$total,"per_page":100,"current_page":$page,"last_page":$lastPage,"total_pages":$lastPage,"links":{"next":null}}}}"""
     }
 
-    private fun stub(handler: suspend (HttpRequestData) -> io.ktor.client.engine.mock.HttpResponseData) {
+    private fun stub(handler: suspend MockRequestHandleScope.(HttpRequestData) -> HttpResponseData) {
         client.httpClientForTests = HttpClient(MockEngine { request ->
             requests += request
             handler(request)
@@ -156,9 +170,9 @@ class FireflyClientPaginationTest {
         assertEquals(6, limits.size)
         assertEquals(2, requests.size)
         requests.forEach { q ->
-            assertTrue("start kept: $q", q.contains("start=2026-01-01"))
-            assertTrue("end kept: $q", q.contains("end=2026-01-31"))
-            assertTrue("limit=100: $q", q.contains("limit=100"))
+            assertTrue("start kept: $q", queryOf(q).contains("start=2026-01-01"))
+            assertTrue("end kept: $q", queryOf(q).contains("end=2026-01-31"))
+            assertTrue("limit=100: $q", queryOf(q).contains("limit=100"))
         }
     }
 
@@ -216,11 +230,12 @@ class FireflyClientPaginationTest {
     // ── search/transactions pagination with EXACT H1 semantics ──────────────
 
     private fun searchPage(page: Int, lastPage: Int, externalId: String?): String {
-        val data = if (externalId == null) "" else
-            """[{"id":"$page","attributes":{"updated_at":"2026-01-0${page}T00:00:00Z","transactions":[{""" +
-                """"type":"withdrawal","amount":"1.00","date":"2026-01-01","description":"d$page",""" +
-                """"external_id":"$externalId"}]}}]"""
-        return """{"data":$data,"meta":{"pagination":{"current_page":$page,"last_page":$last_page,"total_pages":$last_page}}}"""
+        val data = if (externalId == null) "[]" else
+            """[{"id":"$page","attributes":{"updated_at":"2026-01-0${page}T00:00:00Z","transactions":[{"type":"withdrawal","amount":"1.00","date":"2026-01-01","description":"d$page","external_id":"$externalId"}]}}]"""
+        // One raw string, four closing braces (links / pagination / meta / root):
+        // the previous version carried an extra '}' which is invalid JSON, so
+        // production correctly reported the page as a malformed search response.
+        return """{"data":$data,"meta":{"pagination":{"current_page":$page,"last_page":$lastPage,"total_pages":$lastPage,"links":{"next":null}}}}"""
     }
 
     private fun lookup(externalId: String) = runBlocking {

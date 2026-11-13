@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.SharedPreferences
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.booleanPreferencesKey
+import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import com.pennywiseai.tracker.data.preferences.UserPreferencesRepository
 import com.pennywiseai.tracker.data.preferences.dataStore
@@ -38,9 +39,23 @@ import java.io.File
 @Config(sdk = [35])
 class FireflyLegacyTokenDeletionTest {
 
-    private class WorkingTokenManager(private val ctx: Context) : FireflyTokenManager(ctx) {
+    // Deliberately an inner class that reaches the Application through
+    // RuntimeEnvironment instead of its own constructor property:
+    // FireflyTokenManager seeds _accessTokenFlow/_baseUrlFlow in property
+    // initialisers, which run BEFORE a subclass's constructor state is assigned
+    // (a classic this-escape). Reading a subclass `val ctx` from the overridden
+    // seam at that moment NPEs, the lazy swallows it and the manager permanently
+    // reports "secure storage unavailable" — which is exactly why the original
+    // version of this test could never observe the cleartext PAT being deleted.
+    private inner class WorkingTokenManager :
+        FireflyTokenManager(org.robolectric.RuntimeEnvironment.getApplication()) {
         override fun createEncryptedPreferences(): SharedPreferences =
-            ctx.getSharedPreferences("firefly_secure_prefs_s1_test", Context.MODE_PRIVATE)
+            // Cleared first: Robolectric reuses the app data dir across test classes
+            // in a sandbox, and a stale secure copy would flip ensureLegacyMigration
+            // into its already-migrated cleanup path.
+            org.robolectric.RuntimeEnvironment.getApplication()
+                .getSharedPreferences("firefly_secure_prefs_s1_test", Context.MODE_PRIVATE)
+                .also { it.edit().clear().apply() }
     }
 
     @Test
@@ -59,10 +74,12 @@ class FireflyLegacyTokenDeletionTest {
                 prefs[enabledKey] = true
             }
 
-            val tokenManager = WorkingTokenManager(context)
-            val fireflyDataStore = PreferenceDataStoreFactory.create {
-                File(context.filesDir, "s1_sidecar_store.preferences_pb")
-            }
+            val tokenManager = WorkingTokenManager()
+            // Unique sidecar name + explicit delete: the migration marker lives here
+            // and a leftover marker from another run would skip the migration itself.
+            val sidecarFile = File(context.filesDir, "s1_sidecar_store_${System.nanoTime()}.preferences_pb")
+            sidecarFile.delete()
+            val fireflyDataStore = PreferenceDataStoreFactory.create { sidecarFile }
             val repository = FireflyPreferencesRepository(
                 context,
                 fireflyDataStore,
