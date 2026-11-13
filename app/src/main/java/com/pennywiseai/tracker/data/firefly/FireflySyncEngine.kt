@@ -216,7 +216,11 @@ class FireflySyncEngine @Inject constructor(
             FireflyClient.ItemResult.ItemStatus.SKIPPED -> FireflyClient.SyncResult.Skipped
             FireflyClient.ItemResult.ItemStatus.ERROR -> FireflyClient.SyncResult.Error(
                 item.message ?: "Unknown error",
-                isAuthError = item.message?.contains("401") == true
+                // L3: same status-first rule as FireflyClient's single-sync wrapper.
+                isAuthError = item.httpStatus == 401 || item.httpStatus == 403 ||
+                    item.message?.contains("HTTP 401") == true ||
+                    item.message?.contains("HTTP 403") == true ||
+                    item.message?.contains("Authentication failed") == true
             )
         }
     }

@@ -175,6 +175,8 @@ class FireflyClient @Inject constructor(
         val journalIds: List<String> = emptyList(),
         val remoteUpdatedAt: Instant? = null,
         val message: String? = null,
+        /** L3: HTTP status that produced this result (null for non-HTTP failures). */
+        val httpStatus: Int? = null,
         /** True when the remote (Firefly) row was pulled down into the local row. */
         val pulled: Boolean = false
     ) {
@@ -1175,7 +1177,12 @@ class FireflyClient @Inject constructor(
                     ItemResult.ItemStatus.SKIPPED -> SyncResult.Skipped
                     ItemResult.ItemStatus.ERROR -> SyncResult.Error(
                         item.message ?: "Unknown error",
-                        isAuthError = item.message?.contains("401") == true
+                        // L3: prefer the recorded HTTP status; message matching kept only
+                        // as fallback for paths that lack a status (transient lookups).
+                        isAuthError = item.httpStatus == 401 || item.httpStatus == 403 ||
+                            item.message?.contains("HTTP 401") == true ||
+                            item.message?.contains("HTTP 403") == true ||
+                            item.message?.contains("Authentication failed") == true
                     )
                 }
             }
@@ -1246,6 +1253,33 @@ class FireflyClient @Inject constructor(
             syncables.forEach { syncable ->
                 val tx = syncable.transaction
                 val extId = resolvedExtIds[tx.id] ?: computeExternalId(tx)
+
+                // L2: config guard. With neither an account mapping nor a default asset,
+                // payloads fall back to the literal 'Checking Account' — an account that
+                // almost certainly does not exist on the user's Firefly, so every
+                // create/update 422s indistinguishably. Surface an actionable config
+                // error instead (recorded as a sync error so it reaches Failed Syncs).
+                val accountKey = if (!tx.bankName.isNullOrBlank() && !tx.accountNumber.isNullOrBlank())
+                    "${tx.bankName}**${tx.accountNumber}"
+                else null
+                val hasAccountConfig =
+                    accountKey?.let { accountMappings[it] }?.isNotBlank() == true ||
+                        defaultAssetAccount?.isNotBlank() == true
+                if (!hasAccountConfig) {
+                    val msg = "No Firefly account configured: map '${accountKey ?: tx.merchantName}' or set a default asset account in Firefly settings"
+                    diagnosticLogger.w(TAG, "${describe(tx)} → skipped: $msg")
+                    runCatching { fireflySyncDao.markError(tx.id, msg) }
+                    results.add(
+                        ItemResult(
+                            transactionId = tx.id,
+                            externalId = extId,
+                            status = ItemResult.ItemStatus.ERROR,
+                            message = msg
+                        )
+                    )
+                    return@forEach
+                }
+
                 val lookup = lookupRemoteTransactionByExternalId(baseUrl, accessToken, extId)
 
                 // H1: an inconclusive search (429/5xx/network) is NOT evidence of
@@ -2428,7 +2462,8 @@ class FireflyClient @Inject constructor(
                             transactionId = tx.id,
                             externalId = effectiveExternalId,
                             status = ItemResult.ItemStatus.ERROR,
-                            message = "Authentication failed - check your Personal Access Token"
+                            message = "Authentication failed - check your Personal Access Token",
+                            httpStatus = HttpStatusCode.Unauthorized.value
                         )
                     }
                     response.status == HttpStatusCode.UnprocessableEntity -> {
@@ -2436,7 +2471,8 @@ class FireflyClient @Inject constructor(
                             transactionId = tx.id,
                             externalId = effectiveExternalId,
                             status = ItemResult.ItemStatus.ERROR,
-                            message = "Validation error: ${responseBody.take(300)}"
+                            message = "Validation error: ${responseBody.take(300)}",
+                            httpStatus = HttpStatusCode.UnprocessableEntity.value
                         )
                     }
                     else -> {
@@ -2444,7 +2480,8 @@ class FireflyClient @Inject constructor(
                             transactionId = tx.id,
                             externalId = effectiveExternalId,
                             status = ItemResult.ItemStatus.ERROR,
-                            message = "HTTP ${response.status.value}: ${responseBody.take(300)}"
+                            message = "HTTP ${response.status.value}: ${responseBody.take(300)}",
+                            httpStatus = response.status.value
                         )
                     }
                 }
