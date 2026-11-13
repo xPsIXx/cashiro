@@ -1,6 +1,8 @@
 package com.pennywiseai.tracker.data.firefly
 
 import android.content.Context
+import androidx.sqlite.db.SupportSQLiteOpenHelper
+import com.pennywiseai.tracker.data.database.PennyWiseDatabase
 import com.pennywiseai.tracker.data.database.entity.TransactionEntity
 import com.pennywiseai.tracker.data.database.entity.TransactionSplitEntity
 import com.pennywiseai.tracker.data.diagnostic.DiagnosticLogger
@@ -8,8 +10,10 @@ import com.pennywiseai.tracker.data.repository.BudgetRepository
 import com.pennywiseai.tracker.data.repository.SubscriptionRepository
 import com.pennywiseai.tracker.data.repository.TransactionRepository
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withContext
 import java.time.LocalDateTime
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
@@ -52,7 +56,18 @@ class FireflySyncEngine @Inject constructor(
      * test builds one directly) keep compiling; Hilt always supplies the
      * singleton in production. When null, resync simply skips the backfill.
      */
-    private val stagingBackfill: FireflySyncStagingBackfill? = null
+    private val stagingBackfill: FireflySyncStagingBackfill? = null,
+    /**
+     * M4: the MAIN app database, used ONLY to run the candidate-selector query
+     * ([selectSyncCandidates]) so scoped resyncs never load the whole
+     * transactions table. Nullable with a default (like [stagingBackfill]) so
+     * hand-constructed engines (existing JVM tests) keep compiling; Hilt
+     * supplies the singleton in production. When null — or when the candidate
+     * query fails for any reason — [resyncAll] falls back to the previous
+     * full-table scan with the in-memory candidate filter, so candidate
+     * discovery is an optimization that can never lose rows.
+     */
+    private val syncDatabase: PennyWiseDatabase? = null
 ) {
 
     private companion object {
@@ -65,6 +80,8 @@ class FireflySyncEngine @Inject constructor(
         const val LOG_STATUS_OK = "ok"
         const val LOG_STATUS_ERROR = "error"
         const val LOG_STATUS_SKIP = "skip"
+        /** Cap on one candidate batch: protects WorkManager runs from giant backlogs. */
+        const val MAX_CANDIDATE_BATCH = 500L
     }
 
     /**
@@ -205,10 +222,24 @@ class FireflySyncEngine @Inject constructor(
     }
 
     /**
-     * Full resync of transactions that never reached a successful sync
+     * Resync of transactions that never reached a successful sync
      * **or whose last sync attempt errored** (H3: a row that synced once and
-     * then failed an update must not be skipped forever). Restricts to the
-     * last [scopeDays] days when non-null.
+     * then failed an update must not be skipped forever), **plus rows locally
+     * edited after their last successful sync** (M4 staleness rule).
+     *
+     * M4: candidates are selected by the DAO candidate query
+     * ([selectSyncCandidates], rules documented on [SYNC_CANDIDATE_SQL])
+     * instead of loading the whole transactions table:
+     *  - a non-null [scopeDays] bounds ONLY never-seen rows (rows with no
+     *    sidecar state) to `updated_at >= now - scopeDays`; error rows,
+     *    claimed-but-unsynced rows and stale-edited rows are always in scope,
+     *    no matter how old — correctness semantics are unchanged;
+     *  - a null [scopeDays] (explicit "Sync now") keeps the full candidate
+     *    scan of history, still candidate-filtered and staleness-aware.
+     * If the candidate query cannot run (engine built without the main DB in
+     * tests, DB not open yet, query error) the method degrades to the previous
+     * full-scan + in-memory filter after one diagnostic log — a slower path,
+     * never a lossier one.
      *
      * Runs the one-time fork-era staging backfill first: the 47-52 -> 67
      * migrations stage legacy `firefly_*` state into the main database, and
@@ -222,18 +253,49 @@ class FireflySyncEngine @Inject constructor(
                 .onFailure { diagnosticLogger.w(TAG, "Staging backfill skipped (non-fatal)", it) }
         }
         val config = fetchConfig() ?: return SyncSummary()
+
+        val lookbackCutoff = scopeDays?.let { LocalDateTime.now().minusDays(it.toLong()) }
+        val candidates = findSyncCandidates(lookbackCutoff)
+        if (candidates != null) {
+            if (candidates.isEmpty()) return SyncSummary()
+            val transactions = candidates.mapNotNull {
+                transactionRepository.getTransactionById(it.localTransactionId)
+            }
+            if (transactions.isEmpty()) return SyncSummary()
+            val result = runBatch(
+                syncablesWithSplits(transactions),
+                config,
+                diagnosticLoggerMessage = {
+                    "Resyncing ${transactions.size} candidate transaction(s) " +
+                        "(window=${scopeDays?.toString() ?: "full history"})"
+                },
+                direction = LOG_DIRECTION_RESYNC
+            )
+            return SyncSummary(
+                attempted = transactions.size,
+                created = result.created,
+                skipped = result.skipped,
+                failed = result.failed
+            )
+        }
+
+        // Candidate discovery unavailable: previous full-scan behaviour.
         val all = transactionRepository.getAllTransactionsList()
-        val scoped = if (scopeDays == null) {
+        val scoped = if (lookbackCutoff == null) {
             all
         } else {
-            val cutoff = LocalDateTime.now().minusDays(scopeDays.toLong())
-            all.filter { it.dateTime.isAfter(cutoff) }
+            all.filter { it.dateTime.isAfter(lookbackCutoff) }
         }
         val states = fireflySyncDao.statesFor(scoped.map { it.id }).associateBy { it.localTransactionId }
-        // Rows with no state, rows that never synced, and rows whose last sync
-        // errored are all candidates (H3); guard-skips inside runBatch keep
-        // rows another path is currently syncing out of this batch.
-        val toSync = scoped.filter { val s = states[it.id]; s == null || s.syncedAt == null || s.lastError != null }
+        // Rows with no state, rows that never synced, rows whose last sync
+        // errored, and rows edited after their last sync are all candidates
+        // (H3 + M4 staleness rule); guard-skips inside runBatch keep rows
+        // another path is currently syncing out of this batch.
+        val toSync = scoped.filter { tx ->
+            val s = states[tx.id]
+            s == null || s.syncedAt == null || s.lastError != null ||
+                (s.syncedAt != null && tx.updatedAt.isAfter(s.syncedAt!!))
+        }
         if (toSync.isEmpty()) return SyncSummary()
 
         val result = runBatch(
@@ -248,6 +310,37 @@ class FireflySyncEngine @Inject constructor(
             skipped = result.skipped,
             failed = result.failed
         )
+    }
+
+    /**
+     * M4: candidate discovery via [selectSyncCandidates] on the main DB's
+     * Room-owned writer connection. Returns null ONLY when the candidate path
+     * is unavailable (no main DB injected, Room has not opened it yet, or the
+     * query threw) — the caller then uses the full-scan fallback. Never throws.
+     */
+    private suspend fun findSyncCandidates(lookbackCutoff: LocalDateTime?): List<FireflySyncCandidate>? {
+        val database = syncDatabase ?: return null
+        return withContext(Dispatchers.IO) {
+            runCatching {
+                if (!database.isOpen) return@runCatching null
+                val helper: SupportSQLiteOpenHelper = database.openHelper ?: return@runCatching null
+                selectSyncCandidates(
+                    mainWritableConnection = helper.writableDatabase,
+                    // Same resolution Room's own builder uses for the sidecar
+                    // file (both are built from the application context).
+                    sidecarDbFile = context.getDatabasePath(FireflySyncDatabase.DATABASE_NAME),
+                    lookbackCutoff = lookbackCutoff,
+                    limit = MAX_CANDIDATE_BATCH
+                )
+            }.getOrElse {
+                diagnosticLogger.w(
+                    TAG,
+                    "Candidate query unavailable — this resync falls back to the full-scan filter path",
+                    it
+                )
+                null
+            }
+        }
     }
 
     /** Retry exactly the rows whose last sync errored. One pass; scheduling stays in the worker. */

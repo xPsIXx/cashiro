@@ -3,10 +3,14 @@ package com.pennywiseai.tracker.data.diagnostic
 import android.content.Context
 import android.util.Log
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -15,6 +19,7 @@ import java.io.PrintWriter
 import java.io.StringWriter
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
+import java.util.concurrent.atomic.AtomicLong
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -25,7 +30,19 @@ import javax.inject.Singleton
  * current log buffer without needing ADB.
  *
  * Privacy: only diagnostic info intentionally logged by callers is stored.
- * Passwords or tokens must NEVER be passed here.
+ * Passwords or tokens must NEVER be passed here — and since S3 the logger no
+ * longer even trusts that contract: EVERY outgoing string (logcat message AND
+ * logcat stack text AND disk entry) is produced from the same scrubbed
+ * [DiagnosticEntry], so a caller that interpolates a Bearer token, PAT,
+ * password or credential-bearing URL is defused at the sink instead of
+ * leaking through a "raw passthrough" logcat branch.
+ *
+ * Non-blocking (S5): [log] never touches disk, Log.*, or coroutine blocking on
+ * the caller's thread. Each call builds the scrubbed entry and offers it to a
+ * single-consumer [Channel] drained on Dispatchers.IO, preserving call order.
+ * At most the entry currently being written is ever lost on process death;
+ * [flush] drains the queue deterministically (used at shutdown seams and by
+ * tests). [log] never throws, even if enqueueing fails.
  */
 @Singleton
 class DiagnosticLogger @Inject constructor(
@@ -49,41 +66,66 @@ class DiagnosticLogger @Inject constructor(
 
     private val mutex = Mutex()
 
+    /** FIFO queue; UNLIMITED so an offer can never block or drop. */
+    private val queue = Channel<DiagnosticEntry>(Channel.UNLIMITED)
+
+    /** Entries enqueued but not yet written by the consumer. */
+    private val pending = AtomicLong(0)
+
+    /** Internal control message: flush the queue and notify the flusher. */
+    private class FlushSignal(val ack: Channel<Unit>)
+
+    private val consumerScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
     init {
-        // Load previous entries from disk on startup so the user can see
-        // entries from the last run immediately.
-        kotlinx.coroutines.runBlocking {
-            loadFromDisk()
+        // Single consumer: drains FIFO, so logcat + disk see entries in exact
+        // call order. The first action loads last-run entries from disk —
+        // startup no longer blocks on it (S5: the old code used runBlocking in
+        // the constructor).
+        consumerScope.launch {
+            runCatching { loadFromDisk() }
+            for (item in queue) {
+                when (item) {
+                    is FlushSignal -> {
+                        pending.set(0)
+                        item.ack.send(Unit)
+                    }
+                    is DiagnosticEntry -> writeEntry(item)
+                }
+            }
         }
     }
 
+    /**
+     * Enqueue one log line (S5). Returns as soon as the scrubbed entry is in
+     * the queue — no file IO, no `runBlocking`, no `Log.*` on the caller's
+     * dispatcher (callers include the main thread via ViewModels). Never
+     * throws: a failed enqueue degrades to a direct scrubbed logcat write.
+     */
     fun log(level: DiagnosticLevel, tag: String, message: String, throwable: Throwable? = null) {
-        val safeMessage = scrubSecrets(message)
-        val safeThrowable = throwable?.stackTraceString()?.let { scrubSecrets(it) }
-        val entry = DiagnosticEntry(
-            timestamp = LocalDateTime.now(),
-            level = level,
-            tag = tag,
-            message = safeMessage,
-            throwable = safeThrowable
-        )
-
-        val combinedMessage = buildString {
-            append("[${entry.timestamp.format(TIMESTAMP_FORMATTER)}]")
-            append(" ${entry.level.name.padEnd(5)}")
-            append(" $tag: ")
-            append(message)
-            entry.throwable?.let { append("\n$it") }
-        }
-
-        when (level) {
-            DiagnosticLevel.ERROR -> Log.e(TAG, combinedMessage, throwable)
-            DiagnosticLevel.WARN -> Log.w(TAG, combinedMessage, throwable)
-            else -> Log.i(TAG, combinedMessage, throwable)
-        }
-
-        kotlinx.coroutines.runBlocking {
-            appendEntry(entry)
+        try {
+            // S3: the scrubbed entry is the ONE source of truth. Logcat, the
+            // in-memory buffer and the disk file all render from it, so raw
+            // secrets can never take a side exit.
+            val safeMessage = scrubSecrets(message)
+            val safeThrowable = throwable?.stackTraceString()?.let { scrubSecrets(it) }
+            val entry = DiagnosticEntry(
+                timestamp = LocalDateTime.now(),
+                level = level,
+                tag = tag,
+                message = safeMessage,
+                throwable = safeThrowable
+            )
+            pending.incrementAndGet()
+            val sent = queue.trySend(entry)
+            if (!sent.isSuccess) {
+                pending.decrementAndGet()
+                // Degraded path: enqueueing is impossible (consumer's job
+                // was cancelled). Still route through the scrubbed entry.
+                runCatching { emitToLogcat(entry) }
+            }
+        } catch (_: Exception) {
+            // log() must never take a caller down with it.
         }
     }
 
@@ -93,9 +135,22 @@ class DiagnosticLogger @Inject constructor(
     fun e(tag: String, message: String, throwable: Throwable? = null) = log(DiagnosticLevel.ERROR, tag, message, throwable)
 
     /**
+     * Suspend until every entry enqueued before this call has been written to
+     * logcat + disk. Best-effort shutdown seam (and test synchronization):
+     * returns immediately once the queue is empty.
+     */
+    suspend fun flush() {
+        if (pending.get() == 0L) return
+        val ack = Channel<Unit>(1)
+        queue.trySend(FlushSignal(ack))
+        ack.receiveCatching()
+    }
+
+    /**
      * Write the current in-memory log entries to a shareable file and return it.
      */
     suspend fun exportToFile(): File = withContext(Dispatchers.IO) {
+        flush()
         val exportFile = File(logDir, "pennywise_diagnostic_export_${System.currentTimeMillis()}.txt")
         mutex.withLock {
             exportFile.writer().use { writer ->
@@ -109,9 +164,41 @@ class DiagnosticLogger @Inject constructor(
     }
 
     suspend fun clear() {
+        flush()
         mutex.withLock {
             _entries.value = emptyList()
             currentLogFile.delete()
+        }
+    }
+
+    /** Consumer-side: the only place anything is emitted, in FIFO order. */
+    private suspend fun writeEntry(entry: DiagnosticEntry) {
+        runCatching {
+            emitToLogcat(entry)
+            appendEntry(entry)
+        }
+        pending.decrementAndGet()
+        // Flush acknowledgement is carried by the FlushSignal control message
+        // itself (see init), so an entry never needs to notify a flusher.
+    }
+
+    /** S3: logcat renders the SAME scrubbed entry as disk — no raw message, no raw throwable. */
+    private fun emitToLogcat(entry: DiagnosticEntry) {
+        val combinedMessage = buildString {
+            append("[${entry.timestamp.format(TIMESTAMP_FORMATTER)}]")
+            append(" ${entry.level.name.padEnd(5)}")
+            append(" ${entry.tag}: ")
+            append(entry.message)
+            entry.throwable?.let { append("\n$it") }
+        }
+        when (entry.level) {
+            // The raw Throwable is deliberately NOT passed to Log.*: its
+            // getMessage()/stackTrace get re-serialized into every device log
+            // by the platform, which would bypass scrubbing entirely. The
+            // scrubbed stack text is already part of combinedMessage.
+            DiagnosticLevel.ERROR -> Log.e(TAG, combinedMessage)
+            DiagnosticLevel.WARN -> Log.w(TAG, combinedMessage)
+            else -> Log.i(TAG, combinedMessage)
         }
     }
 
@@ -170,16 +257,23 @@ class DiagnosticLogger @Inject constructor(
     }
 
     /**
-     * Remove common secret patterns (Bearer tokens, JSON access_token/client_secret)
-     * before storing or sharing logs.
+     * Remove common secret patterns (Bearer tokens, PATs, JSON access_token/
+     * client_secret, password assignments, credential-bearing URLs) before ANY
+     * output — logcat or disk — is produced (S3: one scrub path for every sink).
      */
     private fun scrubSecrets(input: String): String {
         return input
             .replace(Regex("""(?i)(Authorization\s*[:=]\s*Bearer\s+)[A-Za-z0-9_\-\.]{8,}"""), "$1***")
             .replace(Regex("""(?i)(Bearer\s+)[A-Za-z0-9_\-\.]{8,}"""), "$1***")
-            .replace(Regex("""(?i)("access_token"\s*:\s*")[^\"]*"""), "$1***\"")
-            .replace(Regex("""(?i)("client_secret"\s*:\s*")[^\"]*"""), "$1***\"")
+            .replace(Regex("""(?i)("(?:access_token|client_secret|refresh_token|api_key|apikey|auth_token)"\s*[:=]\s*")[^"]*"""), "$1***")
             .replace(Regex("""(?i)(password\s*[:=]\s*)[^\s,\"\']+"""), "$1***")
+            // PATs / personal access tokens mentioned by name.
+            .replace(Regex("""(?i)((?:personal_access_token|\bpat\b)\s*[:=]\s*)[A-Za-z0-9_\-\.]{12,}"""), "$1***")
+            // Tokens carried as query parameters: ?token=…, &pat=…, &access_token=…
+            .replace(Regex("""(?i)([?&](?:token|pat|access_token|api_key)=)[^&\s]+"""), "$1***")
+            // Credentials embedded in URLs (e.g. https://user:pass@lan-host):
+            // keep the username, redact the password.
+            .replace(Regex("""(?i)(://[^\s/@:]+:)[^\s/@]+@"""), "$1***@")
     }
 
     private fun Throwable.stackTraceString(): String {

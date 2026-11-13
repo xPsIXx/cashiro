@@ -50,6 +50,7 @@ fun FireflySettingsScreen(
     val fireflyDefaultAsset by viewModel.fireflyDefaultAssetAccount.collectAsStateWithLifecycle(initialValue = null)
     val fireflyLastError by viewModel.fireflyLastSyncError.collectAsStateWithLifecycle(initialValue = null)
     val fireflyStorageError by viewModel.fireflyStorageError.collectAsStateWithLifecycle(initialValue = null)
+    val fireflyInsecureUrlWarning by viewModel.fireflyInsecureBaseUrlWarning.collectAsStateWithLifecycle(initialValue = null)
     val fireflyFailedCount by viewModel.fireflyFailedSyncCount.collectAsStateWithLifecycle(initialValue = 0)
     val fireflyMappings by viewModel.fireflyAccountMappings.collectAsStateWithLifecycle(initialValue = emptyMap())
     val fireflyMappingAccounts by viewModel.fireflyMappingAccounts.collectAsStateWithLifecycle(initialValue = emptyList())
@@ -375,6 +376,30 @@ fun FireflySettingsScreen(
                         TextButton(onClick = onNavigateToFailedSyncs) {
                             Text("View & Retry")
                         }
+                    }
+                }
+            }
+
+            // S4: http:// base URL — PAT travels in cleartext on the wire.
+            // Warn only; a LAN self-host is a legitimate choice.
+            val insecureUrlWarning = fireflyInsecureUrlWarning
+            if (insecureUrlWarning != null) {
+                Card(
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.tertiaryContainer
+                    )
+                ) {
+                    Column(modifier = Modifier.padding(12.dp)) {
+                        Text(
+                            "Insecure Firefly URL:",
+                            color = MaterialTheme.colorScheme.onTertiaryContainer,
+                            style = MaterialTheme.typography.labelMedium
+                        )
+                        Text(
+                            insecureUrlWarning,
+                            color = MaterialTheme.colorScheme.onTertiaryContainer,
+                            style = MaterialTheme.typography.bodySmall
+                        )
                     }
                 }
             }

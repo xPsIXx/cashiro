@@ -22,8 +22,13 @@
     <issue id="GradleDependency" severity="ignore" />
     <issue id="NewerVersionAvailable" severity="ignore" />
 
-    <!-- Transitive library warnings. -->
-    <issue id="TrustAllX509TrustManager" severity="ignore" />
+    <!-- S6: the global TrustAllX509TrustManager ignore was REMOVED after
+         grepping the whole repo: no X509TrustManager implementation, no
+         checkServerTrusted override and no trust-all helper exists anywhere
+         (main, test or androidTest); FireflyClient uses default Ktor TLS and
+         LAN access uses plain http or user-provisioned certs. If a transitive
+         dependency ever installs a trust-all manager, lint must flag it —
+         scope an <ignore path="..."/> to THAT library then, never project-wide. -->
     <issue id="Aligned16KB" severity="ignore" />
 
     <!-- Widget preview attributes are API 31+; they are ignored on older devices. -->

@@ -32,6 +32,16 @@ class FireflyAutoSyncWorker @AssistedInject constructor(
         private const val TAG = "FireflyAutoSyncWorker"
         private const val WORK_NAME_PERIODIC = "firefly_auto_sync_periodic"
 
+        /**
+         * M4: the periodic run only passes a bounded CANDIDATE window. The
+         * engine's candidate query (see `SYNC_CANDIDATE_SQL` in FireflySyncDao)
+         * still picks up EVERY error row, every claimed-but-never-synced row
+         * and every row edited after its last sync regardless of age —
+         * [PERIODIC_LOOKBACK_DAYS] bounds only never-seen (no sidecar state)
+         * rows, which replaces the old unscoped full table + per-row scan.
+         */
+        const val PERIODIC_LOOKBACK_DAYS = 30
+
         fun schedule(context: Context, interval: String) {
             WorkManager.getInstance(context).cancelUniqueWork(WORK_NAME_PERIODIC)
 
@@ -71,7 +81,10 @@ class FireflyAutoSyncWorker @AssistedInject constructor(
         return try {
             if (!fireflySyncEngine.isConfigured()) return Result.success()
 
-            val summary = fireflySyncEngine.resyncAll()
+            // M4: bounded candidate window — never-seen rows only from the
+            // last PERIODIC_LOOKBACK_DAYS; error/stale/unsynced-with-state
+            // rows are always included by the candidate query itself.
+            val summary = fireflySyncEngine.resyncAll(scopeDays = PERIODIC_LOOKBACK_DAYS)
 
             if (summary.failed > 0) {
                 FireflyRetryWorker.enqueue(applicationContext)

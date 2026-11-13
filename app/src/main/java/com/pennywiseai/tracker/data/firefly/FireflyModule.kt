@@ -52,4 +52,18 @@ object FireflyModule {
     fun provideFireflySyncDao(database: FireflySyncDatabase): FireflySyncDao {
         return database.fireflySyncDao()
     }
+
+    /**
+     * M4: the MAIN app database for the add-on engine's candidate query only
+     * (see FireflySyncEngine.findSyncCandidates). It is an INPUT to the add-on:
+     * the engine reads the main `transactions` table through Room's own open
+     * connection and never writes app tables from it.
+     *
+     * No provider is needed here: the `PennyWiseDatabase` singleton is already
+     * provided by `di/DatabaseModule.providePennyWiseDatabase`, so Hilt injects
+     * it straight into the engine's new constructor parameter. What IS required
+     * in that file (upstream-ownership boundary — see the task report) is that
+     * the transaction hooks stay able to reach the engine, which they already
+     * do; no edit to DatabaseModule is needed for this parameter.
+     */
 }

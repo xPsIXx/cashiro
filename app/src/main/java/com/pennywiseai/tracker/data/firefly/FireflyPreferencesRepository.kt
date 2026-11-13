@@ -38,6 +38,13 @@ class FireflyPreferencesRepository @Inject constructor(
     private val fireflyTokenManager: FireflyTokenManager
 ) {
 
+    /** S4 warning text stored under [Keys.INSECURE_BASE_URL_WARNING]. */
+    internal companion object {
+        const val INSECURE_BASE_URL_WARNING_TEXT =
+            "Firefly base URL uses plain HTTP: the Bearer access token travels unencrypted to this host. " +
+                "Accept only for a trusted LAN self-host; prefer https:// everywhere else."
+    }
+
     private object Keys {
         // Sidecar store keys (same raw names as the legacy app-DataStore keys).
         val SYNC_ENABLED = booleanPreferencesKey("firefly_sync_enabled")
@@ -50,6 +57,7 @@ class FireflyPreferencesRepository @Inject constructor(
         val INCLUDE_RAW_SMS = booleanPreferencesKey("firefly_include_raw_sms")
         val AUTO_SYNC_INTERVAL = stringPreferencesKey("firefly_auto_sync_interval")
         val MIGRATION_RAN = booleanPreferencesKey("firefly_migration_ran")
+        val INSECURE_BASE_URL_WARNING = stringPreferencesKey("firefly_insecure_base_url_warning")
 
         // Add-on flag: legacy app-DataStore keys have been copied here once.
         val LEGACY_MIGRATED = booleanPreferencesKey("cashiro_firefly_legacy_migrated")
@@ -83,6 +91,20 @@ class FireflyPreferencesRepository @Inject constructor(
 
     val lastSyncErrorFlow: Flow<String?> = fireflyDataStore.data
         .map { it[Keys.LAST_SYNC_ERROR] }
+
+    /**
+     * S4: persistent warning state for an `http://` Firefly base URL, surfaced
+     * exactly like [lastSyncErrorFlow] (the settings UI renders both cards).
+     * Non-null while the stored URL uses plain HTTP: the Bearer PAT would
+     * travel unencrypted to whatever host is configured, so the user must
+     * acknowledge the exposure (a LAN-only self-host is a legitimate choice,
+     * which is why this warns instead of blocking).
+     *
+     * Set by [setBaseUrl] at save time, so the warning survives app restarts;
+     * cleared automatically when the URL is replaced with https:// or removed.
+     */
+    val insecureBaseUrlWarningFlow: Flow<String?> = fireflyDataStore.data
+        .map { it[Keys.INSECURE_BASE_URL_WARNING] }
 
     val autoSyncIntervalFlow: Flow<String> = fireflyDataStore.data
         .map { it[Keys.AUTO_SYNC_INTERVAL] ?: "never" }
@@ -146,6 +168,11 @@ class FireflyPreferencesRepository @Inject constructor(
         fireflyDataStore.edit { preferences ->
             legacy.syncEnabled?.let { preferences[Keys.SYNC_ENABLED] = it }
             legacy.baseUrl?.let { preferences[Keys.BASE_URL] = it }
+            // S4: a migrated http:// URL carries the same warning a fresh
+            // save would produce.
+            if (legacy.baseUrl?.startsWith("http://") == true) {
+                preferences[Keys.INSECURE_BASE_URL_WARNING] = INSECURE_BASE_URL_WARNING_TEXT
+            }
             legacy.defaultAssetAccount?.let { preferences[Keys.DEFAULT_ASSET_ACCOUNT] = it }
             legacy.lastSyncTimestamp?.let { preferences[Keys.LAST_SYNC_TIMESTAMP] = it }
             legacy.lastSyncError?.let { preferences[Keys.LAST_SYNC_ERROR] = it }
@@ -184,11 +211,21 @@ class FireflyPreferencesRepository @Inject constructor(
     }
 
     suspend fun setBaseUrl(url: String?) {
+        val stored = url?.trim()?.trimEnd('/')
         fireflyDataStore.edit { preferences ->
-            if (url.isNullOrBlank()) {
+            if (stored.isNullOrBlank()) {
                 preferences.remove(Keys.BASE_URL)
+                preferences.remove(Keys.INSECURE_BASE_URL_WARNING)
             } else {
-                preferences[Keys.BASE_URL] = url.trim().trimEnd('/')
+                preferences[Keys.BASE_URL] = stored
+                // S4: an explicit http:// base URL stores the persistent
+                // warning alongside it; https:// (or a scheme-less URL, which
+                // FireflyClient normalizes to https://) clears it.
+                if (stored.startsWith("http://")) {
+                    preferences[Keys.INSECURE_BASE_URL_WARNING] = INSECURE_BASE_URL_WARNING_TEXT
+                } else {
+                    preferences.remove(Keys.INSECURE_BASE_URL_WARNING)
+                }
             }
         }
     }

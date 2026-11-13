@@ -32,10 +32,17 @@ object Constants {
     
     /**
      * Database Configuration
+     *
+     * S7: the stale `CURRENT_VERSION = 2` constant was deleted — the real Room
+     * schema version lives in exactly one place,
+     * [com.pennywiseai.tracker.data.database.SCHEMA_VERSION]
+     * (`@Database(version = SCHEMA_VERSION)` in PennyWiseDatabase), and a
+     * second, wrong copy here only invited accidental use. Nothing referenced
+     * it (grep-verified; `scripts/release.sh`'s CURRENT_VERSION is a shell
+     * variable parsed from build.gradle.kts, unrelated).
      */
     object Database {
         const val DATABASE_NAME = "pennywise_database"
-        const val CURRENT_VERSION = 2
         const val TRANSACTION_HASH_DEFAULT = ""
     }
     
