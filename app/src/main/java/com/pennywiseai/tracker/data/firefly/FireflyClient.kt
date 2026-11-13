@@ -20,8 +20,6 @@ import java.nio.charset.StandardCharsets
 import io.ktor.client.engine.android.Android
 import io.ktor.client.plugins.HttpRequestRetry
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
-import io.ktor.client.request.forms.formData
-import io.ktor.client.request.forms.submitFormWithBinaryData
 import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.request.post
@@ -30,7 +28,6 @@ import io.ktor.client.request.setBody
 import io.ktor.client.statement.HttpResponse
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
-import io.ktor.http.Headers
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpMethod
 import io.ktor.http.HttpStatusCode
@@ -52,6 +49,7 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
+import kotlinx.serialization.decodeFromJsonElement
 import java.io.File
 import java.time.Instant
 import java.time.LocalDate
@@ -192,9 +190,6 @@ class FireflyClient @Inject constructor(
     )
 
     @Serializable
-    private data class FireflyAccountsResponse(val data: List<FireflyAccountWrapper>)
-
-    @Serializable
     private data class FireflyAccountWrapper(val id: String? = null, val attributes: FireflyAccountAttributes)
 
     @Serializable
@@ -205,9 +200,6 @@ class FireflyClient @Inject constructor(
         val name: String,
         val type: String
     )
-
-    @Serializable
-    private data class FireflyCategoriesResponse(val data: List<FireflyCategoryWrapper>)
 
     @Serializable
     private data class FireflyCategoryWrapper(val attributes: FireflyCategoryAttributes)
@@ -221,9 +213,6 @@ class FireflyClient @Inject constructor(
     )
 
     @Serializable
-    private data class FireflyBudgetsResponse(val data: List<FireflyBudgetWrapper>)
-
-    @Serializable
     private data class FireflyBudgetWrapper(val id: String? = null, val attributes: FireflyBudgetAttributes)
 
     @Serializable
@@ -233,9 +222,6 @@ class FireflyClient @Inject constructor(
         val created_at: String? = null,
         val updated_at: String? = null
     )
-
-    @Serializable
-    private data class FireflyBudgetLimitsResponse(val data: List<FireflyBudgetLimitWrapper>)
 
     @Serializable
     private data class FireflyBudgetLimitWrapper(
@@ -254,6 +240,183 @@ class FireflyClient @Inject constructor(
         val created_at: String? = null,
         val updated_at: String? = null
     )
+
+    // --------------------------------------------------------------------------
+    // M5: real pagination for Firefly list endpoints
+    // --------------------------------------------------------------------------
+
+    /**
+     * Page size requested from Firefly on every list call. The instance default
+     * is 50 and instances may silently clamp larger values (the old code asked
+     * `limit=1000` and only ever got page 1 back), but 100 is a cap every v6
+     * instance honours; the loop keeps going until `last_page` either way.
+     */
+    internal val fireflyPageLimit: Int = 100
+
+    /** Hard stop so a server that never advances `current_page` cannot loop forever. */
+    private val maxFireflyPages: Int = 200
+
+    /** One classified page of a paginated GET; mirrors the lookup semantics. */
+    internal sealed class FireflyPageOutcome {
+        /** A 2xx well-formed JSON:API envelope. */
+        data class Page(
+            val objects: List<JsonObject>,
+            val currentPage: Int,
+            val lastPage: Int,
+            val nextPageUrl: String?
+        ) : FireflyPageOutcome()
+
+        /** HTTP failure or unparseable envelope: stop paging, keep what we have. */
+        data class Failure(
+            val reason: String,
+            /** `Retry-After` recorded client-side: the Ktor engine consumes the
+             *  response, so callers that surface it (lookup → Transient) get it
+             *  from here instead of re-reading headers. */
+            val retryAfterSeconds: Int? = null
+        ) : FireflyPageOutcome()
+    }
+
+    private fun pageFailureReason(status: Int?, bodySnippet: String?, malformedBody: Boolean = false): String = when {
+        status != null -> "HTTP $status ${bodySnippet?.take(200).orEmpty()}"
+        malformedBody -> "malformed search response"
+        else -> "malformed JSON:API envelope"
+    }
+
+    /**
+     * Generic `page`+`limit` loop over a Firefly JSON:API list endpoint
+     * (reference doc §2 / waterfly `stock.dart`): request page N with
+     * `limit=[fireflyPageLimit]`, read `meta.pagination.{current_page,last_page}`
+     * and continue while `current_page < last_page`; when the instance omits
+     * `meta.pagination`, fall back to `links.next` / `meta.pagination.next_url`.
+     *
+     * Stops early on an empty page (older instances report pagination poorly),
+     * at [maxFireflyPages], or on the first non-2xx/malformed page — partial
+     * results are returned rather than throwing, matching the list endpoints'
+     * "best page beats nothing" behaviour.
+     */
+    private suspend fun paginate(
+        normalizedUrl: String,
+        path: String,
+        accessToken: String,
+        extraParams: String = "",
+        parsePage: (FireflyPageOutcome) -> List<JsonObject>,
+        logTag: String = TAG
+    ): List<JsonObject> {
+        val items = mutableListOf<JsonObject>()
+        var page = 1
+        while (page <= maxFireflyPages) {
+            val outcome = fetchFireflyPage(normalizedUrl, path, accessToken, page, extraParams)
+            items += parsePage(outcome)
+            if (outcome is FireflyPageOutcome.Failure) {
+                diagnosticLogger.w(logTag, "Firefly pagination for $path stopped: ${outcome.reason}")
+                break
+            }
+            val p = outcome as FireflyPageOutcome.Page
+            if (p.objects.isEmpty()) break
+            if (p.currentPage <= 0 || p.currentPage >= p.lastPage) break
+            val nextUrl = p.nextPageUrl
+            if (nextUrl != null && nextUrl.isNotBlank()) {
+                // links.next fallback: some instances only advertise the next
+                // page through an absolute URL; follow it verbatim once.
+                val raw = runCatching {
+                    client.get(nextUrl) {
+                        header("Authorization", "Bearer $accessToken")
+                        header("Accept", "application/vnd.api+json")
+                    }
+                }
+                val nextOutcome = if (raw.isFailure) {
+                    diagnosticLogger.w(logTag, "Firefly links.next request failed for $path: ${raw.exceptionOrNull()?.message}")
+                    break
+                } else {
+                    classifyFireflyPage(raw.getOrThrow(), "$path links.next")
+                }
+                items += parsePage(nextOutcome)
+                if (nextOutcome is FireflyPageOutcome.Failure) {
+                    diagnosticLogger.w(logTag, "Firefly pagination for $path stopped: ${nextOutcome.reason}")
+                    break
+                }
+                val np = nextOutcome as FireflyPageOutcome.Page
+                if (np.objects.isEmpty() || np.currentPage <= p.currentPage) break
+                page = np.currentPage + 1
+            } else {
+                page = p.currentPage + 1
+            }
+        }
+        return items
+    }
+
+    private suspend fun fetchFireflyPage(
+        normalizedUrl: String,
+        path: String,
+        accessToken: String,
+        page: Int,
+        extraParams: String
+    ): FireflyPageOutcome {
+        val url = buildString {
+            append(normalizedUrl).append(API_PATH).append(path)
+            append("?page=").append(page).append("&limit=").append(fireflyPageLimit)
+            if (extraParams.isNotBlank()) append('&').append(extraParams)
+        }
+        val response: HttpResponse = try {
+            client.get(url) {
+                header("Authorization", "Bearer $accessToken")
+                header("Accept", "application/vnd.api+json")
+            }
+        } catch (e: kotlin.coroutines.cancellation.CancellationException) {
+            // Cancellation is never a transport failure: let it propagate so the
+            // caller's job actually stops mid-pagination.
+            throw e
+        } catch (e: Exception) {
+            return FireflyPageOutcome.Failure("network: ${e.message ?: e.javaClass.simpleName}")
+        }
+        return classifyFireflyPage(response, path)
+    }
+
+    private suspend fun classifyFireflyPage(response: HttpResponse, path: String): FireflyPageOutcome {
+        if (!response.status.isSuccess()) {
+            val body = runCatching { response.bodyAsText() }.getOrDefault("")
+            return FireflyPageOutcome.Failure(
+                reason = pageFailureReason(response.status.value, body),
+                retryAfterSeconds = response.headers[HttpHeaders.RetryAfter]?.toIntOrNull()
+            )
+        }
+        val body = runCatching { response.bodyAsText() }.getOrNull()
+            ?: return FireflyPageOutcome.Failure(pageFailureReason(null, null, malformedBody = true))
+        return parseFireflyPageEnvelope(body)
+            ?: FireflyPageOutcome.Failure(pageFailureReason(null, body, malformedBody = true))
+    }
+
+    /**
+     * Parses one JSON:API list envelope into [FireflyPageOutcome.Page], reading
+     * `meta.pagination.{current_page,last_page,next_url}` and the `links.next`
+     * fallback. `null` when the envelope cannot be interpreted at all.
+     */
+    private fun parseFireflyPageEnvelope(body: String): FireflyPageOutcome? = try {
+        val root = json.parseToJsonElement(body).jsonObject
+        val dataEl = root["data"] ?: return null
+        val objects = (dataEl as? kotlinx.serialization.json.JsonArray)
+            ?.mapNotNull { runCatching { it.jsonObject }.getOrNull() }
+            ?: (dataEl as? JsonObject)?.let { listOf(it) }
+            ?: return null
+
+        var current = 1
+        var last = 1
+        var nextUrl: String? = null
+        val metaObj = root["meta"] as? JsonObject
+        val pagination = metaObj?.get("pagination") as? JsonObject
+        if (pagination != null) {
+            pagination["current_page"]?.jsonPrimitive?.intOrNull?.let { current = it }
+            pagination["last_page"]?.jsonPrimitive?.intOrNull?.let { last = it }
+            (pagination["next_url"] ?: pagination["next_page_url"])?.jsonPrimitive?.contentOrNull
+                ?.takeIf { it.isNotBlank() }?.let { nextUrl = it }
+        }
+        val links = root["links"] as? JsonObject
+        (links?.get("next") ?: metaObj?.get("next") ?: pagination?.get("next"))?.jsonPrimitive?.contentOrNull
+            ?.takeIf { it.isNotBlank() }?.let { nextUrl = it }
+        FireflyPageOutcome.Page(objects, current, last, nextUrl)
+    } catch (e: Exception) {
+        null
+    }
 
     /**
      * Result of a single-transaction sync attempt.
@@ -311,22 +474,26 @@ class FireflyClient @Inject constructor(
         return withContext(Dispatchers.IO) {
             try {
                 val normalizedUrl = normalizeBaseUrl(baseUrl)
-                val response: HttpResponse = client.get("$normalizedUrl$API_PATH/accounts?type=$accountType") {
-                    header("Authorization", "Bearer $accessToken")
-                    header("Accept", "application/vnd.api+json")
-                }
-
-                if (!response.status.isSuccess()) return@withContext emptyList()
-
-                val body = response.bodyAsText()
-                val parsed = json.decodeFromString<FireflyAccountsResponse>(body)
-                parsed.data
-                    .map { item ->
-                        FireflyAccountInfo(
-                            id = item.id ?: "0",
-                            name = item.attributes.name,
-                            active = item.attributes.active
-                        )
+                // M5: paginate instead of taking whatever one default page returns.
+                val items = paginate(
+                    normalizedUrl = normalizedUrl,
+                    path = "/accounts",
+                    accessToken = accessToken,
+                    extraParams = "type=$accountType",
+                    parsePage = { outcome ->
+                        if (outcome is FireflyPageOutcome.Page) outcome.objects else emptyList()
+                    }
+                )
+                items
+                    .mapNotNull { wrapperEl ->
+                        runCatching {
+                            val item = json.decodeFromJsonElement<FireflyAccountWrapper>(wrapperEl)
+                            FireflyAccountInfo(
+                                id = item.id ?: "0",
+                                name = item.attributes.name,
+                                active = item.attributes.active
+                            )
+                        }.getOrNull()
                     }
                     .distinctBy { it.name }
                     .sortedBy { it.name }
@@ -343,17 +510,21 @@ class FireflyClient @Inject constructor(
         return withContext(Dispatchers.IO) {
             try {
                 val normalizedUrl = normalizeBaseUrl(baseUrl)
-                val response: HttpResponse = client.get("$normalizedUrl$API_PATH/categories?limit=1000") {
-                    header("Authorization", "Bearer $accessToken")
-                    header("Accept", "application/vnd.api+json")
-                }
-
-                if (!response.status.isSuccess()) return@withContext emptyList()
-
-                val body = response.bodyAsText()
-                val parsed = json.decodeFromString<FireflyCategoriesResponse>(body)
-                parsed.data
-                    .map { it.attributes.name }
+                // M5: paginate — a single call only ever returned the first page.
+                val items = paginate(
+                    normalizedUrl = normalizedUrl,
+                    path = "/categories",
+                    accessToken = accessToken,
+                    parsePage = { outcome ->
+                        if (outcome is FireflyPageOutcome.Page) outcome.objects else emptyList()
+                    }
+                )
+                items
+                    .mapNotNull { wrapperEl ->
+                        runCatching {
+                            json.decodeFromJsonElement<FireflyCategoryWrapper>(wrapperEl).attributes.name
+                        }.getOrNull()
+                    }
                     .distinct()
                     .sorted()
             } catch (e: Exception) {
@@ -474,24 +645,27 @@ class FireflyClient @Inject constructor(
         return withContext(Dispatchers.IO) {
             try {
                 val normalizedUrl = normalizeBaseUrl(baseUrl)
-                val response: HttpResponse = client.get("$normalizedUrl$API_PATH/budgets?limit=1000") {
-                    header("Authorization", "Bearer $accessToken")
-                    header("Accept", "application/vnd.api+json")
-                }
-
-                if (!response.status.isSuccess()) return@withContext emptyList()
-
-                val body = response.bodyAsText()
-                val parsed = json.decodeFromString<FireflyBudgetsResponse>(body)
-                parsed.data
-                    .map {
-                        FireflyBudgetInfo(
-                            id = it.id ?: "0",
-                            name = it.attributes.name,
-                            active = it.attributes.active,
-                            createdAt = parseInstant(it.attributes.created_at),
-                            updatedAt = parseInstant(it.attributes.updated_at)
-                        )
+                // M5: paginate (limit=1000 was silently clamped to one page).
+                val items = paginate(
+                    normalizedUrl = normalizedUrl,
+                    path = "/budgets",
+                    accessToken = accessToken,
+                    parsePage = { outcome ->
+                        if (outcome is FireflyPageOutcome.Page) outcome.objects else emptyList()
+                    }
+                )
+                items
+                    .mapNotNull { wrapperEl ->
+                        runCatching {
+                            val it = json.decodeFromJsonElement<FireflyBudgetWrapper>(wrapperEl)
+                            FireflyBudgetInfo(
+                                id = it.id ?: "0",
+                                name = it.attributes.name,
+                                active = it.attributes.active,
+                                createdAt = parseInstant(it.attributes.created_at),
+                                updatedAt = parseInstant(it.attributes.updated_at)
+                            )
+                        }.getOrNull()
                     }
                     .distinctBy { it.name }
                     .sortedBy { it.name }
@@ -516,21 +690,24 @@ class FireflyClient @Inject constructor(
         return withContext(Dispatchers.IO) {
             try {
                 val normalizedUrl = normalizeBaseUrl(baseUrl)
-                val params = buildString {
-                    append("?limit=1000")
-                    if (!startDate.isNullOrBlank()) append("&start=$startDate")
-                    if (!endDate.isNullOrBlank()) append("&end=$endDate")
-                }
-                val response: HttpResponse = client.get("$normalizedUrl$API_PATH/budget-limits$params") {
-                    header("Authorization", "Bearer $accessToken")
-                    header("Accept", "application/vnd.api+json")
-                }
-
-                if (!response.status.isSuccess()) return@withContext emptyList()
-
-                val body = response.bodyAsText()
-                val parsed = json.decodeFromString<FireflyBudgetLimitsResponse>(body)
-                parsed.data.mapNotNull { wrapper ->
+                // M5: paginate (limit=1000 was silently clamped to one page).
+                val extra = buildString {
+                    if (!startDate.isNullOrBlank()) append("start=$startDate&")
+                    if (!endDate.isNullOrBlank()) append("end=$endDate")
+                }.trimEnd('&')
+                val items = paginate(
+                    normalizedUrl = normalizedUrl,
+                    path = "/budget-limits",
+                    accessToken = accessToken,
+                    extraParams = extra,
+                    parsePage = { outcome ->
+                        if (outcome is FireflyPageOutcome.Page) outcome.objects else emptyList()
+                    }
+                )
+                items.mapNotNull { wrapperEl ->
+                    val wrapper = runCatching {
+                        json.decodeFromJsonElement<FireflyBudgetLimitWrapper>(wrapperEl)
+                    }.getOrNull() ?: return@mapNotNull null
                     val attrs = wrapper.attributes
                     val id = wrapper.id ?: return@mapNotNull null
                     val budgetId = attrs.budget_id ?: return@mapNotNull null
@@ -1326,9 +1503,18 @@ class FireflyClient @Inject constructor(
     /**
      * Uploads a receipt file to the first journal of a synced transaction.
      *
-     * Firefly III requires two steps: create the attachment metadata, then upload the bytes.
-     * This method is best-effort; failure to upload an attachment is logged but does not
-     * fail the transaction sync.
+     * M6 / reference doc §1 (waterfly `attachments.dart`): the real v6 flow is
+     *  1. `POST /api/v1/attachments` with `{title, notes?, attachable_type:
+     *     "transaction_journal", attachable_id: <JOURNAL id>}` (the journal id,
+     *     not the transaction-group id),
+     *  2. stream the raw bytes (`application/octet-stream`) to the response's
+     *     `data.attributes.upload_url` with the same Authorization headers.
+     *
+     * The old code POSTed multipart to `/attachments/{id}/upload` — a route the
+     * v6 API does not have, so every upload 404'd. That URL is gone.
+     *
+     * Still best-effort: a failed upload is logged (with the parsed Firefly
+     * error envelope) but never fails the transaction sync.
      */
     suspend fun uploadReceipt(
         baseUrl: String,
@@ -1349,12 +1535,11 @@ class FireflyClient @Inject constructor(
                 val normalizedUrl = normalizeBaseUrl(baseUrl)
                 val fileName = File(receiptPath).name.takeIf { it.isNotBlank() } ?: "receipt"
 
-                // 1. Create attachment record
+                // 1. Create the attachment record (AttachmentStore shape).
                 val attachmentPayload = FireflyAttachmentCreateRequest(
-                    filename = fileName,
-                    attachable_type = "TransactionJournal",
+                    title = (title ?: fileName).take(255),
+                    attachable_type = "transaction_journal",
                     attachable_id = journalId,
-                    title = title ?: "Receipt",
                     notes = "Uploaded from PennyWise"
                 )
 
@@ -1365,37 +1550,45 @@ class FireflyClient @Inject constructor(
                     setBody(attachmentPayload)
                 }
 
+                val createBody = createResponse.bodyAsText()
                 if (!createResponse.status.isSuccess()) {
-                    diagnosticLogger.w(TAG, "Failed to create attachment record: ${createResponse.status} ${createResponse.bodyAsText().take(300)}")
+                    diagnosticLogger.w(
+                        TAG,
+                        "Failed to create attachment record for journal $journalId: " +
+                            "HTTP ${createResponse.status.value} ${fireflyErrorEnvelope(createBody) ?: createBody.take(300)}"
+                    )
                     return@withContext false
                 }
 
-                val attachmentId = extractCreatedId(createResponse.bodyAsText()) ?: return@withContext false
+                // 2. Resolve the upload URL: attributes.upload_url is the real
+                // target; attributes.url is a last-resort fallback only —
+                // embed_url is the viewer link and must NEVER be uploaded to.
+                val uploadUrl = extractAttachmentUploadUrl(createBody, normalizedUrl) ?: run {
+                    diagnosticLogger.w(
+                        TAG,
+                        "Attachment create for journal $journalId returned no upload_url: ${fireflyErrorEnvelope(createBody) ?: createBody.take(300)}"
+                    )
+                    return@withContext false
+                }
 
-                // 2. Upload bytes
-                val contentType = guessContentType(fileName)
-                val uploadResponse: HttpResponse = client.submitFormWithBinaryData(
-                    url = "$normalizedUrl$API_PATH/attachments/$attachmentId/upload",
-                    formData = formData {
-                        append(
-                            key = "file",
-                            value = bytes,
-                            headers = Headers.build {
-                                append(HttpHeaders.ContentDisposition, "filename=\"$fileName\"")
-                                append(HttpHeaders.ContentType, contentType)
-                            }
-                        )
-                    }
-                ) {
+                // 3. Stream the raw bytes to upload_url (waterfly uses POST with
+                // application/octet-stream + the same Authorization headers).
+                val uploadResponse: HttpResponse = client.post(uploadUrl) {
                     header("Authorization", "Bearer $accessToken")
-                    header("Accept", "application/vnd.api+json")
+                    contentType(ContentType.Application.OctetStream)
+                    setBody(bytes)
                 }
 
                 if (uploadResponse.status.isSuccess()) {
                     diagnosticLogger.i(TAG, "Uploaded receipt for journal $journalId")
                     true
                 } else {
-                    diagnosticLogger.w(TAG, "Failed to upload receipt: ${uploadResponse.status} ${uploadResponse.bodyAsText().take(300)}")
+                    val uploadBody = uploadResponse.bodyAsText()
+                    diagnosticLogger.w(
+                        TAG,
+                        "Failed to upload receipt for journal $journalId: " +
+                            "HTTP ${uploadResponse.status.value} ${fireflyErrorEnvelope(uploadBody) ?: uploadBody.take(300)}"
+                    )
                     false
                 }
             } catch (e: Exception) {
@@ -1403,6 +1596,54 @@ class FireflyClient @Inject constructor(
                 false
             }
         }
+    }
+
+    /**
+     * Pulls the step-2 upload target out of an attachment-create response
+     * (reference doc §1: `data.attributes.upload_url`). Falls back to
+     * `attributes.url` only when `upload_url` is absent entirely; never `embed_url`.
+     * Relative targets are resolved against the instance base URL.
+     */
+    private fun extractAttachmentUploadUrl(body: String, normalizedUrl: String): String? = try {
+        val data = json.parseToJsonElement(body).jsonObject["data"] as? JsonObject ?: return null
+        val attributes = data["attributes"] as? JsonObject
+        val candidates = listOfNotNull(
+            attributes?.get("upload_url")?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() },
+            data["upload_url"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() },
+            attributes?.get("url")?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
+        )
+        candidates.firstOrNull()?.let { url ->
+            if (url.startsWith("http://") || url.startsWith("https://")) url else "$normalizedUrl${if (url.startsWith("/")) "" else "/"}$url"
+        }
+    } catch (e: Exception) {
+        null
+    }
+
+    /**
+     * Parses a Firefly error envelope `{ "errors": { "<field>": ["msg", …] },
+     * "message": "…" }` (reference doc §4) into a compact single-line summary,
+     * so validation failures show the offending field instead of a raw blob.
+     * `null` when the body is not an error envelope.
+     */
+    private fun fireflyErrorEnvelope(body: String): String? = try {
+        val root = json.parseToJsonElement(body).jsonObject
+        val errors = root["errors"] as? JsonObject
+        val message = root["message"]?.jsonPrimitive?.contentOrNull
+        val fields = errors?.entries?.joinToString("; ") { (field, value) ->
+            val messages = (value as? kotlinx.serialization.json.JsonArray)
+                ?.mapNotNull { it.jsonPrimitive.contentOrNull }
+                ?.joinToString(", ")
+                ?: value.toString()
+            "$field: $messages"
+        }
+        when {
+            fields != null && !fields.isBlank() && !message.isNullOrBlank() -> "$message ($fields)"
+            fields != null && !fields.isBlank() -> fields
+            !message.isNullOrBlank() -> message
+            else -> null
+        }
+    } catch (e: Exception) {
+        null
     }
 
     /**
@@ -1467,56 +1708,63 @@ class FireflyClient @Inject constructor(
         val normalizedUrl = normalizeBaseUrl(baseUrl)
         val query = URLEncoder.encode("external_id_is:\"$externalId\"", StandardCharsets.UTF_8.name())
 
-        val response: HttpResponse = try {
-            client.get("$normalizedUrl$API_PATH/search/transactions?query=$query&limit=5") {
-                header("Authorization", "Bearer $accessToken")
-                header("Accept", "application/vnd.api+json")
+        // M5: a `total > 1` search must not silently stop at page 1. Loop the
+        // search exactly like the list endpoints (meta.pagination / links.next),
+        // but keep the H1 semantics intact: only a well-formed search page (or a
+        // definitive 404) may produce NotFound; any transport failure is
+        // Transient so the row is never mistaken for "absent" and re-created.
+        val rows = mutableListOf<RemoteTransactionInfo>()
+        var failureReason: String? = null
+        var retryAfter: String? = null
+        var page = 1
+        var paging = true
+        while (paging && page <= maxFireflyPages) {
+            val outcome = fetchFireflyPage(
+                normalizedUrl = normalizedUrl,
+                path = "/search/transactions",
+                accessToken = accessToken,
+                page = page,
+                extraParams = "query=$query"
+            )
+            when (outcome) {
+                is FireflyPageOutcome.Page -> {
+                    rows += outcome.objects.mapNotNull { row ->
+                        runCatching { json.encodeToString(JsonObject.serializer(), row) }
+                            .getOrNull()
+                            ?.let { parseRemoteSearchRows(it) }
+                            ?.firstOrNull()
+                    }
+                    paging = outcome.objects.isNotEmpty() &&
+                        outcome.currentPage > 0 &&
+                        outcome.currentPage < outcome.lastPage
+                    if (paging) page = outcome.currentPage + 1
+                }
+                is FireflyPageOutcome.Failure -> {
+                    failureReason = outcome.reason
+                    retryAfter = outcome.retryAfterSeconds?.toString()
+                    paging = false
+                }
             }
-        } catch (e: kotlin.coroutines.cancellation.CancellationException) {
-            // Cancellation is not a transient transport failure: rethrow it so
-            // the caller's job actually stops, instead of turning a cancelled
-            // lookup into a "we don't know" answer.
-            throw e
-        } catch (e: Exception) {
-            diagnosticLogger.e(TAG, "Search $externalId threw ${e.javaClass.simpleName}: ${e.message}", e)
-            return@withContext ExternalIdLookup.Transient("network: ${e.message ?: e.javaClass.simpleName}")
         }
 
-        val status = response.status.value
-
-        // A 404 is definitive: nothing carries this external id.
-        if (status == HttpStatusCode.NotFound.value) {
-            diagnosticLogger.w(TAG, "Search $externalId HTTP 404 → NotFound")
-            return@withContext ExternalIdLookup.NotFound
-        }
-
-        // 429/5xx/401/403/… — inconclusive. Never report NotFound here: that is
-        // precisely the misclassification that produced duplicate creates.
-        if (!response.status.isSuccess()) {
-            val body = runCatching { response.bodyAsText() }.getOrDefault("").take(200)
-            diagnosticLogger.w(TAG, "Search $externalId HTTP $status $body → inconclusive")
-            return@withContext ExternalIdLookup.Transient("HTTP $status${retryAfterSuffix(response)}")
-        }
-
-        val body = runCatching { response.bodyAsText() }.getOrNull()
-        if (body == null) {
-            diagnosticLogger.w(TAG, "Search $externalId: unreadable response body → inconclusive")
-            return@withContext ExternalIdLookup.Transient("unreadable search response body")
-        }
-
-        val rows = parseRemoteSearchRows(body)
-        if (rows == null) {
-            diagnosticLogger.w(TAG, "Search $externalId: malformed response body → inconclusive")
-            return@withContext ExternalIdLookup.Transient("malformed search response")
+        if (failureReason != null) {
+            // A 404 is definitive: nothing carries this external id.
+            if (failureReason.startsWith("HTTP ${HttpStatusCode.NotFound.value}")) {
+                diagnosticLogger.w(TAG, "Search $externalId HTTP 404 → NotFound")
+            } else {
+                // 429/5xx/401/403/… — inconclusive. Never report NotFound here:
+                // that is precisely the misclassification that produced duplicate
+                // creates.
+                diagnosticLogger.w(TAG, "Search $externalId $failureReason → inconclusive")
+                return@withContext ExternalIdLookup.Transient(
+                    retryAfter?.let { "$failureReason retryAfter=$it" } ?: failureReason
+                )
+            }
         }
 
         rows.firstOrNull { it.externalId == externalId }?.let { ExternalIdLookup.Found(it) }
             ?: ExternalIdLookup.NotFound
     }
-
-    /** Records the server's `Retry-After` (when sent) in a transient reason. */
-    private fun retryAfterSuffix(response: HttpResponse): String =
-        response.headers[HttpHeaders.RetryAfter]?.let { " retryAfter=$it" } ?: ""
 
     /**
      * Parses a Firefly search/list body into remote rows.
@@ -1781,9 +2029,15 @@ class FireflyClient @Inject constructor(
             )
         }
 
+        // L1 / reference doc §6: apply_rules/fire_webhooks default TRUE in Firefly
+        // on POST/PUT. Pushing with them true lets the user's server-side rules
+        // silently rename/recategorize/move the row right after our sync, and the
+        // next PULL copies that rule-mutated state back into local rows. Push
+        // with both false: synced journals stay exactly as entered, and rules
+        // keep firing for edits the user makes on the Firefly web side.
         return FireflyTransactionRequest(
-            apply_rules = true,
-            fire_webhooks = true,
+            apply_rules = false,
+            fire_webhooks = false,
             transactions = fireflyTransactions
         )
     }
@@ -2189,20 +2443,11 @@ class FireflyClient @Inject constructor(
         }
     }
 
-    private fun guessContentType(fileName: String): String {
-        return when (fileName.lowercase().substringAfterLast('.', "")) {
-            "jpg", "jpeg" -> "image/jpeg"
-            "png" -> "image/png"
-            "pdf" -> "application/pdf"
-            "webp" -> "image/webp"
-            else -> "application/octet-stream"
-        }
-    }
-
     @Serializable
     private data class FireflyTransactionRequest(
-        val apply_rules: Boolean = true,
-        val fire_webhooks: Boolean = true,
+        // L1: push paths disable both — see buildTransactionPayload for why.
+        val apply_rules: Boolean = false,
+        val fire_webhooks: Boolean = false,
         val transactions: List<FireflyTransaction>
     )
 
@@ -2241,12 +2486,16 @@ class FireflyClient @Inject constructor(
         val currency_code: String
     )
 
+    /**
+     * Firefly `AttachmentStore` (reference doc §1): title is the display name
+     * (the receipt filename here); attachable_type must be the snake-case
+     * `transaction_journal` with the JOURNAL id.
+     */
     @Serializable
     private data class FireflyAttachmentCreateRequest(
-        val filename: String,
+        val title: String,
         val attachable_type: String,
         val attachable_id: String,
-        val title: String? = null,
         val notes: String? = null
     )
 
@@ -2780,7 +3029,9 @@ class FireflyClient @Inject constructor(
             ),
             notes = "Synced from Cashiro subscription • cycle=${subscription.billingCycle}",
             active = subscription.state == SubscriptionState.ACTIVE,
-            apply_rules = true
+            // L1: same rule as the transaction push paths — recurring pushes
+            // must not let server rules mutate the synced template.
+            apply_rules = false
         )
     }
 
@@ -2901,7 +3152,8 @@ class FireflyClient @Inject constructor(
         val transactions: List<FireflyRecurringTransactionStore>,
         val notes: String? = null,
         val active: Boolean = true,
-        val apply_rules: Boolean = true
+        // L1: recurring push paths keep server rules inert (see buildRecurringRequestBody).
+        val apply_rules: Boolean = false
     )
 
     @Serializable
