@@ -46,11 +46,27 @@ interface FireflySyncDao {
         syncedAt: LocalDateTime = LocalDateTime.now()
     )
 
+    /**
+     * Records a sync failure for [txId] (H3).
+     *
+     * Upsert, not a plain UPDATE: the rows that need error bookkeeping the most
+     * are the ones that never synced (failed create, inconclusive search), and
+     * the old `UPDATE` silently matched zero rows for them — which is why
+     * [statesWithError] was always empty.
+     *
+     * Only `lastError` is written: `syncedAt`, `fireflyTransactionId` and the
+     * rest stay as they were, so a row that synced once and then failed an
+     * update keeps its remote id and the retry re-issues the update instead of
+     * creating a twin. [markSynced] clears `lastError` on the next success.
+     */
     @Query(
         """
-        UPDATE firefly_transaction_state
-        SET lastError = :error
-        WHERE localTransactionId = :txId
+        INSERT INTO firefly_transaction_state (
+            localTransactionId, externalId, fireflyTransactionId, fireflyUpdatedAt,
+            fireflySourceName, fireflyDestinationName, syncedAt, lastError
+        )
+        VALUES (:txId, NULL, NULL, NULL, NULL, NULL, NULL, :error)
+        ON CONFLICT(localTransactionId) DO UPDATE SET lastError = :error
         """
     )
     suspend fun markError(txId: Long, error: String)

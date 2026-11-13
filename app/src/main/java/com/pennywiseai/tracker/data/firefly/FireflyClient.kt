@@ -14,6 +14,7 @@ import com.pennywiseai.tracker.data.repository.SubscriptionRepository
 import com.pennywiseai.tracker.data.repository.TransactionRepository
 import dagger.hilt.android.qualifiers.ApplicationContext
 import io.ktor.client.HttpClient
+import io.ktor.client.HttpClientConfig
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
 import io.ktor.client.engine.android.Android
@@ -31,6 +32,7 @@ import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
 import io.ktor.http.Headers
 import io.ktor.http.HttpHeaders
+import io.ktor.http.HttpMethod
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
 import io.ktor.http.isSuccess
@@ -105,11 +107,9 @@ class FireflyClient @Inject constructor(
             install(ContentNegotiation) {
                 json(json)
             }
-            install(HttpRequestRetry) {
-                retryOnServerErrors(maxRetries = 3)
-                retryOnExceptionIf { _, cause -> cause is java.io.IOException }
-                exponentialDelay()
-            }
+            // H1: see [installFireflyRetryPolicy] at the bottom of this file for the
+            // 429-aware, commit-safe retry policy this replaces.
+            installFireflyRetryPolicy()
             // Reasonable timeouts for mobile
             engine {
                 connectTimeout = 15_000
@@ -1056,13 +1056,40 @@ class FireflyClient @Inject constructor(
             syncables.forEach { syncable ->
                 val tx = syncable.transaction
                 val extId = computeExternalId(tx)
-                val remote = getRemoteTransactionByExternalId(baseUrl, accessToken, extId)
+                val lookup = lookupRemoteTransactionByExternalId(baseUrl, accessToken, extId)
 
-                if (remote == null) {
+                // H1: an inconclusive search (429/5xx/network) is NOT evidence of
+                // absence. Creating here is what turned rate limits into duplicate
+                // journals at scale; deferring costs one retry cycle, a duplicate
+                // costs the user's financial data. Leave the row unsynced and
+                // record the error so the retry pipeline picks it up later.
+                if (lookup is ExternalIdLookup.Transient) {
+                    diagnosticLogger.w(
+                        TAG,
+                        "${describe(tx)} → DEFER (search inconclusive: ${lookup.reason})"
+                    )
+                    fireflySyncDao.markError(
+                        txId = tx.id,
+                        error = "search inconclusive: ${lookup.reason}".take(300)
+                    )
+                    results.add(
+                        ItemResult(
+                            transactionId = tx.id,
+                            externalId = extId,
+                            status = ItemResult.ItemStatus.ERROR,
+                            message = "Search inconclusive (${lookup.reason}) — create skipped to avoid a duplicate"
+                        )
+                    )
+                    return@forEach
+                }
+
+                if (lookup is ExternalIdLookup.NotFound) {
                     diagnosticLogger.i(TAG, "${describe(tx)} → CREATE (not on Firefly)")
                     toCreate.add(syncable)
                     return@forEach
                 }
+
+                val remote = (lookup as ExternalIdLookup.Found).remote
 
                 // Ours-only: a Firefly-native row (different/absent external_id)
                 // is never updated and never pulled into the phone.
@@ -1195,6 +1222,17 @@ class FireflyClient @Inject constructor(
                             )
                         )
                     } else {
+                        // H3: record the failure. `updated == null` is a failed
+                        // update, and before this the sidecar state was left
+                        // untouched — so the row stayed "synced" forever, was
+                        // skipped by resyncAll, and statesWithError()/
+                        // FireflyRetryWorker had nothing to act on. The previous
+                        // successful sync data is kept, so a retry re-issues the
+                        // update instead of creating a twin.
+                        fireflySyncDao.markError(
+                            txId = tx.id,
+                            error = "update failed: server rejected update for ${remote.fireflyId}".take(300)
+                        )
                         results.add(
                             ItemResult(
                                 transactionId = tx.id,
@@ -1207,6 +1245,10 @@ class FireflyClient @Inject constructor(
                     }
                 } catch (e: Exception) {
                     diagnosticLogger.e(TAG, "Failed to update transaction ${tx.id} in Firefly", e)
+                    fireflySyncDao.markError(
+                        txId = tx.id,
+                        error = "update failed: ${(e.message ?: e.javaClass.simpleName).take(300)}"
+                    )
                     results.add(
                         ItemResult(
                             transactionId = tx.id,
@@ -1238,18 +1280,35 @@ class FireflyClient @Inject constructor(
                 )
             }
 
-            // Persist newly-created transactions as synced.
+            // Persist newly-created transactions as synced; record failed
+            // creates as errors so the retry pipeline has them (H3).
             createdDetails.forEach { item ->
-                if (item.status == ItemResult.ItemStatus.SUCCESS && item.remoteUpdatedAt != null) {
-                    val tx = syncables.find { it.transaction.id == item.transactionId }?.transaction
-                    tx?.let {
-                        fireflySyncDao.markSynced(
+                val tx = syncables.find { it.transaction.id == item.transactionId }?.transaction
+                when (item.status) {
+                    ItemResult.ItemStatus.SUCCESS -> {
+                        if (item.remoteUpdatedAt != null) {
+                            tx?.let {
+                                fireflySyncDao.markSynced(
+                                    txId = it.id,
+                                    externalId = item.externalId,
+                                    remoteTxId = item.fireflyId,
+                                    updatedAt = instantToLocalDateTime(item.remoteUpdatedAt)
+                                )
+                            }
+                        }
+                    }
+
+                    ItemResult.ItemStatus.ERROR -> tx?.let {
+                        // H3: a failed create used to leave no trace at all.
+                        // `markError` keeps syncedAt NULL, so resyncAll still
+                        // re-tries this row and `retryFailedTxs` now sees it too.
+                        fireflySyncDao.markError(
                             txId = it.id,
-                            externalId = item.externalId,
-                            remoteTxId = item.fireflyId,
-                            updatedAt = instantToLocalDateTime(item.remoteUpdatedAt)
+                            error = "create failed: ${(item.message ?: "unknown error").take(300)}"
                         )
                     }
+
+                    ItemResult.ItemStatus.SKIPPED -> Unit
                 }
             }
 
@@ -1348,9 +1407,40 @@ class FireflyClient @Inject constructor(
 
     /**
      * Look up a transaction id in Firefly using the stable external_id.
+     *
+     * `null` covers both "not on Firefly" and "could not tell"; callers that
+     * must not confuse the two use [lookupRemoteTransactionByExternalId].
      */
     suspend fun getTransactionIdByExternalId(baseUrl: String, accessToken: String, externalId: String): String? {
-        return getRemoteTransactionByExternalId(baseUrl, accessToken, externalId)?.fireflyId
+        return when (val lookup = lookupRemoteTransactionByExternalId(baseUrl, accessToken, externalId)) {
+            is ExternalIdLookup.Found -> lookup.remote.fireflyId
+            is ExternalIdLookup.NotFound -> null
+            is ExternalIdLookup.Transient -> {
+                diagnosticLogger.w(TAG, "External id $externalId lookup inconclusive: ${lookup.reason}")
+                null
+            }
+        }
+    }
+
+    /**
+     * Outcome of one `external_id` lookup (H1).
+     *
+     * The old `RemoteTransactionInfo?` API collapsed "Firefly answered and has
+     * no such row" and "Firefly could not be asked (429/5xx/network)" into the
+     * same `null`, and the sync loop read that `null` as *absent* — so every
+     * merely rate-limited search ended up creating a duplicate journal. Only
+     * [NotFound] may justify a create; [Transient] means the remote state is
+     * unknown and the row must stay unsynced for a later run.
+     */
+    internal sealed class ExternalIdLookup {
+        /** Firefly answered and has a row carrying exactly this external id. */
+        data class Found(val remote: RemoteTransactionInfo) : ExternalIdLookup()
+
+        /** Firefly answered cleanly and no row carries this external id. */
+        data object NotFound : ExternalIdLookup()
+
+        /** 429 / 5xx / non-404 4xx / network failure: the remote state is unknown. */
+        data class Transient(val reason: String) : ExternalIdLookup()
     }
 
     /**
@@ -1359,42 +1449,83 @@ class FireflyClient @Inject constructor(
      * Uses the search endpoint with `external_id_is:"…"` — the plain list
      * endpoint does not filter by that field. Search results are deduped by the
      * exact external id.
+     *
+     * Reports [ExternalIdLookup.NotFound] only when the server answered with a
+     * well-formed search response (or a definitive 404).
      */
-    private suspend fun getRemoteTransactionByExternalId(
+    internal suspend fun lookupRemoteTransactionByExternalId(
         baseUrl: String,
         accessToken: String,
         externalId: String
-    ): RemoteTransactionInfo? {
-        if (baseUrl.isBlank() || accessToken.isBlank() || externalId.isBlank()) return null
-
-        return withContext(Dispatchers.IO) {
-            try {
-                val normalizedUrl = normalizeBaseUrl(baseUrl)
-                val query = URLEncoder.encode("external_id_is:\"$externalId\"", StandardCharsets.UTF_8.name())
-                val response: HttpResponse = client.get(
-                    "$normalizedUrl$API_PATH/search/transactions?query=$query&limit=5"
-                ) {
-                    header("Authorization", "Bearer $accessToken")
-                    header("Accept", "application/vnd.api+json")
-                }
-
-                if (!response.status.isSuccess()) {
-                    diagnosticLogger.w(
-                        TAG,
-                        "Search $externalId HTTP ${response.status.value} ${response.bodyAsText().take(200)}"
-                    )
-                    return@withContext null
-                }
-
-                parseRemoteTransaction(response.bodyAsText(), expectedExternalId = externalId)
-            } catch (e: Exception) {
-                diagnosticLogger.e(TAG, "Failed to check external_id in Firefly", e)
-                null
-            }
+    ): ExternalIdLookup = withContext<ExternalIdLookup>(Dispatchers.IO) {
+        // Nothing to ask about — keep the pre-H1 behaviour (the batch path
+        // already rejects an unconfigured client before it reaches here).
+        if (baseUrl.isBlank() || accessToken.isBlank() || externalId.isBlank()) {
+            return@withContext ExternalIdLookup.NotFound
         }
+
+        val normalizedUrl = normalizeBaseUrl(baseUrl)
+        val query = URLEncoder.encode("external_id_is:\"$externalId\"", StandardCharsets.UTF_8.name())
+
+        val response: HttpResponse = try {
+            client.get("$normalizedUrl$API_PATH/search/transactions?query=$query&limit=5") {
+                header("Authorization", "Bearer $accessToken")
+                header("Accept", "application/vnd.api+json")
+            }
+        } catch (e: kotlin.coroutines.cancellation.CancellationException) {
+            // Cancellation is not a transient transport failure: rethrow it so
+            // the caller's job actually stops, instead of turning a cancelled
+            // lookup into a "we don't know" answer.
+            throw e
+        } catch (e: Exception) {
+            diagnosticLogger.e(TAG, "Search $externalId threw ${e.javaClass.simpleName}: ${e.message}", e)
+            return@withContext ExternalIdLookup.Transient("network: ${e.message ?: e.javaClass.simpleName}")
+        }
+
+        val status = response.status.value
+
+        // A 404 is definitive: nothing carries this external id.
+        if (status == HttpStatusCode.NotFound.value) {
+            diagnosticLogger.w(TAG, "Search $externalId HTTP 404 → NotFound")
+            return@withContext ExternalIdLookup.NotFound
+        }
+
+        // 429/5xx/401/403/… — inconclusive. Never report NotFound here: that is
+        // precisely the misclassification that produced duplicate creates.
+        if (!response.status.isSuccess()) {
+            val body = runCatching { response.bodyAsText() }.getOrDefault("").take(200)
+            diagnosticLogger.w(TAG, "Search $externalId HTTP $status $body → inconclusive")
+            return@withContext ExternalIdLookup.Transient("HTTP $status${retryAfterSuffix(response)}")
+        }
+
+        val body = runCatching { response.bodyAsText() }.getOrNull()
+        if (body == null) {
+            diagnosticLogger.w(TAG, "Search $externalId: unreadable response body → inconclusive")
+            return@withContext ExternalIdLookup.Transient("unreadable search response body")
+        }
+
+        val rows = parseRemoteSearchRows(body)
+        if (rows == null) {
+            diagnosticLogger.w(TAG, "Search $externalId: malformed response body → inconclusive")
+            return@withContext ExternalIdLookup.Transient("malformed search response")
+        }
+
+        rows.firstOrNull { it.externalId == externalId }?.let { ExternalIdLookup.Found(it) }
+            ?: ExternalIdLookup.NotFound
     }
 
-    private fun parseRemoteTransaction(body: String, expectedExternalId: String? = null): RemoteTransactionInfo? {
+    /** Records the server's `Retry-After` (when sent) in a transient reason. */
+    private fun retryAfterSuffix(response: HttpResponse): String =
+        response.headers[HttpHeaders.RetryAfter]?.let { " retryAfter=$it" } ?: ""
+
+    /**
+     * Parses a Firefly search/list body into remote rows.
+     *
+     * Returns an empty list for a well-formed response with no matches and
+     * `null` only when the body cannot be interpreted at all — the lookup needs
+     * that difference to tell "not found" from "inconclusive".
+     */
+    private fun parseRemoteSearchRows(body: String): List<RemoteTransactionInfo>? {
         return try {
             val root = json.parseToJsonElement(body).jsonObject
             val dataEl = root["data"] ?: return null
@@ -1405,15 +1536,19 @@ class FireflyClient @Inject constructor(
                 dataEl is JsonObject -> listOf(dataEl)
                 else -> return null
             }
-            val parsed = objects.mapNotNull { parseRemoteObject(it) }
-            if (expectedExternalId != null) {
-                parsed.firstOrNull { it.externalId == expectedExternalId }
-            } else {
-                parsed.firstOrNull()
-            }
+            objects.mapNotNull { parseRemoteObject(it) }
         } catch (e: Exception) {
             diagnosticLogger.w(TAG, "Failed to parse remote transaction", e)
             null
+        }
+    }
+
+    private fun parseRemoteTransaction(body: String, expectedExternalId: String? = null): RemoteTransactionInfo? {
+        val rows = parseRemoteSearchRows(body) ?: return null
+        return if (expectedExternalId != null) {
+            rows.firstOrNull { it.externalId == expectedExternalId }
+        } else {
+            rows.firstOrNull()
         }
     }
 
@@ -1489,7 +1624,9 @@ class FireflyClient @Inject constructor(
         return "tx #${tx.id} $merchant ${tx.currency} ${tx.amount} ${computeExternalId(tx)}"
     }
 
-    private data class RemoteTransactionInfo(
+    // internal (not private) because [ExternalIdLookup.Found] exposes it, and the
+    // JVM classification tests assert on it.
+    internal data class RemoteTransactionInfo(
         val fireflyId: String,
         val updatedAt: Instant?,
         val type: String,
@@ -1504,7 +1641,7 @@ class FireflyClient @Inject constructor(
         val externalId: String? = null
     )
 
-    private data class RemoteSplitInfo(
+    internal data class RemoteSplitInfo(
         val amount: java.math.BigDecimal,
         val category: String?,
         val description: String?
@@ -2787,4 +2924,94 @@ class FireflyClient @Inject constructor(
         val destination_name: String? = null,
         val description: String? = null
     )
+}
+
+// ---------------------------------------------------------------------------
+// H1: HTTP retry policy
+// ---------------------------------------------------------------------------
+
+/** Ceiling for a single Firefly request: 1 attempt + [FIREFLY_RETRY_MAX_ATTEMPTS] retries. */
+internal const val FIREFLY_RETRY_MAX_ATTEMPTS = 3
+
+/**
+ * The Firefly retry policy, extracted so the production client and the JVM
+ * tests install exactly the same one.
+ *
+ * What the previous blanket policy (`retryOnServerErrors` + retry on any
+ * `IOException`) got wrong:
+ *
+ *  - **429 was never retried.** Firefly rate-limits `/search/transactions`, so
+ *    a rate-limited search fell through as "not on Firefly" and straight into
+ *    the create path — duplicate journals at scale. 429 is now retried with
+ *    exponential backoff, and `exponentialDelay(respectRetryAfterHeader = true)`
+ *    raises the wait to the server's `Retry-After` seconds whenever the header
+ *    is present (Ktor 2.3.13 `HttpRequestRetry.delayMillis` honours it).
+ *    A 429 is safe to repeat for *any* method: the rate limiter rejects the
+ *    request before Firefly touches a journal.
+ *  - **5xx/IOException were retried regardless of method**, which re-POSTed a
+ *    create that may already have committed server-side before a read timeout.
+ *    Firefly does not dedupe `external_id` on POST `/transactions`, so that
+ *    duplicated user data. Idempotent reads (GET/HEAD/DELETE) retry freely on
+ *    any `IOException`; POST/PUT retry only on failures that provably happened
+ *    before the request reached the server (DNS/connect phase) — never after a
+ *    response, and never on a read-phase timeout. A create that fails that way
+ *    is left to the state/retry pipeline (see `markError`) instead of being
+ *    blindly re-sent.
+ *
+ * @param maxRetries retry ceiling.
+ * @param sleeper the wait implementation; tests inject a recorder so they can
+ *                assert the computed backoff without actually sleeping.
+ */
+internal fun HttpClientConfig<*>.installFireflyRetryPolicy(
+    maxRetries: Int = FIREFLY_RETRY_MAX_ATTEMPTS,
+    sleeper: suspend (Long) -> Unit = { millis -> kotlinx.coroutines.delay(millis) }
+) {
+    install(HttpRequestRetry) {
+        this.maxRetries = maxRetries
+
+        // A response came back: decide by status + method.
+        retryIf { request, response ->
+            when (response.status.value) {
+                HttpStatusCode.TooManyRequests.value -> true
+                in 500..599 -> isIdempotentFireflyMethod(request.method)
+                else -> false
+            }
+        }
+
+        // No response came back: decide by method + where the failure happened.
+        retryOnExceptionIf { request, cause ->
+            when {
+                isIdempotentFireflyMethod(request.method) -> cause is java.io.IOException
+                else -> isPreCommitFailure(cause)
+            }
+        }
+
+        exponentialDelay(
+            base = 2.0,
+            maxDelayMs = 30_000L,
+            randomizationMs = 1_000L,
+            respectRetryAfterHeader = true
+        )
+        delay(sleeper)
+    }
+}
+
+/** Reads can be re-issued without changing server state; writes cannot. */
+internal fun isIdempotentFireflyMethod(method: HttpMethod): Boolean =
+    method == HttpMethod.Get || method == HttpMethod.Head || method == HttpMethod.Delete
+
+/**
+ * True only for failures that provably happened before the request reached
+ * Firefly, so repeating a POST/PUT cannot duplicate a committed journal.
+ * Read-phase timeouts deliberately return `false`: the create may already exist
+ * remotely and the state pipeline handles it.
+ */
+internal fun isPreCommitFailure(cause: Throwable): Boolean = when {
+    cause is java.net.ConnectException -> true
+    cause is java.net.UnknownHostException -> true
+    cause is java.net.NoRouteToHostException -> true
+    cause is java.net.SocketTimeoutException ->
+        cause.message?.contains("connect", ignoreCase = true) == true
+
+    else -> false
 }
