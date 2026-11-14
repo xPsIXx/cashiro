@@ -65,7 +65,9 @@ import org.robolectric.annotation.Config
  *  3. remote edit via the real API -> next sync PULLS it into the local app row
  *     (the app-data interaction: amount changes in the app's Room DB)
  *
- * Requires a PAT at ~/.firefly-pat (or FIREFLY_PAT env). Skipped otherwise.
+ * Requires a PAT at ~/.firefly-pat (or FIREFLY_PAT env) AND a FIREFLY_BASE_URL
+ * env (e.g. https://firefly.example.org). Skipped otherwise — no instance URL
+ * is hardcoded in the repo.
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [35])
@@ -86,12 +88,17 @@ class FireflySyncEngineLiveE2eTest {
         ?: runCatching { File(System.getProperty("user.home"), ".firefly-pat").readText().trim() }
             .getOrDefault("")
 
+    private val baseUrl: String = System.getenv("FIREFLY_BASE_URL").orEmpty()
+
     private val merchant = "Cashiro E2E ${DateTimeFormatter.ofPattern("HHmmss").format(LocalDateTime.now())}"
     private var remoteIdToCleanup: String? = null
 
     @Before
     fun setUp() {
-        assumeTrue("FIREFLY_PAT (or ~/.firefly-pat) required for live E2E", pat.isNotBlank())
+        assumeTrue(
+            "FIREFLY_PAT (or ~/.firefly-pat) and FIREFLY_BASE_URL required for live E2E",
+            pat.isNotBlank() && baseUrl.isNotBlank(),
+        )
         val context: Context = org.robolectric.RuntimeEnvironment.getApplication()
 
         appDb = Room.inMemoryDatabaseBuilder(context, PennyWiseDatabase::class.java)
@@ -105,7 +112,7 @@ class FireflySyncEngineLiveE2eTest {
 
         val userPrefs = UserPreferencesRepository(context)
         val tokenManager = mockk<FireflyTokenManager>(relaxed = true)
-        every { tokenManager.getBaseUrl() } returns BASE_URL
+        every { tokenManager.getBaseUrl() } returns baseUrl
         every { tokenManager.getAccessToken() } returns pat
 
         val fireflyDataStore: DataStore<Preferences> = PreferenceDataStoreFactory.create(
@@ -149,14 +156,14 @@ class FireflySyncEngineLiveE2eTest {
         if (::sidecarDb.isInitialized && ::raw.isInitialized) {
             runBlocking {
                 remoteIdToCleanup?.let { id ->
-                    raw.delete("$BASE_URL/api/v1/transactions/$id") {
+                    raw.delete("$baseUrl/api/v1/transactions/$id") {
                         header(HttpHeaders.Authorization, "Bearer $pat")
                         header(HttpHeaders.Accept, "application/vnd.api+json")
                     }
                     // Best-effort: remove the payee expense account Firefly
                     // auto-created for this merchant.
                     runCatching {
-                        val accounts = raw.get("$BASE_URL/api/v1/accounts?type=expense&limit=250") {
+                        val accounts = raw.get("$baseUrl/api/v1/accounts?type=expense&limit=250") {
                             header(HttpHeaders.Authorization, "Bearer $pat")
                             header(HttpHeaders.Accept, "application/vnd.api+json")
                         }.bodyAsText()
@@ -165,7 +172,7 @@ class FireflySyncEngineLiveE2eTest {
                                 it.jsonObject["attributes"]?.jsonObject?.get("name")?.jsonPrimitive?.content == merchant
                             }
                         if (match != null) {
-                            raw.delete("$BASE_URL/api/v1/accounts/${match.jsonObject["id"]!!.jsonPrimitive.content}") {
+                            raw.delete("$baseUrl/api/v1/accounts/${match.jsonObject["id"]!!.jsonPrimitive.content}") {
                                 header(HttpHeaders.Authorization, "Bearer $pat")
                                 header(HttpHeaders.Accept, "application/vnd.api+json")
                             }
@@ -220,7 +227,7 @@ class FireflySyncEngineLiveE2eTest {
             all.close()
         }
         runBlocking {
-            val rawGet = raw.get("$BASE_URL/api/v1/transactions/${(first as FireflyClient.SyncResult.Success).fireflyId}") {
+            val rawGet = raw.get("$baseUrl/api/v1/transactions/${(first as FireflyClient.SyncResult.Success).fireflyId}") {
                 header(HttpHeaders.Authorization, "Bearer $pat")
                 header(HttpHeaders.Accept, "application/vnd.api+json")
             }.bodyAsText()
@@ -270,7 +277,7 @@ class FireflySyncEngineLiveE2eTest {
     // ---- raw helpers ------------------------------------------------------
 
     private suspend fun updateRemoteAmount(remoteId: String, amount: String) {
-        val get = raw.get("$BASE_URL/api/v1/transactions/$remoteId") {
+        val get = raw.get("$baseUrl/api/v1/transactions/$remoteId") {
             header(HttpHeaders.Authorization, "Bearer $pat")
             header(HttpHeaders.Accept, "application/vnd.api+json")
         }.bodyAsText()
@@ -279,7 +286,7 @@ class FireflySyncEngineLiveE2eTest {
         tx0["amount"] = json.parseToJsonElement("\"$amount\"").jsonPrimitive
         val body = json.encodeToString(JsonObject.serializer(), JsonObject(mapOf("transactions" to JsonArray(listOf(JsonObject(tx0))))))
 
-        val put = raw.put("$BASE_URL/api/v1/transactions/$remoteId") {
+        val put = raw.put("$baseUrl/api/v1/transactions/$remoteId") {
             header(HttpHeaders.Authorization, "Bearer $pat")
             header(HttpHeaders.Accept, "application/vnd.api+json")
             contentType(ContentType.Application.Json)
@@ -288,7 +295,4 @@ class FireflySyncEngineLiveE2eTest {
         assertTrue("PUT remote edit failed: ${put.status}", put.status.value in 200..299)
     }
 
-    private companion object {
-        const val BASE_URL = "https://firefly.example.org"
-    }
 }
