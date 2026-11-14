@@ -116,35 +116,34 @@ jobs:
           for f in "$STANDARD_DIR"/*-release*.apk; do
             [ -e "$f" ] || continue
             base=$(basename "$f")
-            newname=$(echo "$base" | sed -E "s/app-standard-(.*)-release(.*).apk/PennyWise-v${VERSION}-\1\2.apk/")
+            newname=$(echo "$base" | sed -E "s/app-standard-(.*)-release(.*).apk/Cashiro-v${VERSION}-\1\2.apk/")
             mv "$f" "$STANDARD_DIR/$newname" 2>/dev/null || true
           done
 
           # Rename F-Droid APK
           if [ -f "$FDROID_DIR/app-fdroid-release-unsigned.apk" ]; then
             mv "$FDROID_DIR/app-fdroid-release-unsigned.apk" \
-               "$FDROID_DIR/PennyWise-fdroid-v${VERSION}.apk"
+               "$FDROID_DIR/Cashiro-fdroid-v${VERSION}.apk"
           fi
 
           # Generate SHA256 sums
           cd "$STANDARD_DIR"
-          for apk in PennyWise-v${VERSION}*.apk; do
+          for apk in Cashiro-v${VERSION}*.apk; do
             [ -f "$apk" ] && sha256sum "$apk" > "${apk}.sha256"
           done
 
           cd "$GITHUB_WORKSPACE/$FDROID_DIR"
-          if [ -f "PennyWise-fdroid-v${VERSION}.apk" ]; then
-            sha256sum "PennyWise-fdroid-v${VERSION}.apk" > "PennyWise-fdroid-v${VERSION}.apk.sha256"
+          if [ -f "Cashiro-fdroid-v${VERSION}.apk" ]; then
+            sha256sum "Cashiro-fdroid-v${VERSION}.apk" > "Cashiro-fdroid-v${VERSION}.apk.sha256"
           fi
 
       - name: Generate release notes
         if: ${{ !inputs.dry_run }}
         run: |
           VERSION="${{ steps.version.outputs.version }}"
-          echo "# PennywiseAI-Firefly v$VERSION" > RELEASE_NOTES.md
+          echo "# Cashiro v$VERSION" > RELEASE_NOTES.md
           echo "" >> RELEASE_NOTES.md
-          echo "> This is a vibe-coded personal fork of Pennywise AI with deep Firefly III integration." >> RELEASE_NOTES.md
-          echo "> Probably shouldn't be used by anyone without review." >> RELEASE_NOTES.md
+          echo "> Personal fork of PennyWise AI with a two-way, ours-only Firefly III sync add-on." >> RELEASE_NOTES.md
           echo "" >> RELEASE_NOTES.md
 
           # Extract the matching section from CHANGELOG.md if present
@@ -168,23 +167,23 @@ jobs:
 
           echo "" >> RELEASE_NOTES.md
           echo "### Downloads" >> RELEASE_NOTES.md
-          echo "- **Standard** (recommended): PennyWise-v${VERSION}-universal.apk" >> RELEASE_NOTES.md
-          echo "- **F-Droid**: PennyWise-fdroid-v${VERSION}.apk (unsigned)" >> RELEASE_NOTES.md
+          echo "- **Standard** (recommended): Cashiro-v${VERSION}-universal.apk" >> RELEASE_NOTES.md
+          echo "- **F-Droid**: Cashiro-fdroid-v${VERSION}.apk" >> RELEASE_NOTES.md
 
       - name: Create GitHub Release (draft)
         if: ${{ !inputs.dry_run }}
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ steps.version.outputs.version }}
-          name: PennywiseAI-Firefly v${{ steps.version.outputs.version }}
+          name: Cashiro v${{ steps.version.outputs.version }}
           body_path: RELEASE_NOTES.md
           draft: ${{ inputs.create_as_draft }}
           prerelease: false
           files: |
-            app/build/outputs/apk/standard/release/PennyWise-v${{ steps.version.outputs.version }}*.apk
-            app/build/outputs/apk/standard/release/PennyWise-v${{ steps.version.outputs.version }}*.apk.sha256
-            app/build/outputs/apk/fdroid/release/PennyWise-fdroid-v${{ steps.version.outputs.version }}.apk
-            app/build/outputs/apk/fdroid/release/PennyWise-fdroid-v${{ steps.version.outputs.version }}.apk.sha256
+            app/build/outputs/apk/standard/release/Cashiro-v${{ steps.version.outputs.version }}*.apk
+            app/build/outputs/apk/standard/release/Cashiro-v${{ steps.version.outputs.version }}*.apk.sha256
+            app/build/outputs/apk/fdroid/release/Cashiro-fdroid-v${{ steps.version.outputs.version }}.apk
+            app/build/outputs/apk/fdroid/release/Cashiro-fdroid-v${{ steps.version.outputs.version }}.apk.sha256
 
       - name: Dry run summary
         if: ${{ inputs.dry_run }}
